@@ -3,5 +3,4 @@ project(mitm_sequential)
 
 set(CMAKE_CXX_STANDARD 20)
 
-# add_library(mitm_sequential mitm_sequential.hpp
-#        mitm_sequential.hpp)
+add_executable(test demo.cpp mitm_sequential.hpp)
