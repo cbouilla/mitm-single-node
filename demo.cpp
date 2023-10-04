@@ -14,9 +14,7 @@ public:
     using t = unsigned int;
     template<class PRNG>
     void randomize(t &x, PRNG &p) const { x = p.rand(); }
-    // todo: override equality operator
     bool is_equal(const t &x, const t &y) const { return x == y; };
-    // bool operator==(const t &rhs) { lhs == rhs; };
     int length = 4;
 
     void serialize(const t &x, void *out) const {
