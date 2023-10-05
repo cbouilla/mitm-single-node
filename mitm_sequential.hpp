@@ -3,6 +3,7 @@
 #include <iostream>
 #include <assert.h>
 #include <vector>
+#include <algorithm>
 
 /*
  * Generic interface for a PRNG. The sequence of pseudo-random numbers
@@ -23,14 +24,18 @@ public:
  * E.g. for points on an elliptic curve, "repr" could be a pair of integers mod p, while the
  *      domain would contain the equation of the curve, etc.
  */
-template<class repr>           /* repr must support equality-testing and assignment */
+template<class repr>           /* repr must support comparisons, and assignment */
 class AbstractDomain {
 public:
     using t = repr;            /* t is the machine representation of elements of the domain */
     template<class PRNG>
     void randomize(t &x, PRNG &p) const;           /* set x to a random value */
 
-    int length;                                    /* size in bytes of the serialization */
+    static int length;                                    /* size in bytes of the serialization */
+    static size_t n_elements; /* how many elements in the domain */
+
+    /* get the next element after x. What matters is getting a different element each time, not the order. */
+    auto next(t& x) -> t;
     void serialize(const t &x, void *out) const;   /* write this to out */
     void unserialize(t &x, void *in) const;        /* read this from in */
 
@@ -51,6 +56,7 @@ class AbstractProblem {
 public:
     using A = Domain;
     using A_t = typename A::t;
+
     void f(const A_t &x, A_t &y) const;                /* y <--- f(x) */
 
     AbstractProblem() {
@@ -67,11 +73,34 @@ template<typename Pb>
 auto collision(Pb &pb) -> std::pair<typename Pb::A::t, typename Pb::A::t>
 {
     using t = typename Pb::A::t;
+    using Domain = typename  Pb::A;
+    Domain dom = pb.dom;
+
+    /* save some boilerplate typing */
+    using t_pair = typename std::pair<t, t>;
 
     // enforce that Pb is an subclass of AbstractProblem
-    static_assert(std::is_base_of<AbstractProblem<typename Pb::A>, Pb>::value,
+    static_assert(std::is_base_of<AbstractProblem<Domain>, Pb>::value,
                   "Pb not derived from AbstractProblem");
 
+    t x{}; /* input  */
+    t y{}; /* output */
+    /* store all pairs of (input, output) in an array. The inverse order to sort in the first element */
+    std::vector< t_pair > all_images(dom.n_elements);
+
+    for (size_t i; i < dom.n_elements; ++i) {
+        pb.f(x, y);
+        /* actual computation */
+        all_images[i] = std::pair(y, x); /* let's hope this is a deepcopy */
+        dom.next(x); /* modifies x */
+    }
+    /* sort the pairs according to the output */
+    std::sort(all_images.begin(),
+              all_images.end(),
+              [](t_pair x, t_pair y){ return x.second < y.second; }
+              );
+
+    /* keep this code to test the demo is working */
     t x0, tortoise, hare;               /* This creates some arbitrary (but legitimate) values */
     pb.f(x0, tortoise);
     pb.f(tortoise, hare);

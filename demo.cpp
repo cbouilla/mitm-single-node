@@ -8,6 +8,11 @@
 /* Simple concrete example                                                    */
 /******************************************************************************/
 
+
+
+
+
+//
 class IntDomain : AbstractDomain<unsigned int> {
 public:
     using A = IntDomain;
@@ -16,7 +21,9 @@ public:
     void randomize(t &x, PRNG &p) const { x = p.rand(); }
     bool is_equal(const t &x, const t &y) const { return x == y; };
     int length = 4;
+    const static size_t n_elements = (1LL<<32);
 
+    inline void next(t& x)  const { x = x+1; }
     void serialize(const t &x, void *out) const {
         t *tmp = static_cast<t*>(out);
         *tmp = x;
@@ -29,16 +36,16 @@ public:
     uint64_t hash_extra(const t &x) const { return 0; }
 };
 
-
 class Problem : AbstractProblem<IntDomain> {
 private:
-    IntDomain _dom;
+
 
 public:
+    IntDomain dom;
     using A = IntDomain;
     using A_t = unsigned int;
 
-    Problem(IntDomain & dom) : _dom(dom) {};
+    Problem(IntDomain & dom) : dom(dom) {};
 
     inline void f(const unsigned int &x, unsigned int &y) const
     {
