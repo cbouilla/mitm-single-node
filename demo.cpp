@@ -21,7 +21,7 @@ public:
     void randomize(t &x, PRNG &p) const { x = p.rand(); }
     bool is_equal(const t &x, const t &y) const { return x == y; };
     const int length = 4;
-    const static size_t n_elements = (1LL<<32);
+    const static size_t n_elements = (1LL<<16);
 
     inline void next(t& x)  const { x = x+1; }
     void serialize(const t &x, void *out) const {
