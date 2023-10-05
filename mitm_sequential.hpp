@@ -113,11 +113,28 @@ auto collision(Pb &pb) -> std::pair<typename Pb::A::t, typename Pb::A::t>
         v1 = all_images[i]; /* go to the next value */
     }
     /* generate random elements until a collision is found. */
+    v1.first = x;
+    v1.second = y;
     while(!is_collision_found){
-
-
+        pb.f(v1.first, v1.second);
+        is_collision_found = std::binary_search(all_images.begin(),
+                                                all_images.end(),
+                                                v1,
+                                                [](t_pair p1, t_pair p2){
+                                                   return p1.second < p2.second;
+                                                    }
+        );
     }
 
+    // todo this part is rushed
+    // find where is the collision then return
+    // use std::find to save somelines
+    for (size_t i = 0; i < dom.n_elements ; ++i) {
+        if (all_images[i].second == v1.second){
+            v2 = all_images[i];
+            break; /* exit the loop */
+        }
+    }
     return std::pair(v1.first, v2.first);
 
 
