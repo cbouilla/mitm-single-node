@@ -88,7 +88,7 @@ auto collision(Pb &pb) -> std::pair<typename Pb::A::t, typename Pb::A::t>
     /* store all pairs of (input, output) in an array. The inverse order to sort in the first element */
     std::vector< t_pair > all_images(dom.n_elements);
 
-    for (size_t i; i < dom.n_elements; ++i) {
+    for (size_t i = 0; i < dom.n_elements; ++i) {
         pb.f(x, y);
         /* actual computation */
         all_images[i] = std::pair(y, x); /* let's hope this is a deepcopy */
@@ -100,24 +100,46 @@ auto collision(Pb &pb) -> std::pair<typename Pb::A::t, typename Pb::A::t>
               [](t_pair x, t_pair y){ return x.second < y.second; }
               );
 
-    /* keep this code to test the demo is working */
-    t x0, tortoise, hare;               /* This creates some arbitrary (but legitimate) values */
-    pb.f(x0, tortoise);
-    pb.f(tortoise, hare);
-    while (tortoise != hare) {
-        pb.f(tortoise, tortoise);
-        pb.f(hare, hare);
-        pb.f(hare, hare);
+    /* Check there is no collision already in the table */
+    t_pair v1 = all_images[0];
+    t_pair v2;
+    int is_collision_found = 0;
+    for (size_t i = 1; i < dom.n_elements; ++i){
+        if (v1.second == all_images[i].second){
+            v2 = all_images[i];
+            is_collision_found = 1;
+            break; /* break from for loop */
+        }
+        v1 = all_images[i]; /* go to the next value */
+    }
+    /* generate random elements until a collision is found. */
+    while(!is_collision_found){
+
+
     }
 
-    t prev_tortoise, prev_hare;
-    tortoise = x0;
-    while (tortoise != hare) {
-        prev_tortoise = tortoise;
-        prev_hare = hare;
-        pb.f(tortoise, tortoise);
-        pb.f(hare, hare);
-    }
-    return std::pair(prev_tortoise, prev_hare);
+    return std::pair(v1.first, v2.first);
+
+
+
+//    /* keep this code to test the demo is working */
+//    t x0, tortoise, hare;               /* This creates some arbitrary (but legitimate) values */
+//    pb.f(x0, tortoise);
+//    pb.f(tortoise, hare);
+//    while (tortoise != hare) {
+//        pb.f(tortoise, tortoise);
+//        pb.f(hare, hare);
+//        pb.f(hare, hare);
+//    }
+//
+//    t prev_tortoise, prev_hare;
+//    tortoise = x0;
+//    while (tortoise != hare) {
+//        prev_tortoise = tortoise;
+//        prev_hare = hare;
+//        pb.f(tortoise, tortoise);
+//        pb.f(hare, hare);
+//    }
+//    return std::pair(prev_tortoise, prev_hare);
 }
 #endif
