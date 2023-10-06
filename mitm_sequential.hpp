@@ -51,18 +51,25 @@ public:
  * E.g. In the attack on double-encryption, where the goal is to find
  *      x, y s.t. f(x, a) == g(y, b), the problem should contain (a, b).
  */
-template<class Domain>
+template<typename Domain_A, typename Domain_B, typename Domain_C>
 class AbstractProblem {
 public:
-    using A = Domain;
-    using A_t = typename A::t;
+    using C = Domain_C; /* output type */
+    using C_t = typename C::t;
 
-    void f(const A_t &x, A_t &y) const;                /* y <--- f(x) */
+    using A = Domain_A;
+    using A_t = typename A::t;
+    void f(const A_t &x, C_t &y) const;                /* y <--- f(x) */
+
+    using B = Domain_A;
+    using B_t = typename A::t;
+    void g(const B_t &x, C_t &y) const;                /* y <--- f(x) */
+
 
     AbstractProblem() {
-        // enforce that Domain is a subclass of AbstractDomain
-        static_assert(std::is_base_of<AbstractDomain<typename Domain::t>, Domain>::value,
-                      "Domain not derived from AbstractDomain");
+        // enforce that Domain_A is a subclass of AbstractDomain
+        static_assert(std::is_base_of<AbstractDomain<typename Domain_A::t>, Domain_A>::value,
+                      "Domain_A not derived from AbstractDomain");
     }
 };
 
@@ -72,27 +79,37 @@ public:
 template<typename Pb>
 auto collision(Pb &pb) -> std::pair<typename Pb::A::t, typename Pb::A::t>
 {
-    using t = typename Pb::A::t;
-    using Domain = typename  Pb::A;
-    Domain dom = pb.dom;
+    using A_t = typename Pb::A::t;
+    using Domain_A = typename  Pb::A;
+    Domain_A dom_A = pb.dom_A;
+
+    using B_t = typename Pb::B::t;
+    using Domain_B = typename  Pb::B;
+    Domain_A dom_B = pb.dom_B;
+
+    using C_t = typename Pb::C::t;
+    using Domain_C = typename  Pb::C;
+    Domain_A dom_C = pb.dom_C;
 
     /* save some boilerplate typing */
-    using t_pair = typename std::pair<t, t>;
+    // todo rename this part :(k
+    using t_pair = typename std::pair<A_t, C_t>;
 
     // enforce that Pb is an subclass of AbstractProblem
-    static_assert(std::is_base_of<AbstractProblem<Domain>, Pb>::value,
-                  "Pb not derived from AbstractProblem");
+    // todo: rewrite this
+//    static_assert(std::is_base_of<AbstractProblem<Domain_A>, Pb>::value,
+//                  "Pb not derived from AbstractProblem");
 
-    t x{}; /* input  */
-    t y{}; /* output */
+    A_t x{}; /* input  */
+    C_t y{}; /* output */
     /* store all pairs of (input, output) in an array. The inverse order to sort in the first element */
-    std::vector< t_pair > all_images(dom.n_elements);
+    std::vector< t_pair > all_images(dom_A.n_elements);
 
-    for (size_t i = 0; i < dom.n_elements; ++i) {
+    for (size_t i = 0; i < dom_A.n_elements; ++i) {
         pb.f(x, y);
         /* actual computation */
         all_images[i] = std::pair(x, y); /* let's hope this is a deepcopy */
-        dom.next(x); /* modifies x */
+        dom_A.next(x); /* modifies x */
     }
     /* sort the pairs according to the output */
     std::sort(all_images.begin(),
@@ -104,7 +121,7 @@ auto collision(Pb &pb) -> std::pair<typename Pb::A::t, typename Pb::A::t>
     t_pair v2;
     int is_collision_found = 0;
 //    /* Check if we have already a collision in the list */
-    for (size_t i = 1; i < dom.n_elements; ++i){ /* Normally we should not check in the list */
+    for (size_t i = 1; i < dom_A.n_elements; ++i){ /* Normally we should not check in the list */
         if (v1.second == all_images[i].second and all_images[i].first != v1.first){
             v2 = all_images[i];
             is_collision_found = 1;
@@ -133,7 +150,7 @@ auto collision(Pb &pb) -> std::pair<typename Pb::A::t, typename Pb::A::t>
     // todo this part is rushed
     // find where is the collision then return
     // use std::find to save somelines
-    for (size_t i = 0; i < dom.n_elements ; ++i) {
+    for (size_t i = 0; i < dom_A.n_elements ; ++i) {
         if (all_images[i].second == v1.second and all_images[i].first != v1.first){
             v2 = all_images[i];
             std::cout << "v1.first = " << v1.first << ", v1.second = " << v1.second << "\n" ;
