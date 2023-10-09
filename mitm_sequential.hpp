@@ -61,8 +61,8 @@ public:
     using A_t = typename A::t;
     void f(const A_t &x, C_t &y) const;                /* y <--- f(x) */
 
-    using B = Domain_A;
-    using B_t = typename A::t;
+    using B = Domain_B;
+    using B_t = typename B::t;
     void g(const B_t &x, C_t &y) const;                /* y <--- f(x) */
 
 
