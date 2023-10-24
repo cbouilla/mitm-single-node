@@ -26,7 +26,6 @@ struct Dict {
     }
     auto pop_insert(const C_t& inp,
                     uint8_t* inp_serialized,  // maybe we should not add C_t as a variable
-                    const C_t& dist_point,
                     uint8_t* dist_point_serialized,
                     C_t& out)
                     -> bool
@@ -35,12 +34,13 @@ struct Dict {
 
         uint32_t idx = *(reinterpret_cast<uint32_t*> (&inp_serialized[0])); // dear loard, this is ugly!
         bool flag = 0;
+        ++n_slots; /* since we are going to add an element */
         /* probe the dictionary at location idx */
         uint32_t value = *(reinterpret_cast<uint32_t*> (&dist_point_serialized[0])); /* value TO BE stored in the dictionary */
         if (table[idx].second != 0){ /* not an empyt slot */
             out = table[idx].first;
-
             flag = ( table[idx].second == value);
+            --n_slots; /* we're kicking an element from the dictionary */
         }
         table[idx].first = inp;
         table[idx].second = value;
