@@ -3,7 +3,7 @@ project(mitm_sequential)
 
 set(CMAKE_CXX_STANDARD 20)
 
-add_executable(test baseic_demo.cpp mitm_sequential.hpp
+add_executable(test demos/basic_demo.cpp mitm_sequential.hpp
         include/dict.hpp
         include/dict.hpp
         demos/basic_demo.cpp)
