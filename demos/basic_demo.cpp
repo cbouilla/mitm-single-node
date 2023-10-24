@@ -24,16 +24,16 @@ public:
     const static size_t n_elements = (1LL<<16);
 
     inline void next(t& x)  const { x = x+1; }
-    void serialize(const t &x, void *out) const {
+    static void serialize(const t &x, void *out) {
         t *tmp = static_cast<t*>(out);
         *tmp = x;
     }
-    void unserialize(t &x, void *in) const {
+    static void unserialize(t &x, void *in)  {
         t *tmp = static_cast<t*>(in);
         x = *tmp;
     }
-    uint64_t hash(const t &x) const { return x; }
-    uint64_t hash_extra(const t &x) const { return 0; }
+    static uint64_t hash(const t &x)  { return x; }
+    static uint64_t hash_extra(const t &x)  { return 0; }
 };
 
 class Problem : AbstractProblem<IntDomain, IntDomain, IntDomain> {
@@ -56,7 +56,7 @@ public:
             , dom_C{dom_C}
     {};
 
-    inline void f(const unsigned int &x, unsigned int &y) const
+    static inline void f(const unsigned int &x, unsigned int &y)
     {
         y = 42 * x * x + 1337;
     }
@@ -77,8 +77,8 @@ int main()
 
     std::cout << "x = " << result.first << " and y = " << result.second << std::endl;
     unsigned int fx, fy;
-    pb.f(result.first, fx);
-    pb.f(result.second, fy);
+    Problem::f(result.first, fx);
+    Problem::f(result.second, fy);
     std::cout << "f(x) = " << fx << " and f(y) = " << fy << std::endl;
 
     assert(fx == fy && result.first != result.second);

@@ -5,6 +5,9 @@
 #include <vector>
 #include <algorithm>
 
+#include "dict.hpp"
+
+
 /*
  * Generic interface for a PRNG. The sequence of pseudo-random numbers
  * depends on both seed and seq
@@ -29,18 +32,18 @@ class AbstractDomain {
 public:
     using t = repr;            /* t is the machine representation of elements of the domain */
     template<class PRNG>
-    void randomize(t &x, PRNG &p) const;           /* set x to a random value */
+    static void randomize(t &x, PRNG &p);           /* set x to a random value */
 
     static int length;                                    /* size in bytes of the serialization */
     static size_t n_elements; /* how many elements in the domain */
 
     /* get the next element after x. What matters is getting a different element each time, not the order. */
     auto next(t& x) -> t;
-    void serialize(const t &x, void *out) const;   /* write this to out */
-    void unserialize(t &x, void *in) const;        /* read this from in */
+    static void serialize(const t &x, void *out);   /* write this to out */
+    static void unserialize(t &x, void *in);        /* read this from in */
 
-    auto hash(const t &x) const -> uint64_t ;               /* return some bits from this */
-    auto hash_extra(const t &x) const -> uint64_t ;         /* return more bits from this */
+    static auto hash(const t &x) -> uint64_t ;               /* return some bits from this */
+    static auto hash_extra(const t &x) -> uint64_t ;         /* return more bits from this */
 };
 
 
@@ -59,11 +62,11 @@ public:
 
     using A = Domain_A;
     using A_t = typename A::t;
-    void f(const A_t &x, C_t &y) const;                /* y <--- f(x) */
+    static void f(const A_t &x, C_t &y);                /* y <--- f(x) */
 
     using B = Domain_B;
     using B_t = typename B::t;
-    void g(const B_t &x, C_t &y) const;                /* y <--- f(x) */
+    static void g(const B_t &x, C_t &y);                /* y <--- f(x) */
 
 
     AbstractProblem() {
@@ -73,11 +76,18 @@ public:
     }
 };
 
-/*
- * Actual collision-finding code (this is Floyd's algorithm)
- */
+
+template<typename A_t, typename B_t, typename C_t>
+auto generate_dist_point()
+{
+
+}
+
+
+
+
 template<typename Pb>
-auto collision(Pb &pb) -> std::pair<typename Pb::A::t, typename Pb::A::t>
+auto collision(const Pb &pb) -> std::pair<typename Pb::A::t, typename Pb::A::t>
 {
     using A_t = typename Pb::A::t;
     using Domain_A = typename  Pb::A;
