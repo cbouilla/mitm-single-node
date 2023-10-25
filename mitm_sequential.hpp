@@ -42,6 +42,7 @@ public:
     static void serialize(const t &x, void *out);   /* write this to out */
     static void unserialize(t &x, void *in);        /* read this from in */
 
+
     static auto hash(const t &x) -> uint64_t ;               /* return some bits from this */
     static auto hash_extra(const t &x) -> uint64_t ;         /* return more bits from this */
 };
@@ -74,61 +75,91 @@ public:
         static_assert(std::is_base_of<AbstractDomain<typename Domain_A::t>, Domain_A>::value,
                       "Domain_A not derived from AbstractDomain");
     }
+
+    static void send_C_to_A(A_t& out_A, C_t& inp_C);
+    static void send_C_to_B(B_t& out_B, C_t& inp_C);
 };
 
 
 inline
-auto is_distinguished(uint8_t* inp, const int theta) -> bool
+auto is_distinguished(uint8_t* value, const int theta) -> bool
 {
     /// This function is dangerous since it doesn't check that theta is smaller than
-    /// than the length of inp! However, we promise that we will only pass theta that
+    /// than the length of value! However, we promise that we will only pass theta that
     /// satisifies this condition.
     /// since numbers are stored as small-endian, start with the first byte.
     int result = 0;
-    for (int i = 0; i<theta/8; ++i){ // move byte by byte
+    for (int i = 0; i < (theta/8); ++i){ // move byte by byte
         /* theta = 8k + i , here we treat the k bytes that must be zero */
-        result |= inp[i]; // if we found non-zero value then the result will be non-zero
+        result |= value[i]; // if we found non-zero value then the result will be non-zero
     }
-
     /* the remaining bit */
-    uint8_t mask =((1<<(8 - (theta % 8))) - 1)<<theta; // 2^(-theta mod 8) - 1, all on
-    result |= inp[theta/8] & mask;
+    /* all ones for (theta  mod 8) bits */
+    uint8_t mask = (1 << (theta % 8)) - 1;
+    /* the last (theta mod 8) bits if they are not zero, then result won't be zero  */
+    result |= value[theta / 8] & mask;
 
     return (result == 0);
 }
 
+
+
+
+/// Since we check the dist point at the beginning we don't need to use the length explicitly.
+/// Thus, no need write two version of the function below (one starts with f, the other starts with g).
+///  Instead, switch the order of the arguements
 template<typename A_t, typename B_t, typename C_t>
 auto generate_dist_point(void (*f)(A_t&, C_t& ), /* why don't we pass the problem instead */
                          void (*g)(B_t&, C_t& ),
+                         void (*send_C_to_A)(A_t&, C_t),
+                         void (*send_C_to_B)(B_t&, C_t),
                          void (serialize)(const C_t&, uint8_t*),
                          const int theta, /* how many bits should be zero */
-                         A_t& inp_A,
+                         A_t& inp_A, /* WARNING: this function will edit this argument */
                          C_t& out_C,
                          uint8_t* out_C_serialized)
 {
-    static B_t out; /* since we may iterate for  */
+    /// inp = 1bit(f/g) || dist point ||
+    // What is the user passed c-style array as A_t. Abandon this idea.
+    // static A_t inp_A = inp_A_orig; /* make sure this is a deepcopy */
+    static B_t inp_B; /* since we may iterate using g : B -> C  */
     bool found_distinguished = false;
+    int f_or_g; // 1 if the next function is f,
 
-    /* First treat the input of A */
+
+    // Do 1 round without entering the loop since we know which function to use
     f(inp_A, out_C);
     serialize(out_C, out_C_serialized);
-    /* check if it is a distinguished point */
+    /* decide what is the next function based on the output */
+    f_or_g = out_C_serialized[0]&1;
+    // remove the bit used to decide which function
+    out_C_serialized[0] = out_C_serialized[0]>>1;
+    found_distinguished = is_distinguished(out_C_serialized, theta);
 
+    /* potentially infinite loop, todo limit  the number of iteration as a function of theta */
     while (not found_distinguished){
 
+        if (f_or_g == 1){ // i.e. next use f to iterate
+            // summary:  C -> A -f-> C
+            /* convert output to A input */
+            send_C_to_A(inp_A, out_C);
+            f(inp_A, out_C);
+        } else { // use g in the sequence
+            // summary:  C -> B -g-> C
+            send_C_to_B(inp_B, out_C);
+            f(inp_A, out_C);
+        }
+
+        serialize(out_C, out_C_serialized);
+        /* decide what is the next function based on the output */
+        f_or_g = out_C_serialized[0]&1;
+        // remove the bit used to decide which function
+        out_C_serialized[0] = out_C_serialized[0]>>1;
+        found_distinguished = is_distinguished(out_C_serialized, theta);
     }
 
-    return;
-}
-
-/* yay, function overloading came to rescue! */
-template<typename A_t, typename B_t, typename C_t>
-auto generate_dist_point(void (*f)(A_t&, C_t& ),
-                         void (*g)(B_t&, C_t& ),
-                         B_t& inp_B,
-                         C_t& out_C)
-{
-    return;
+    /* For later use when we are going to bound the loop */
+    return true;
 }
 
 
