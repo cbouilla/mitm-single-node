@@ -107,7 +107,7 @@ auto is_distinguished(uint8_t* value, const int theta) -> bool
 
 /// Since we check the dist point at the beginning we don't need to use the length explicitly.
 /// Thus, no need write two version of the function below (one starts with f, the other starts with g).
-///  Instead, switch the order of the arguements
+///  Instead, switch the order of the arguments
 template<typename A_t, typename B_t, typename C_t>
 auto generate_dist_point(void (*f)(A_t&, C_t& ), /* why don't we pass the problem instead */
                          void (*g)(B_t&, C_t& ),
@@ -163,7 +163,39 @@ auto generate_dist_point(void (*f)(A_t&, C_t& ), /* why don't we pass the proble
 }
 
 
+template<typename A_t, typename B_t, typename C_t>
+auto walk(void (*f)(A_t&, C_t& ),
+          void (*g)(B_t&, C_t& ),
+          void (*send_C_to_A)(A_t&, C_t),
+          void (*send_C_to_B)(B_t&, C_t),
+          void (serialize)(const C_t&, uint8_t*),
+          A_t& inp1_A,
+          B_t& inp2_B,
+          const int theta)
+          -> std::pair<A_t, B_t>
+{
+    /// Given two inputs of different types walk along the two sequences till you find a common point.
+    /// This is done by first going through the first sequence till a dist point is found.
+    /// Repeat the same with second sequence.
+    /// Walk backward in the two computed sequences until you find a uncommon point, stop there.
+    /// add a drawing to illustrate this.
+}
 
+// functions overload came to rescue
+template<typename A_t, typename B_t, typename C_t>
+auto walk(void (*f)(A_t&, C_t& ),
+          void (*g)(B_t&, C_t& ),
+          void (*send_C_to_A)(A_t&, C_t),
+          void (*send_C_to_B)(B_t&, C_t),
+          void (serialize)(const C_t&, uint8_t*),
+          A_t& inp1_A,
+          A_t& inp2_A,
+          const int theta)
+-> std::pair<A_t, B_t>
+{
+    /// Given two inputs of SAME type walk along the two sequences till you find a common point.
+
+}
 
 
 template<typename Pb>
@@ -182,73 +214,25 @@ auto collision(const Pb &pb) -> std::pair<typename Pb::A::t, typename Pb::A::t>
     Domain_A dom_C = pb.dom_C;
 
     /* save some boilerplate typing */
-    // todo rename this part :(k
     using t_pair = typename std::pair<A_t, C_t>;
 
     // enforce that Pb is an subclass of AbstractProblem
     // todo: rewrite this
-//    static_assert(std::is_base_of<AbstractProblem<Domain_A>, Pb>::value,
-//                  "Pb not derived from AbstractProblem");
+    // static_assert(std::is_base_of<AbstractProblem<Domain_A>, Pb>::value,
+    //               "Pb not derived from AbstractProblem");
 
-    A_t x{}; /* input  */
+
+    // ------------------------------------------------------------------------------
+    A_t a{}; /* input  */
+    A_t a_tmp{};
+    B_t b{}; /* input */
+    B_t b_tmp{};
     C_t y{}; /* output */
     /* store all pairs of (input, output) in an array. The inverse order to sort in the first element */
     std::vector< t_pair > all_images(dom_A.n_elements);
 
-    for (size_t i = 0; i < dom_A.n_elements; ++i) {
-        pb.f(x, y);
-        /* actual computation */
-        all_images[i] = std::pair(x, y); /* let's hope this is a deepcopy */
-        dom_A.next(x); /* modifies x */
-    }
-    /* sort the pairs according to the output */
-    std::sort(all_images.begin(),
-              all_images.end(),
-              [](t_pair x, t_pair y){ return x.second < y.second; }
-    );
 
-    t_pair v1 = all_images[0];
-    t_pair v2;
-    int is_collision_found = 0;
-//    /* Check if we have already a collision in the list */
-    for (size_t i = 1; i < dom_A.n_elements; ++i){ /* Normally we should not check in the list */
-        if (v1.second == all_images[i].second and all_images[i].first != v1.first){
-            v2 = all_images[i];
-            is_collision_found = 1;
-            std::cout << "collision was found in the list!\n";
 
-            return std::pair(v1.first, v2.first); /* break from the function */
-            //break;
-        }
-        v1 = all_images[i]; /* go to the next value */
-    }
-
-    /* generate random elements until a collision is found. */
-    v1.first = x;
-    v1.second = y;
-    while(!is_collision_found){
-        pb.f(v1.first, v1.second);
-        is_collision_found = std::binary_search(all_images.begin(),
-                                                all_images.end(),
-                                                v1,
-                                                [](t_pair p1, t_pair p2){
-                                                    return p1.second < p2.second;
-                                                }
-        );
-    }
-
-    // todo this part is rushed
-    // find where is the collision then return
-    // use std::find to save somelines
-    for (size_t i = 0; i < dom_A.n_elements ; ++i) {
-        if (all_images[i].second == v1.second and all_images[i].first != v1.first){
-            v2 = all_images[i];
-            std::cout << "v1.first = " << v1.first << ", v1.second = " << v1.second << "\n" ;
-            std::cout << "v2.first = " << v2.first << ", v2.second = " << v2.second << "\n" ;
-            break; /* exit the loop */
-        }
-    }
-    return std::pair(v1.first, v2.first);
-
+    return std::pair(a, b); // dummy value
 }
 #endif
