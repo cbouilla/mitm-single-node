@@ -77,11 +77,60 @@ public:
 };
 
 
-template<typename A_t, typename B_t, typename C_t>
-auto generate_dist_point()
+inline
+auto is_distinguished(uint8_t* inp, const int theta) -> bool
 {
+    /// This function is dangerous since it doesn't check that theta is smaller than
+    /// than the length of inp! However, we promise that we will only pass theta that
+    /// satisifies this condition.
+    /// since numbers are stored as small-endian, start with the first byte.
+    int result = 0;
+    for (int i = 0; i<theta/8; ++i){ // move byte by byte
+        /* theta = 8k + i , here we treat the k bytes that must be zero */
+        result |= inp[i]; // if we found non-zero value then the result will be non-zero
+    }
 
+    /* the remaining bit */
+    uint8_t mask =((1<<(8 - (theta % 8))) - 1)<<theta; // 2^(-theta mod 8) - 1, all on
+    result |= inp[theta/8] & mask;
+
+    return (result == 0);
 }
+
+template<typename A_t, typename B_t, typename C_t>
+auto generate_dist_point(void (*f)(A_t&, C_t& ), /* why don't we pass the problem instead */
+                         void (*g)(B_t&, C_t& ),
+                         void (serialize)(const C_t&, uint8_t*),
+                         const int theta, /* how many bits should be zero */
+                         A_t& inp_A,
+                         C_t& out_C,
+                         uint8_t* out_C_serialized)
+{
+    static B_t out; /* since we may iterate for  */
+    bool found_distinguished = false;
+
+    /* First treat the input of A */
+    f(inp_A, out_C);
+    serialize(out_C, out_C_serialized);
+    /* check if it is a distinguished point */
+
+    while (not found_distinguished){
+
+    }
+
+    return;
+}
+
+/* yay, function overloading came to rescue! */
+template<typename A_t, typename B_t, typename C_t>
+auto generate_dist_point(void (*f)(A_t&, C_t& ),
+                         void (*g)(B_t&, C_t& ),
+                         B_t& inp_B,
+                         C_t& out_C)
+{
+    return;
+}
+
 
 
 
