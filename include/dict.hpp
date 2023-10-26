@@ -24,7 +24,7 @@ struct Dict {
         /* fill values with zeros */
         std::fill(table.begin(), table.end(), zero_pair);
     }
-    auto pop_insert(const C_t& inp,
+    auto pop_insert(const C_t& inp, /* this is a trick for stayin in one type */
                     uint8_t* inp_serialized,  // maybe we should not add C_t as a variable
                     uint8_t* dist_point_serialized,
                     C_t& out)
