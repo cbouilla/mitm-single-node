@@ -195,12 +195,10 @@ auto walk(void (*f)(A_t&, C_t& ),
           const int theta)
 -> std::pair<A_t, B_t>
 {
+
     /// Given two inputs of SAME type walk along the two sequences till you find a common point.
 
 }
-
-
-
 
 template<typename Pb>
 auto collision(const Pb &pb) -> std::pair<typename Pb::A::t, typename Pb::A::t>
@@ -261,32 +259,33 @@ auto collision(const Pb &pb) -> std::pair<typename Pb::A::t, typename Pb::A::t>
     size_t n_needed_collisions = 1;
 
     while (n_collisions < n_needed_collisions){
-        if (f)
-        // todo copy a to a_tmp
-        Domain_A::copy(a_tmp, a); /* copy(out, inp) */
-        generate_dist_point(&Pb::f,
-                            &Pb::g,
-                            &Pb::send_C_to_A,
-                            &Pb::send_C_to_B,
-                            &Domain_C::serialize,
-                            theta,
-                            a_tmp,
-                            b_tmp,
-                            c_1,
-                            c_serial_1);
+        if (f_or_g){
+            Domain_A::copy(a_tmp, a); /* copy(out, inp) */
+            generate_dist_point(&Pb::f,
+                                &Pb::g,
+                                &Pb::send_C_to_A,
+                                &Pb::send_C_to_B,
+                                &Domain_C::serialize,
+                                theta,
+                                a_tmp,
+                                b_tmp,
+                                c_1,
+                                c_serial_1);
 
+        } else {
+            Domain_B::copy(b_tmp, b); /* copy(out, inp) */
+            generate_dist_point( &Pb::g,
+                                 &Pb::f,
+                                 &Pb::send_C_to_B,
+                                 &Pb::send_C_to_A,
+                                 &Domain_C::serialize,
+                                 theta,
+                                 b_tmp,
+                                 a_tmp,
+                                 c_2, /* why don't we pass b as well? */
+                                 c_serial_2);
+        }
 
-        Domain_B::copy(b_tmp, b); /* copy(out, inp) */
-        generate_dist_point( &Pb::g,
-                            &Pb::f,
-                            &Pb::send_C_to_B,
-                            &Pb::send_C_to_A,
-                            &Domain_C::serialize,
-                            theta,
-                            b_tmp,
-                            a_tmp,
-                            c_2, /* why don't we pass b as well? */
-                            c_serial_2);
 
     }
 
