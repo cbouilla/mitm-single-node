@@ -84,42 +84,80 @@ public:
 };
 
 
+template <typename Problem, typename C_t>
+struct Iterate_F{
+    using Problem::f; /* Original iteration function */
+    using Problem::send_C_to_A;
+    using A_t = typename Problem::A::t;
+
+    static A_t inp_A{}; /* A placeholder for the input */
+
+    Iterate_F() {}
+
+    /* Make this struct callable */
+    void operator()(C_t& inp_C, C_t& out_C){
+        /* convert inp:C_T -> inp:A_t */
+        /* enhancement: in the future we can make this function depends on PRNG */
+        /* that is defined within this struct. So, we can change the function easily */
+        send_C_to_A(inp_A, inp_C);
+        f(inp_A, out_C);
+    }
+};
+
+
+template <typename Problem, typename C_t>
+struct Iterate_G{
+    using Problem::g; /* Original iteration function */
+    using Problem::send_C_to_B;
+    using B_t = typename Problem::B::t;
+
+    static B_t inp_B{}; /* A placeholder for the input */
+
+    Iterate_G() {}
+
+    /* Make this struct callable */
+    void operator()(C_t& inp_C, C_t& out_C){
+        /* convert inp:C_T -> inp:A_t */
+        /* enhancement: in the future we can make this function depends on PRNG */
+        /* that is defined within this struct. So, we can change the function easily */
+        send_C_to_B(inp_B, inp_C);
+        g(inp_B, out_C);
+    }
+};
+
+
 
 /// Since we check the dist point at the beginning we don't need to use the length explicitly.
 /// Thus, no need write two version of the function below (one starts with f, the other starts with g).
 ///  Instead, switch the order of the arguments
 template<typename Problem, typename C_t>
-auto generate_dist_point(const int theta, /* how many bits should be zero */
-                         C_t& inp_A, /* WARNING: this function will edit this argument */
-                         C_t& inp_B,
+auto generate_dist_point(const uint64_t theta, /* mask to test if the first k bits are zero */
+                         C_t& inp_C, /* WARNING: this function will edit this argument */
                          C_t& out_C,
                          uint8_t* out_C_serialized)
 {
 
-    // void (*f)(A_t&, C_t& ), /* why don't we pass the problem instead */
-    // void (*g)(B_t&, C_t& ),
-    // void (*send_C_to_A)(A_t&, C_t),
-    // void (*send_C_to_B)(B_t&, C_t),
-    // void (serialize)(const C_t&, uint8_t*),
+    static const uint64_t mask = (1LL<<theta) - 1;
 
-    /// inp = 1bit(f/g) || dist point ||
-    // What is the user passed c-style array as A_t. Abandon this idea.
-    // static A_t inp_A = inp_A_orig; /* make sure this is a deepcopy */
-    //static B_t inp_B; /* since we may iterate using g : B -> C  */
+    // using C_t = typename Problem::C::t;
+    using Domain_C = typename  Problem::C;
+    // inline static auto extract_1_bit(t& inp) -> int;
+    using Domain_C::extract_1_bit;
+    // inline static auto extract_k_bits(t& inp, int k) -> uint64_t;
+    using Domain_C::extract_k_bits;
+    // void (serialize)(const C_t&, uint8_t*),
+    using Domain_C::serialize;
+    /* F: C -> C, instead of C_t -> A_t -f-> C_t */
+    Iterate_F<Problem, C_t> F{};
+    Iterate_G<Problem, C_t> G{};
     bool found_distinguished = false;
     int f_or_g; // 1 if the next function is f,
 
 
-    // Do 1 round without entering the loop since we know which function to use
-    f(inp_A, out_C);
-    // serialize(out_C, out_C_serialized);
-    /* decide what is the next function based on the output */
-    f_or_g = extract_1_bit(out_C);// next_f_or_g(out_C_serialized);
-    // remove the bit used to decide which function
+    /* The decision is based on the input for the next iteration, now it's inp_C then out_C */
+    f_or_g = extract_1_bit(inp_C);// next_f_or_g(out_C_serialized);
 
-
-    out_C_serialized[0] = out_C_serialized[0]>>1;
-    found_distinguished = ;
+    found_distinguished = (0 == (mask & extract_k_bits(inp_C, theta))  );
 
     /* potentially infinite loop, todo limit  the number of iteration as a function of theta */
     while (not found_distinguished){
@@ -127,79 +165,125 @@ auto generate_dist_point(const int theta, /* how many bits should be zero */
         if (f_or_g == 1){ // i.e. next use f to iterate
             // summary:  C -> A -f-> C
             /* convert output to A input */
-            send_C_to_A(inp_A, out_C);
-            f(inp_A, out_C);
+            // send_C_to_A(inp_A, out_C);
+           //  f(inp_A, out_C);
+           F(inp_C, out_C);
         } else { // use g in the sequence
             // summary:  C -> B -g-> C
-            send_C_to_B(inp_B, out_C);
-            f(inp_A, out_C);
+            // send_C_to_B(inp_B, out_C);
+            // g(inp_B, out_C);
+            G(inp_C, out_C);
         }
 
-        serialize(out_C, out_C_serialized);
+        //
         /* decide what is the next function based on the output */
-        f_or_g = next_f_or_g(out_C_serialized);
-        // remove the bit used to decide which function
-        out_C_serialized[0] = out_C_serialized[0]>>1;
-        found_distinguished = is_distinguished(out_C_serialized, theta);
+        f_or_g = extract_1_bit(out_C);
     }
 
+    /* save the output in a serial form  */
+    serialize(out_C, out_C_serialized);
     /* For later use when we are going to bound the loop */
     return true;
 }
 
 
-template<typename A_t, typename B_t, typename C_t>
-auto generate_seq(void (*f)(A_t&, C_t& ),
-                  void (*g)(B_t&, C_t& ),
-                  void (*send_C_to_A)(A_t&, C_t),
-                  void (*send_C_to_B)(B_t&, C_t),
-                  void (serialize)(const C_t&, uint8_t*),
-                  C_t& inp1,
-                  C_t& inp2,
-                  const int theta)
-                  -> int
-
+template<typename Problem, typename C_t>
+auto fill_sequence(C_t& inp_C,
+                   std::vector<C_t>& inp_array,
+                   int theta,
+                   Iterate_F<Problem, C_t>& F,
+                   Iterate_G<Problem, C_t>& G)
+                   -> size_t
 {
-    /// Assume that |C| = |A| = |B| for now, this assumption will change !
-    std::vector<C_t> inp1_array(3*theta); /* inp 1 output chain */
-    std::vector<C_t> inp2_array(3*theta); /* inp 2 output chain */
-    uint8_t inp1_serialized[C::length];
+    /// Given an input C_t inp, fill the inp_array with all output of f/g (inp)
+    /// until a distinguished point is found. Return the number of steps needed
+    /// to arrive at a distinguished point.
 
+    // inline static auto extract_1_bit(t& inp) -> int;
+    using Problem::extract_1_bit;
+    // inline static auto extract_k_bits(t& inp, int k) -> uint64_t;
+    using Problem::extract_k_bits;
 
-    int found_dist_inp1 = 0;
-    size_t chain_length_inp1 = 0;
-    int found_dist_inp2 = 0;
-    size_t chain_length_inp2 = 0;
-    int f_or_g;
+    static C_t out_C{};
+    const uint64_t mask = (theta<<1LL) - 1;
+    size_t chain_length = 0;
+    int found_dist = 0;
+    int f_or_g = extract_1_bit(inp_C);
 
-    for (; chain_length_inp1 < 3*theta; ++chain_length_inp1 ){
-        /* iterate */
-        f_or_g = next_f_or_g(inp1)
+    for (; chain_length < (3 * (theta << 1LL)) ; chain_length += 2 ){
+        /* do 2 rounds at once to avoid input swapping with output */
+        /* iterate: 1 out of 2  */
+        if (f_or_g){
+            F(inp_C, out_C);
+        } else {
+            G(inp_C, out_C);
+        }
 
-        if (found_dist_inp1)
+        f_or_g = extract_1_bit(out_C);
+        found_dist = (0 == (mask & extract_k_bits(out_C, theta)));
+
+        if (found_dist) break; // exit the loop
+
+        /* iterate: 2 out of 2  */
+        if (f_or_g){
+            F(inp_C, out_C);
+        } else {
+            G(inp_C, out_C);
+        }
+
+        f_or_g = extract_1_bit(out_C);
+        found_dist = (0 == (mask & extract_k_bits(out_C, theta)));
+
+        if (found_dist) {
+            ++chain_length; /* one step more */
             break; // exit the loop
+        }
     }
 
-
+    return chain_length;
 }
 
-template<typename A_t, typename B_t, typename C_t>
-auto walk(void (*f)(A_t&, C_t& ),
-          void (*g)(B_t&, C_t& ),
-          void (*send_C_to_A)(A_t&, C_t),
-          void (*send_C_to_B)(B_t&, C_t),
-          void (serialize)(const C_t&, uint8_t*),
-          C_t& inp1,
+
+
+
+template<typename Problem, typename C_t>
+auto walk(C_t& inp1,
           C_t& inp2,
-          const int theta)
-          -> std::pair<A_t, B_t>
+          const uint64_t theta) -> std::pair<C_t, C_t>
 {
-    /// Given two inputs of different types walk along the two sequences till you find a common point.
-    /// This is done by first going through the first sequence till a dist point is found.
-    /// Repeat the same with second sequence.
-    /// Walk backward in the two computed sequences until you find a uncommon point, stop there.
+    /// Given two inputs that lead to the same distinguished point,
+    /// find the earliest collision in the sequence before the distinguished point
     /// add a drawing to illustrate this.
+
+    // inline static auto extract_1_bit(t& inp) -> int;
+    using Problem::extract_1_bit;
+    // inline static auto extract_k_bits(t& inp, int k) -> uint64_t;
+    using Problem::extract_k_bits;
+
+    Iterate_F<Problem, C_t> F{};
+    Iterate_G<Problem, C_t> G{};
+
+    std::vector<C_t> inp2_array(3*theta); /* inp 2 output chain */
+    std::vector<C_t> inp1_array(3*theta); /* inp 1 output chain */
+
+
+    size_t inp1_chain_length = fill_sequence(inp1, inp1_array);
+    size_t inp2_chain_length = fill_sequence(inp2, inp2_array);
+
+    /* now walk backward until you find the last point where they share the */
+    size_t i = 1;
+    for (; i < 3*(1LL<<theta); ++i) {
+        if (inp1_array[inp1_chain_length - i] != inp2_array[inp2_chain_length]){
+            break;
+        }
+    }
+    size_t idx_inp1 = inp1_chain_length - i;
+    size_t idx_inp2 = inp2_chain_length - i;
+
+    /* I don't have a good feeling about the line below */
+    return std::pair(inp1_array[idx_inp1], inp2_array[idx_inp2]);
 }
+
 
 
 template<typename Pb>
