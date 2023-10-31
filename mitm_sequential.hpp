@@ -37,12 +37,14 @@ public:
     static int length;                                    /* size in bytes of the serialization */
     static size_t n_elements; /* how many elements in the domain */
 
+
     /* get the next element after x. What matters is getting a different element each time, not the order. */
     auto next(t& x) -> t;
     static void serialize(const t &x, void *out);   /* write this to out */
     static void unserialize(t &x, void *in);        /* read this from in */
     static void copy(t& out, t& inp); /* deepcopy inp to out */
-
+    inline static auto extract_1_bit(t& inp) -> int;
+    inline static auto extract_k_bits(t& inp, int k) -> uint64_t;
 
     static auto hash(const t &x) -> uint64_t ;               /* return some bits from this */
     static auto hash_extra(const t &x) -> uint64_t ;         /* return more bits from this */
@@ -82,45 +84,24 @@ public:
 };
 
 
-inline
-auto is_distinguished(uint8_t* value, const int theta) -> bool
-{
-    /// This function is dangerous since it doesn't check that theta is smaller than
-    /// than the length of value! However, we promise that we will only pass theta that
-    /// satisifies this condition.
-    /// since numbers are stored as small-endian, start with the first byte.
-    int result = 0;
-    for (int i = 0; i < (theta/8); ++i){ // move byte by byte
-        /* theta = 8k + i , here we treat the k bytes that must be zero */
-        result |= value[i]; // if we found non-zero value then the result will be non-zero
-    }
-    /* the remaining bit */
-    /* all ones for (theta  mod 8) bits */
-    uint8_t mask = (1 << (theta % 8)) - 1;
-    /* the last (theta mod 8) bits if they are not zero, then result won't be zero  */
-    result |= value[theta / 8] & mask;
-
-    return (result == 0);
-}
-
-
-
 
 /// Since we check the dist point at the beginning we don't need to use the length explicitly.
 /// Thus, no need write two version of the function below (one starts with f, the other starts with g).
 ///  Instead, switch the order of the arguments
-template<typename A_t, typename B_t, typename C_t>
-auto generate_dist_point(void (*f)(A_t&, C_t& ), /* why don't we pass the problem instead */
-                         void (*g)(B_t&, C_t& ),
-                         void (*send_C_to_A)(A_t&, C_t),
-                         void (*send_C_to_B)(B_t&, C_t),
-                         void (serialize)(const C_t&, uint8_t*),
-                         const int theta, /* how many bits should be zero */
-                         A_t& inp_A, /* WARNING: this function will edit this argument */
-                         B_t& inp_B,
+template<typename Problem, typename C_t>
+auto generate_dist_point(const int theta, /* how many bits should be zero */
+                         C_t& inp_A, /* WARNING: this function will edit this argument */
+                         C_t& inp_B,
                          C_t& out_C,
                          uint8_t* out_C_serialized)
 {
+
+    // void (*f)(A_t&, C_t& ), /* why don't we pass the problem instead */
+    // void (*g)(B_t&, C_t& ),
+    // void (*send_C_to_A)(A_t&, C_t),
+    // void (*send_C_to_B)(B_t&, C_t),
+    // void (serialize)(const C_t&, uint8_t*),
+
     /// inp = 1bit(f/g) || dist point ||
     // What is the user passed c-style array as A_t. Abandon this idea.
     // static A_t inp_A = inp_A_orig; /* make sure this is a deepcopy */
@@ -131,12 +112,14 @@ auto generate_dist_point(void (*f)(A_t&, C_t& ), /* why don't we pass the proble
 
     // Do 1 round without entering the loop since we know which function to use
     f(inp_A, out_C);
-    serialize(out_C, out_C_serialized);
+    // serialize(out_C, out_C_serialized);
     /* decide what is the next function based on the output */
-    f_or_g = out_C_serialized[0]&1;
+    f_or_g = extract_1_bit(out_C);// next_f_or_g(out_C_serialized);
     // remove the bit used to decide which function
+
+
     out_C_serialized[0] = out_C_serialized[0]>>1;
-    found_distinguished = is_distinguished(out_C_serialized, theta);
+    found_distinguished = ;
 
     /* potentially infinite loop, todo limit  the number of iteration as a function of theta */
     while (not found_distinguished){
@@ -154,7 +137,7 @@ auto generate_dist_point(void (*f)(A_t&, C_t& ), /* why don't we pass the proble
 
         serialize(out_C, out_C_serialized);
         /* decide what is the next function based on the output */
-        f_or_g = out_C_serialized[0]&1;
+        f_or_g = next_f_or_g(out_C_serialized);
         // remove the bit used to decide which function
         out_C_serialized[0] = out_C_serialized[0]>>1;
         found_distinguished = is_distinguished(out_C_serialized, theta);
@@ -166,13 +149,48 @@ auto generate_dist_point(void (*f)(A_t&, C_t& ), /* why don't we pass the proble
 
 
 template<typename A_t, typename B_t, typename C_t>
+auto generate_seq(void (*f)(A_t&, C_t& ),
+                  void (*g)(B_t&, C_t& ),
+                  void (*send_C_to_A)(A_t&, C_t),
+                  void (*send_C_to_B)(B_t&, C_t),
+                  void (serialize)(const C_t&, uint8_t*),
+                  C_t& inp1,
+                  C_t& inp2,
+                  const int theta)
+                  -> int
+
+{
+    /// Assume that |C| = |A| = |B| for now, this assumption will change !
+    std::vector<C_t> inp1_array(3*theta); /* inp 1 output chain */
+    std::vector<C_t> inp2_array(3*theta); /* inp 2 output chain */
+    uint8_t inp1_serialized[C::length];
+
+
+    int found_dist_inp1 = 0;
+    size_t chain_length_inp1 = 0;
+    int found_dist_inp2 = 0;
+    size_t chain_length_inp2 = 0;
+    int f_or_g;
+
+    for (; chain_length_inp1 < 3*theta; ++chain_length_inp1 ){
+        /* iterate */
+        f_or_g = next_f_or_g(inp1)
+
+        if (found_dist_inp1)
+            break; // exit the loop
+    }
+
+
+}
+
+template<typename A_t, typename B_t, typename C_t>
 auto walk(void (*f)(A_t&, C_t& ),
           void (*g)(B_t&, C_t& ),
           void (*send_C_to_A)(A_t&, C_t),
           void (*send_C_to_B)(B_t&, C_t),
           void (serialize)(const C_t&, uint8_t*),
-          A_t& inp1_A,
-          B_t& inp2_B,
+          C_t& inp1,
+          C_t& inp2,
           const int theta)
           -> std::pair<A_t, B_t>
 {
@@ -183,22 +201,6 @@ auto walk(void (*f)(A_t&, C_t& ),
     /// add a drawing to illustrate this.
 }
 
-// functions overload came to rescue
-template<typename A_t, typename B_t, typename C_t>
-auto walk(void (*f)(A_t&, C_t& ),
-          void (*g)(B_t&, C_t& ),
-          void (*send_C_to_A)(A_t&, C_t),
-          void (*send_C_to_B)(B_t&, C_t),
-          void (serialize)(const C_t&, uint8_t*),
-          A_t& inp1_A,
-          A_t& inp2_A,
-          const int theta)
--> std::pair<A_t, B_t>
-{
-
-    /// Given two inputs of SAME type walk along the two sequences till you find a common point.
-
-}
 
 template<typename Pb>
 auto collision(const Pb &pb) -> std::pair<typename Pb::A::t, typename Pb::A::t>
@@ -274,7 +276,7 @@ auto collision(const Pb &pb) -> std::pair<typename Pb::A::t, typename Pb::A::t>
 
         } else {
             Domain_B::copy(b_tmp, b); /* copy(out, inp) */
-            generate_dist_point( &Pb::g,
+            generate_dist_point( &Pb::g, /* reversed order */
                                  &Pb::f,
                                  &Pb::send_C_to_B,
                                  &Pb::send_C_to_A,
