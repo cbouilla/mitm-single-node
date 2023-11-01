@@ -286,28 +286,27 @@ auto walk(C_t& inp1,
 
 
 
-template<typename Pb>
-auto collision(const Pb &pb) -> std::pair<typename Pb::A::t, typename Pb::A::t>
+template<typename Problem>
+auto collision(const Problem &pb)
+-> std::pair<typename Problem::C::t, typename Problem::C::t>
 {
-    using A_t = typename Pb::A::t;
-    using Domain_A = typename  Pb::A;
+    using A_t = typename Problem::A::t;
+    using Domain_A = typename  Problem::A;
     Domain_A dom_A = pb.dom_A;
 
-    using B_t = typename Pb::B::t;
-    using Domain_B = typename  Pb::B;
+    using B_t = typename Problem::B::t;
+    using Domain_B = typename  Problem::B;
     Domain_A dom_B = pb.dom_B;
 
-    using C_t = typename Pb::C::t;
-    using Domain_C = typename  Pb::C;
+    using C_t = typename Problem::C::t;
+    using Domain_C = typename  Problem::C;
     Domain_A dom_C = pb.dom_C;
+
+    // inline static auto extract_1_bit(t& inp) -> int;
+    using Domain_C::extract_1_bit;
 
     /* save some boilerplate typing */
     using t_pair = typename std::pair<A_t, C_t>;
-
-    // enforce that Pb is an subclass of AbstractProblem
-    // todo: rewrite this
-    // static_assert(std::is_base_of<AbstractProblem<Domain_A>, Pb>::value,
-    //               "Pb not derived from AbstractProblem");
 
 
     // -----------------------------------------------------------------------------/
@@ -323,56 +322,53 @@ auto collision(const Pb &pb) -> std::pair<typename Pb::A::t, typename Pb::A::t>
     // -----------------------------------------------------------------------------/
     // VARIABLES FOR GENERATING RANDOM DISTINGUISHED POINTS
     int theta = 1; // difficulty;
-    A_t a{}; /* input  */
-    A_t a_tmp{};
-    B_t b{}; /* input */
-    B_t b_tmp{};
-    C_t c_1{}; /* output */
-    C_t c_2{};
-    uint8_t c_serial_1[Domain_C::length];
-    uint8_t c_serial_2[Domain_C::length];
-    // sample random inputs
-    C_t c{}; /* main input   */
-    /* fill the input */
-    Domain_C::randomize(c, pr); // todo add PRG
+    C_t inp_C{}; /* output */
+    C_t out_C{};
     uint8_t c_serial[Domain_C::length];
-    Domain_C::serialize(c, c_serial);
-    int f_or_g = c_serial[0]&1; // 1 if we use f, use g otherwise.
+
+
+    /* fill the input */
+    Domain_C::randomize(inp_C, pr); // todo add PRG
+
+
+
+    // extract 1 bit from the input of the next sequence.
+    int f_or_g = extract_1_bit(inp_C); // 1 if we use f, use g otherwise.
 
 
     // loop until enough collisions is collected.
+    bool found_collision = false;
     size_t n_collisions = 0;
     size_t n_needed_collisions = 1;
+    Iterate_F<Problem, C_t> F{};
+    Iterate_G<Problem, C_t>G;
 
     while (n_collisions < n_needed_collisions){
-        if (f_or_g){
-            Domain_A::copy(a_tmp, a); /* copy(out, inp) */
-            generate_dist_point(&Pb::f,
-                                &Pb::g,
-                                &Pb::send_C_to_A,
-                                &Pb::send_C_to_B,
-                                &Domain_C::serialize,
-                                theta,
-                                a_tmp,
-                                b_tmp,
-                                c_1,
-                                c_serial_1);
+        /* Two iterations at once to save one copying */
+        if (f_or_g)
+            F(inp_C, out_C);
+        else
+            G(inp_C, out_C);
+        f_or_g = extract_1_bit(out_C); // 1 if we use f, use g otherwise.
 
-        } else {
-            Domain_B::copy(b_tmp, b); /* copy(out, inp) */
-            generate_dist_point( &Pb::g, /* reversed order */
-                                 &Pb::f,
-                                 &Pb::send_C_to_B,
-                                 &Pb::send_C_to_A,
-                                 &Domain_C::serialize,
-                                 theta,
-                                 b_tmp,
-                                 a_tmp,
-                                 c_2, /* why don't we pass b as well? */
-                                 c_serial_2);
+        /* send the result to dictionary */
+        found_collision = dict.pop_insert(inp_C,
+                                          c_serial, // todo just wrong
+                                          c_serial, // todo just wrong
+                                          out_C);
+        if (found_collision) [[unlikely]]{
+            // treat collision
         }
 
 
+        if (f_or_g)
+            F(out_C, inp_C);
+        else
+            G(out_C, inp_C);
+        f_or_g = extract_1_bit(inp_C); // 1 if we use f, use g otherwise.
+
+        /* send the result to dictionary */
+        // repeat the code above
     }
 
     // send them to dict
