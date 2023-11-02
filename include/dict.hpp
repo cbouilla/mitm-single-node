@@ -8,12 +8,12 @@
 #include <cstdint>
 #include <vector>
 
-template <typename C_t> /* A trick allows us to use the output type as an input type! */
+template <typename C_t, typename Val_t> /* A trick allows us to use the output type as an input type! */
 // add more details before you forget and cry later.
 struct Dict {
     size_t n_slots; /* How many slots a dictionary have */
     size_t n_elmenents = 0; /* Number of the actual elements that are in the dict */
-    using dict_pair = typename std::pair<C_t, uint32_t >; /* <input, value> */
+    using dict_pair = typename std::pair<C_t, Val_t >; /* <input, value> */
     std::vector<dict_pair> table;
 
     Dict(size_t nSlots) : n_slots(nSlots){
@@ -24,28 +24,28 @@ struct Dict {
         /* fill values with zeros */
         std::fill(table.begin(), table.end(), zero_pair);
     }
-    auto pop_insert(const C_t& inp, /* this is a trick for stayin in one type */
-                    uint8_t* inp_serialized,  // maybe we should not add C_t as a variable
-                    uint8_t* dist_point_serialized,
-                    C_t& out)
+    auto pop_insert(const C_t& key, /* this is a trick for stayin in one type */
+                    const C_t value, /* in our case the distinguished point */
+                    C_t& out,
+                    uint64_t (*extract_k_bits)(C_t&, uint64_t k))
                     -> bool
     {
         /* todo we should only accept serialized input, or maybe not? */
 
-        uint32_t idx = *(reinterpret_cast<uint32_t*> (&inp_serialized[0])); // dear loard, this is ugly!
+        uint32_t idx = extract_k_bits(key, sizeof(Val_t) );//*(reinterpret_cast<uint32_t*> (&inp_serialized[0])); // dear loard, this is ugly!
         bool flag = 0;
         ++n_slots; /* since we are going to add an element */
         /* probe the dictionary at location idx */
-        uint32_t value = *(reinterpret_cast<uint32_t*> (&dist_point_serialized[0])); /* value TO BE stored in the dictionary */
+        Val_t val = extract_k_bits(value, sizeof(Val_t)); // todo remove hardcoding
         if (table[idx].second != 0){ /* not an empyt slot */
             out = table[idx].first;
             flag = ( table[idx].second == value);
             --n_slots; /* we're kicking an element from the dictionary */
         }
-        table[idx].first = inp;
+        table[idx].first = key;
         table[idx].second = value;
 
-        return flag; /* flag  == 1, if we pop a pair and its value match with the inp value */
+        return flag; /* flag  == 1, if we pop a pair and its value match with the key value */
     }
 };
 
