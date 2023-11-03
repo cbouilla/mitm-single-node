@@ -34,6 +34,8 @@ public:
     template<class PRNG>
     static void randomize(t &x, PRNG &p);           /* set x to a random value */
 
+    static void randomize(t &x);  /* set x to a random value */
+
     static int length;                                    /* size in bytes of the serialization */
     static size_t n_elements; /* how many elements in the domain */
 
@@ -284,6 +286,11 @@ auto walk(C_t& inp1,
     return std::pair(inp1_array[idx_inp1], inp2_array[idx_inp2]);
 }
 
+template <typename C_t>
+auto treat_collision(C_t& inp1,  C_t& inp2) -> bool {
+    /*  Either save it to disk then later */
+    return true;
+}
 
 
 template<typename Problem>
@@ -300,7 +307,10 @@ auto collision(const Problem &pb)
 
     using C_t = typename Problem::C::t;
     using Domain_C = typename  Problem::C;
+    // static void randomize(t &x); /* set x to a random value */
+    using Domain_C::randomize;
     Domain_A dom_C = pb.dom_C;
+
 
     // inline static auto extract_1_bit(t& inp) -> int;
     using Domain_C::extract_1_bit;
@@ -309,11 +319,11 @@ auto collision(const Problem &pb)
     using t_pair = typename std::pair<A_t, C_t>;
 
 
-    // -----------------------------------------------------------------------------/
-    // --------------------------- INIT --------------------------------
+    // ------------------------------------------------------------------------/
+    // --------------------------------- INIT --------------------------------/
     // DICT
     size_t n_slots = 100;
-    Dict<C_t> dict{n_slots}; /* create a dictionary */
+    Dict<C_t, uint32_t> dict{n_slots}; /* create a dictionary */
 
     // Pseudo-Random Number Generator
 
@@ -324,11 +334,12 @@ auto collision(const Problem &pb)
     int theta = 1; // difficulty;
     C_t inp_C{}; /* output */
     C_t out_C{};
+    C_t tmp_C{}; /* placeholder to save popped values from dict */
     uint8_t c_serial[Domain_C::length];
 
 
     /* fill the input */
-    Domain_C::randomize(inp_C, pr); // todo add PRG
+    Domain_C::randomize(inp_C); // todo add PRG
 
 
 
@@ -353,11 +364,12 @@ auto collision(const Problem &pb)
 
         /* send the result to dictionary */
         found_collision = dict.pop_insert(inp_C,
-                                          c_serial, // todo just wrong
-                                          c_serial, // todo just wrong
+                                          out_C, // todo just wrong
+                                          tmp_C, // todo just wrong
                                           out_C);
         if (found_collision) [[unlikely]]{
             // treat collision
+            treat_collision(inp_C, tmp_C);
         }
 
 
@@ -371,13 +383,7 @@ auto collision(const Problem &pb)
         // repeat the code above
     }
 
-    // send them to dict
-    /* store all pairs of (input, output) in an array. The inverse order to sort in the first element */
-    std::vector< t_pair > all_images(dom_A.n_elements);
 
-
-
-
-    return std::pair(a, b); // dummy value
+    return std::pair(out_C, tmp_C); // todo wrong values
 }
 #endif
