@@ -7,4 +7,5 @@ include_directories(include)
 add_executable(test demos/basic_demo.cpp mitm_sequential.hpp
         include/dict.hpp
         include/dict.hpp
-        demos/basic_demo.cpp)
+        demos/basic_demo.cpp
+        demos/speck32_demo.cpp)
