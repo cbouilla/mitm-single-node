@@ -30,14 +30,15 @@ public:
 template<class repr>           /* repr must support comparisons, and assignment */
 class AbstractDomain {
 public:
+    static int length;                                    /* size in bytes of the serialization */
+    static size_t n_elements; /* how many elements in the domain */
     using t = repr;            /* t is the machine representation of elements of the domain */
+
     template<class PRNG>
     static void randomize(t &x, PRNG &p);           /* set x to a random value */
 
     static void randomize(t &x);  /* set x to a random value */
 
-    static int length;                                    /* size in bytes of the serialization */
-    static size_t n_elements; /* how many elements in the domain */
 
 
     /* get the next element after x. What matters is getting a different element each time, not the order. */

@@ -6,6 +6,7 @@
 #include <stdint.h>
 #include <iostream>
 #include <array>
+#include "../mitm_sequential.hpp"
 
 
 /* rot to right to the right by r amount */
@@ -102,4 +103,28 @@ void decrypt(std::array<uint16_t, 2>& cipher_text,
 }
 
 
-// -------------- END of SPECK32/32 specification ---------------
+// -------------- END of SPECK32/32 specification ---------------//
+
+using Speck_t = typename std::array<uint16_t , 2>;
+class SPECK_DOMAIN : AbstractDomain<Speck_t>{
+public:
+    static const int length = 32;
+    static const size_t n_elements = (1LL<<32);
+
+    static bool is_equal(const Speck_t& x, const Speck_t& y){
+       return x == y;
+    }
+
+    static void randomize(Speck_t& x) {
+        x[0] = rand();
+        x[1] = rand();
+    }
+
+    static void serialize(const Speck_t& x, uint8_t * out){
+        out[0] = x[0];
+        out[0] = x[0]>>8;
+        out[1] = x[1];
+        out[1] = x[1]>>8;
+    }
+
+};
