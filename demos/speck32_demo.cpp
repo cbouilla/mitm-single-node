@@ -7,144 +7,76 @@
 #include <iostream>
 #include <array>
 #include "../mitm_sequential.hpp"
+#include "speck32.hpp"
 
 
-/* rot to right to the right by r amount */
-inline uint16_t rot_r(uint16_t inp, uint16_t r) { return (inp>>r) | (inp<<(16-r)); }
-/* rot to right to the left by r amount */
-inline uint16_t rot_l(uint16_t inp, uint16_t r) { return (inp<<r) | (inp>>(16-r)); }
 
-/* official parameters mentioned in speck paper */
-constexpr int alpha = 7;
-constexpr int beta = 2;
-constexpr int nrounds = 22;
+/******************************************************************************/
+/* Setting up the problem                                                     */
+/******************************************************************************/
+using Speck32_t = typename std::array<uint16_t , 2>;
 
+class SPECK_DOMAIN : AbstractDomain< Speck32_t >{
 
-void round(std::array<uint16_t, 2>& text, uint16_t key) {
-    /* Round function modifies the input one has to be careful */
-    text[0]  = rot_r(text[0], alpha);
-    text[0] += text[1] ;
-    text[1] ^= key;
-    text[1]  = rot_l(text[1], beta);
-    text[1] ^= text[0];
-}
-
-void round_inv(std::array<uint16_t, 2>& text, uint16_t key) {
-    /* Round function modifies the input one has to be careful */
-    text[1] ^= text[0];
-    text[1]  = rot_r(text[1], beta);
-    text[1] ^= key;
-    text[0] -= text[1];
-    text[0]  = rot_l(text[0], alpha);
-}
-
-
-inline void next_round_key(std::array<uint16_t, 2> &keys, uint16_t i)
-{
-    keys[0]  = rot_r(keys[0], alpha);
-    keys[0] += keys[1];
-    keys[0] ^= i;
-    keys[1]  = rot_l(keys[1], beta);
-    keys[1] ^= keys[0];
-}
-
-void encrypt(std::array<uint16_t, 2>& text,
-             std::array<uint16_t, 2>& cipher_text,
-             std::array<uint16_t, 2>& key)
-{
-    cipher_text[0] = text[0];
-    cipher_text[1] = text[1];
-    std::array<uint16_t, 2> key_tmp;
-
-    key_tmp[0] = key[0];
-    key_tmp[1] = key[1];
-
-    /* save the expanded key here */
-    std::array<uint16_t, nrounds> keys{};
-    keys[0] = key_tmp[1];
-
-    /* key expansion */
-    for (int i = 1; i < nrounds; ++i) {
-        next_round_key(key_tmp, i);
-        keys[i] = key_tmp[1];
-    }
-
-    /* actual encryption */
-    for (int i = 0; i < nrounds; ++i) {
-        round(cipher_text, keys[i]);
-    }
-}
-
-
-void decrypt(std::array<uint16_t, 2>& cipher_text,
-             std::array<uint16_t, 2>& plain_text,
-             std::array<uint16_t, 2>& key)
-{
-    plain_text[0] = cipher_text[0];
-    plain_text[1] = cipher_text[1];
-    std::array<uint16_t, 2> key_tmp;
-
-    key_tmp[0] = key[0];
-    key_tmp[1] = key[1];
-
-    std::array<uint16_t, nrounds> keys{};
-    keys[0] = key_tmp[1];
-
-    /* key expansion */
-    for (int i = 1; i < nrounds; ++i) {
-        next_round_key(key_tmp, i);
-        keys[i] = key_tmp[1];
-    }
-
-    /* decryption */
-    for (int i = 0; i < nrounds; ++i) {
-        round_inv(plain_text, keys[nrounds - (i+1) ]);
-    }
-}
-
-
-// -------------- END of SPECK32/32 specification ---------------//
-
-using Speck_t = typename std::array<uint16_t , 2>;
-class SPECK_DOMAIN : AbstractDomain<Speck_t>{
 public:
+    using t = Speck32_t;
     static const int length = 32;
     static const size_t n_elements = (1LL<<32);
 
-    static bool is_equal(const Speck_t& x, const Speck_t& y){
+    static bool is_equal(const t& x, const t& y){
        return x == y;
     }
 
-    static void randomize(Speck_t& x) {
+    static void randomize(t& x) {
         x[0] = rand();
         x[1] = rand();
     }
 
-    static void serialize(const Speck_t& x, uint8_t * out){
+    static void serialize(const t& x, uint8_t * out){
         out[0] = x[0];
         out[0] = x[0]>>8;
         out[1] = x[1];
         out[1] = x[1]>>8;
     }
-    static void unserialize(Speck_t& out, const uint8_t* in){
+    static void unserialize(t& out, const uint8_t* in){
         out[0] = in[0] | ((uint16_t ) in[1])<<8;
         out[1] = in[2] | ((uint16_t ) in[3])<<8;
     }
 
-    inline static auto extract_1_bit(const Speck_t& inp) -> int {
+    inline static auto extract_1_bit(const t& inp) -> int {
         return inp[0]&1;
     }
 
-    inline static auto extract_k_bit(const Speck_t& inp, int k) -> uint64_t {
+    inline static auto extract_k_bit(const t& inp, int k) -> uint64_t {
         /* k = 16j + r, we would like to get the values of r and j  */
         uint16_t nbits_first_word = k&(16 - 1); /* read it mod 16 */
         /* first remove r and 16 at once by division, then make sure number < 16 */
         uint16_t nbits_second_word = (k>>4)&(16 - 1);
 
-        uint16_t mask1 = (1<<nbits_first_word) - 1; /* */
-        uint16_t mask2 = (1<<nbits_second_word) - 1; /**/
+        /* What bits should we consider */
+        uint16_t mask1 = (1<<nbits_first_word) - 1;
+        uint16_t mask2 = (1<<nbits_second_word) - 1;
 
         /* maximally extrat 32 bits */
         return inp[0]&mask1 | ((uint64_t) inp[1]&mask2)<<16;
     }
 };
+
+class Problem : AbstractProblem<SPECK_DOMAIN, SPECK_DOMAIN, SPECK_DOMAIN >{
+public:
+
+    static void f(const A_t &x, C_t &y){
+        static std::array<uint16_t, 2> inpt_text{0, 0};
+        encrypt(inpt_text, y, x);
+    }
+
+    static void g(const B_t &x, C_t &y){
+        static std::array<uint16_t, 2> inp_ciphertext{0, 0};
+        decrypt(inp_ciphertext, y, x);
+    }
+
+    static void send_C_to_A(A_t& out_A, C_t& inp_C){ out_A = inp_C; }
+    static void send_C_to_B(B_t& out_B, C_t& inp_C){ out_B = inp_C; }
+};
+
+

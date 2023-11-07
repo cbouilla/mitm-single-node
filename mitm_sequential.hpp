@@ -7,6 +7,9 @@
 
 #include "dict.hpp"
 
+/******************************************************************************/
+/* Document for standard implementation                                       */
+/******************************************************************************/
 
 /*
  * Generic interface for a PRNG. The sequence of pseudo-random numbers
@@ -69,11 +72,13 @@ public:
 
     using A = Domain_A;
     using A_t = typename A::t;
-    static void f(const A_t &x, C_t &y);                /* y <--- f(x) */
+
 
     using B = Domain_B;
     using B_t = typename B::t;
-    static void g(const B_t &x, C_t &y);                /* y <--- f(x) */
+
+    static void f(const A_t &x, C_t &y);                /* y <--- f(x) */
+    static void g(const B_t &x, C_t &y);                /* y <--- g(x) */
 
 
     AbstractProblem() {
@@ -86,7 +91,9 @@ public:
     static void send_C_to_B(B_t& out_B, C_t& inp_C);
 };
 
-
+/******************************************************************************/
+/* a user does not need to look at the code below                             */
+/******************************************************************************/
 template <typename Problem, typename C_t>
 struct Iterate_F{
     using Problem::f; /* Original iteration function */
