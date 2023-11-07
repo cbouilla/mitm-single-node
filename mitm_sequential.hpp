@@ -67,7 +67,8 @@ public:
 template<typename Domain_A, typename Domain_B, typename Domain_C>
 class AbstractProblem {
 public:
-    using C = Domain_C; /* output type */
+    /* these lines have to be retyped again */
+    using C =  Domain_C;
     using C_t = typename C::t;
 
     using A = Domain_A;
@@ -82,9 +83,9 @@ public:
 
 
     AbstractProblem() {
-        // enforce that Domain_A is a subclass of AbstractDomain
-        static_assert(std::is_base_of<AbstractDomain<typename Domain_A::t>, Domain_A>::value,
-                      "Domain_A not derived from AbstractDomain");
+        // enforce that A is a subclass of AbstractDomain
+        static_assert(std::is_base_of<AbstractDomain<typename A::t>, A>::value,
+                      "A not derived from AbstractDomain");
     }
 
     static void send_C_to_A(A_t& out_A, C_t& inp_C);
@@ -149,7 +150,7 @@ auto generate_dist_point(const uint64_t theta, /* mask to test if the first k bi
 
     static const uint64_t mask = (1LL<<theta) - 1;
 
-    // using C_t = typename Problem::C::t;
+    // using C_t = typename Problem::Domain_C::t;
     using Domain_C = typename  Problem::C;
     // inline static auto extract_1_bit(t& inp) -> int;
     using Domain_C::extract_1_bit;
@@ -157,7 +158,7 @@ auto generate_dist_point(const uint64_t theta, /* mask to test if the first k bi
     using Domain_C::extract_k_bits;
     // void (serialize)(const C_t&, uint8_t*),
     using Domain_C::serialize;
-    /* F: C -> C, instead of C_t -> A_t -f-> C_t */
+    /* F: Domain_C -> Domain_C, instead of C_t -> A_t -f-> C_t */
     Iterate_F<Problem, C_t> F{};
     Iterate_G<Problem, C_t> G{};
     bool found_distinguished = false;
@@ -173,13 +174,13 @@ auto generate_dist_point(const uint64_t theta, /* mask to test if the first k bi
     while (not found_distinguished){
 
         if (f_or_g == 1){ // i.e. next use f to iterate
-            // summary:  C -> A -f-> C
+            // summary:  Domain_C -> A -f-> Domain_C
             /* convert output to A input */
             // send_C_to_A(inp_A, out_C);
            //  f(inp_A, out_C);
            F(inp_C, out_C);
         } else { // use g in the sequence
-            // summary:  C -> B -g-> C
+            // summary:  Domain_C -> Domain_B -g-> Domain_C
             // send_C_to_B(inp_B, out_C);
             // g(inp_B, out_C);
             G(inp_C, out_C);
@@ -302,22 +303,22 @@ auto treat_collision(C_t& inp1,  C_t& inp2) -> bool {
 
 
 template<typename Problem>
-auto collision(const Problem &pb)
+auto collision()
 -> std::pair<typename Problem::C::t, typename Problem::C::t>
 {
     using A_t = typename Problem::A::t;
     using Domain_A = typename  Problem::A;
-    Domain_A dom_A = pb.dom_A;
+    //A dom_A = pb.dom_A;
 
     using B_t = typename Problem::B::t;
     using Domain_B = typename  Problem::B;
-    Domain_A dom_B = pb.dom_B;
+    //A dom_B = pb.dom_B;
 
     using C_t = typename Problem::C::t;
     using Domain_C = typename  Problem::C;
     // static void randomize(t &x); /* set x to a random value */
     using Domain_C::randomize;
-    Domain_A dom_C = pb.dom_C;
+    //A dom_C = pb.dom_C;
 
 
     // inline static auto extract_1_bit(t& inp) -> int;
@@ -325,7 +326,6 @@ auto collision(const Problem &pb)
 
     /* save some boilerplate typing */
     using t_pair = typename std::pair<A_t, C_t>;
-
 
     // ------------------------------------------------------------------------/
     // --------------------------------- INIT --------------------------------/

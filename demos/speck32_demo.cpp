@@ -65,6 +65,16 @@ public:
 class Problem : AbstractProblem<SPECK_DOMAIN, SPECK_DOMAIN, SPECK_DOMAIN >{
 public:
 
+    /* Having the exact lines in the parent class doesn't help :( */
+    using A = SPECK_DOMAIN;
+    using A_t = typename A::t;
+
+    using B = SPECK_DOMAIN;
+    using B_t = typename B::t;
+
+    using C = SPECK_DOMAIN;
+    using C_t = typename C::t;
+
     static void f(const A_t &x, C_t &y){
         static std::array<uint16_t, 2> inpt_text{0, 0};
         encrypt(inpt_text, y, x);
@@ -79,4 +89,9 @@ public:
     static void send_C_to_B(B_t& out_B, C_t& inp_C){ out_B = inp_C; }
 };
 
+
+int main(int argc, char* argv[]){
+    collision<Problem>();
+
+}
 
