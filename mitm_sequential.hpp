@@ -43,11 +43,11 @@ public:
 
     /* get the next element after x. What matters is getting a different element each time, not the order. */
     auto next(t& x) -> t;
-    static void serialize(const t &x, void *out);   /* write this to out */
-    static void unserialize(t &x, void *in);        /* read this from in */
-    static void copy(t& out, t& inp); /* deepcopy inp to out */
-    inline static auto extract_1_bit(t& inp) -> int;
-    inline static auto extract_k_bits(t& inp, int k) -> uint64_t;
+    static void serialize(const t &x, const uint8_t *out);   /* write this to out */
+    static void unserialize(t &x, const uint8_t *in);        /* read this from in */
+    static void copy(t& out, const t& inp); /* deepcopy inp to out */
+    inline static auto extract_1_bit(const t& inp) -> int;
+    inline static auto extract_k_bits(const t& inp, int k) -> uint64_t;
 
     static auto hash(const t &x) -> uint64_t ;               /* return some bits from this */
     static auto hash_extra(const t &x) -> uint64_t ;         /* return more bits from this */

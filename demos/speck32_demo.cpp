@@ -126,5 +126,25 @@ public:
         out[1] = x[1];
         out[1] = x[1]>>8;
     }
+    static void unserialize(Speck_t& out, const uint8_t* in){
+        out[0] = in[0] | ((uint16_t ) in[1])<<8;
+        out[1] = in[2] | ((uint16_t ) in[3])<<8;
+    }
 
+    inline static auto extract_1_bit(const Speck_t& inp) -> int {
+        return inp[0]&1;
+    }
+
+    inline static auto extract_k_bit(const Speck_t& inp, int k) -> uint64_t {
+        /* k = 16j + r, we would like to get the values of r and j  */
+        uint16_t nbits_first_word = k&(16 - 1); /* read it mod 16 */
+        /* first remove r and 16 at once by division, then make sure number < 16 */
+        uint16_t nbits_second_word = (k>>4)&(16 - 1);
+
+        uint16_t mask1 = (1<<nbits_first_word) - 1; /* */
+        uint16_t mask2 = (1<<nbits_second_word) - 1; /**/
+
+        /* maximally extrat 32 bits */
+        return inp[0]&mask1 | ((uint64_t) inp[1]&mask2)<<16;
+    }
 };
