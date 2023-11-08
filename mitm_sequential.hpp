@@ -101,7 +101,7 @@ struct Iterate_F : Problem{
     using Problem::send_C_to_A;
     using A_t = typename Problem::A::t;
 
-    constexpr static A_t inp_A{}; /* A placeholder for the input */
+    static A_t inp_A; /* A placeholder for the input */
 
     Iterate_F() {}
 
@@ -123,7 +123,7 @@ struct Iterate_G : Problem{
     using Problem::send_C_to_B;
     using B_t = typename Problem::B::t;
 
-    constexpr static B_t inp_B{}; /* A placeholder for the input */
+    static B_t inp_B; /* A placeholder for the input */
 
     Iterate_G() {}
 
