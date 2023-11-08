@@ -96,12 +96,12 @@ public:
 /* a user does not need to look at the code below                             */
 /******************************************************************************/
 template <typename Problem, typename C_t>
-struct Iterate_F{
+struct Iterate_F : Problem{
     using Problem::f; /* Original iteration function */
     using Problem::send_C_to_A;
     using A_t = typename Problem::A::t;
 
-    static A_t inp_A{}; /* A placeholder for the input */
+    constexpr static A_t inp_A{}; /* A placeholder for the input */
 
     Iterate_F() {}
 
@@ -117,12 +117,13 @@ struct Iterate_F{
 
 
 template <typename Problem, typename C_t>
-struct Iterate_G{
-    using Problem::g; /* Original iteration function */
+struct Iterate_G : Problem{
+     /* accessing Problem::g will generate an error*/
+    // Problem::g; /* Original iteration function */
     using Problem::send_C_to_B;
     using B_t = typename Problem::B::t;
 
-    static B_t inp_B{}; /* A placeholder for the input */
+    constexpr static B_t inp_B{}; /* A placeholder for the input */
 
     Iterate_G() {}
 
@@ -131,8 +132,8 @@ struct Iterate_G{
         /* convert inp:C_T -> inp:A_t */
         /* enhancement: in the future we can make this function depends on PRNG */
         /* that is defined within this struct. So, we can change the function easily */
-        send_C_to_B(inp_B, inp_C);
-        g(inp_B, out_C);
+        Problem::send_C_to_B(inp_B, inp_C);
+        Problem::g(inp_B, out_C);
     }
 };
 
@@ -317,7 +318,7 @@ auto collision()
     using C_t = typename Problem::C::t;
     using Domain_C = typename  Problem::C;
     // static void randomize(t &x); /* set x to a random value */
-    using Domain_C::randomize;
+    // using Domain_C::randomize;
     //A dom_C = pb.dom_C;
 
 
@@ -354,7 +355,7 @@ auto collision()
 
 
     // extract 1 bit from the input of the next sequence.
-    int f_or_g = extract_1_bit(inp_C); // 1 if we use f, use g otherwise.
+    int f_or_g = Domain_C::extract_1_bit(inp_C); // 1 if we use f, use g otherwise.
 
 
     // loop until enough collisions is collected.
@@ -370,7 +371,7 @@ auto collision()
             F(inp_C, out_C);
         else
             G(inp_C, out_C);
-        f_or_g = extract_1_bit(out_C); // 1 if we use f, use g otherwise.
+        f_or_g = Domain_C::extract_1_bit(out_C); // 1 if we use f, use g otherwise.
 
         /* send the result to dictionary */
         found_collision = dict.pop_insert(inp_C,
@@ -387,7 +388,7 @@ auto collision()
             F(out_C, inp_C);
         else
             G(out_C, inp_C);
-        f_or_g = extract_1_bit(inp_C); // 1 if we use f, use g otherwise.
+        f_or_g = Domain_C::extract_1_bit(inp_C); // 1 if we use f, use g otherwise.
 
         /* send the result to dictionary */
         // repeat the code above
