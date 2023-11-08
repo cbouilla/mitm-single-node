@@ -42,7 +42,7 @@ struct Dict {
         Val_t val = extract_k_bits(value, sizeof(Val_t)); // todo remove hardcoding
         if (table[idx].second != 0){ /* not an empyt slot */
             out = table[idx].first;
-            flag = ( table[idx].second == value);
+            flag = ( table[idx].second == val);
             --n_elmenents; /* we're kicking an element from the dictionary */
         }
         table[idx].first = key;
