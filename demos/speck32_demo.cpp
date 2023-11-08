@@ -47,7 +47,7 @@ public:
         return inp[0]&1;
     }
 
-    inline static auto extract_k_bit(const t& inp, int k) -> uint64_t {
+    inline static auto extract_k_bits(const t& inp, int k) -> uint64_t {
         /* k = 16j + r, we would like to get the values of r and j  */
         uint16_t nbits_first_word = k&(16 - 1); /* read it mod 16 */
         /* first remove r and 16 at once by division, then make sure number < 16 */

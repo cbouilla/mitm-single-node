@@ -322,7 +322,9 @@ auto collision()
 
 
     // inline static auto extract_1_bit(t& inp) -> int;
-    using Domain_C::extract_1_bit;
+    /* it should allow us to use extract_1_bit directly, but it doesn't work! */
+    // using Domain_C::extract_1_bit;
+    // using Domain_C::extract_k_bits;
 
     /* save some boilerplate typing */
     using t_pair = typename std::pair<A_t, C_t>;
@@ -374,7 +376,7 @@ auto collision()
         found_collision = dict.pop_insert(inp_C,
                                           out_C, // todo just wrong
                                           tmp_C, // todo just wrong
-                                          out_C);
+                                          Domain_C::extract_k_bits);
         if (found_collision) [[unlikely]]{
             // treat collision
             treat_collision(inp_C, tmp_C);

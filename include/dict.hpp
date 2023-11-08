@@ -28,7 +28,7 @@ struct Dict {
     auto pop_insert(const C_t& key, /* this is a trick for stayin in one type */
                     const C_t& value, /* in our case the distinguished point */
                     C_t& out, /* this will be edited when an element gets popped */
-                    uint64_t (*extract_k_bits)(C_t&, uint64_t k))
+                    uint64_t (*extract_k_bits)(const C_t&, int k))
                     -> bool
     {
         /// Add (key, some bits of value) to dictionary. If the pair removes
