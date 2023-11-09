@@ -5,7 +5,7 @@
 #include <vector>
 #include <algorithm>
 
-#include "dict.hpp"
+#include "include/dict.hpp"
 
 /******************************************************************************/
 /* Document for standard implementation                                       */
@@ -95,14 +95,11 @@ public:
 /******************************************************************************/
 /* a user does not need to look at the code below                             */
 /******************************************************************************/
-template <typename Problem, typename C_t>
-struct Iterate_F : Problem{
-    using Problem::f; /* Original iteration function */
-    using Problem::send_C_to_A;
-    using A_t = typename Problem::A::t;
-
-    static A_t inp_A; /* A placeholder for the input */
-
+template <typename P, typename C_t>
+struct Iterate_F {
+    ///  A wrapper for calling f that uses
+    using A_t = typename P::A::t;
+    inline static A_t inp_A; /* A placeholder for the input */
     Iterate_F() {}
 
     /* Make this struct callable */
@@ -110,8 +107,8 @@ struct Iterate_F : Problem{
         /* convert inp:C_T -> inp:A_t */
         /* enhancement: in the future we can make this function depends on PRNG */
         /* that is defined within this struct. So, we can change the function easily */
-        send_C_to_A(inp_A, inp_C);
-        f(inp_A, out_C);
+        P::send_C_to_A(inp_A, inp_C);
+        P::f(inp_A, out_C);
     }
 };
 
@@ -123,12 +120,13 @@ struct Iterate_G : Problem{
     using Problem::send_C_to_B;
     using B_t = typename Problem::B::t;
 
-    static B_t inp_B; /* A placeholder for the input */
+    inline static B_t inp_B{}; /* A placeholder for the input */
 
     Iterate_G() {}
 
     /* Make this struct callable */
     void operator()(C_t& inp_C, C_t& out_C){
+
         /* convert inp:C_T -> inp:A_t */
         /* enhancement: in the future we can make this function depends on PRNG */
         /* that is defined within this struct. So, we can change the function easily */
