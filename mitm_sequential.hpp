@@ -117,9 +117,10 @@ template <typename Problem, typename C_t>
 struct Iterate_G : Problem{
      /* accessing Problem::g will generate an error*/
     // Problem::g; /* Original iteration function */
-    using Problem::send_C_to_B;
+    // using Problem::send_C_to_B;
     using B_t = typename Problem::B::t;
 
+    // todo should not be local to each thread?
     inline static B_t inp_B{}; /* A placeholder for the input */
 
     Iterate_G() {}
@@ -294,9 +295,14 @@ auto walk(C_t& inp1,
     return std::pair(inp1_array[idx_inp1], inp2_array[idx_inp2]);
 }
 
-template <typename C_t>
-auto treat_collision(C_t& inp1,  C_t& inp2) -> bool {
+template <typename C_t, typename PAIR >
+auto treat_collision(C_t& inp1,
+                     C_t& inp2,
+                     std::vector<PAIR>& container)
+                     -> bool {
+    /* Convert the input types to A_t and B_t. */
     /*  Either save it to disk then later */
+    container.push_back(std::pair(inp1, inp2));
     return true;
 }
 
@@ -348,7 +354,7 @@ auto collision()
 
 
     /* fill the input */
-    Domain_C::randomize(inp_C); // todo add PRG
+    Domain_C::randomize(inp_C); // todo how to add an optional PRG
 
 
 
@@ -359,11 +365,14 @@ auto collision()
     // loop until enough collisions is collected.
     bool found_collision = false;
     size_t n_collisions = 0;
-    size_t n_needed_collisions = 1;
+    size_t n_needed_collisions = 1LL<32;
+    // todo it should be of type A_t and B_t, C_t is just a proxy.
+    std::vector< std::pair<C_t, C_t> >  collisions_container;
     Iterate_F<Problem, C_t> F{};
     Iterate_G<Problem, C_t>G;
 
     while (n_collisions < n_needed_collisions){
+        // todo why not using generate_dist_point?
         /* Two iterations at once to save one copying */
         if (f_or_g)
             F(inp_C, out_C);
@@ -378,7 +387,9 @@ auto collision()
                                           Domain_C::extract_k_bits);
         if (found_collision) [[unlikely]]{
             // treat collision
-            treat_collision(inp_C, tmp_C);
+            // todo walk function has not been used!
+            treat_collision(inp_C, tmp_C, collisions_container);
+            ++n_collisions;
         }
 
 
@@ -391,6 +402,7 @@ auto collision()
         /* send the result to dictionary */
         // repeat the code above
     }
+
 
 
     return std::pair(out_C, tmp_C); // todo wrong values
