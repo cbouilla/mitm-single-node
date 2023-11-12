@@ -33,7 +33,7 @@ public:
 template<class repr>           /* repr must support comparisons, and assignment */
 class AbstractDomain {
 public:
-    static int length;                                    /* size in bytes of the serialization */
+    static int length;  /* nbytes needed to encode an element */                                   /* size in bytes of the serialization */
     static size_t n_elements; /* how many elements in the domain */
     using t = repr;            /* t is the machine representation of elements of the domain */
 
@@ -172,7 +172,7 @@ auto generate_dist_point(const uint64_t theta, /* mask to test if the first k bi
 
     /* potentially infinite loop, todo limit  the number of iteration as a function of theta */
     while (not found_distinguished){
-
+        // tood bug switch input and output
         if (f_or_g == 1){ // i.e. next use f to iterate
             // summary:  Domain_C -> A -f-> Domain_C
             /* convert output to A input */
@@ -321,15 +321,9 @@ auto collision()
 
     using C_t = typename Problem::C::t;
     using Domain_C = typename  Problem::C;
-    // static void randomize(t &x); /* set x to a random value */
-    // using Domain_C::randomize;
-    //A dom_C = pb.dom_C;
 
 
-    // inline static auto extract_1_bit(t& inp) -> int;
-    /* it should allow us to use extract_1_bit directly, but it doesn't work! */
-    // using Domain_C::extract_1_bit;
-    // using Domain_C::extract_k_bits;
+
 
     /* save some boilerplate typing */
     using t_pair = typename std::pair<A_t, C_t>;
@@ -337,18 +331,19 @@ auto collision()
     // ------------------------------------------------------------------------/
     // --------------------------------- INIT --------------------------------/
     // DICT
-    size_t n_slots = 100;
+    size_t n_slots = 1LL<<25; /* base this number on the available memory */
     Dict<C_t, uint32_t> dict{n_slots}; /* create a dictionary */
 
     // Pseudo-Random Number Generator
 
-
+    // todo use arrays method to compare the two outputs
 
     // -----------------------------------------------------------------------------/
     // VARIABLES FOR GENERATING RANDOM DISTINGUISHED POINTS
     int theta = 1; // difficulty;
-    C_t inp_C{}; /* output */
-    C_t out_C{};
+    /* inp/out variables are used as input and output to save one 1 copy */
+    C_t inp_C{}; /* input output */
+    C_t out_C{}; /* output input */
     C_t tmp_C{}; /* placeholder to save popped values from dict */
     uint8_t c_serial[Domain_C::length];
 
@@ -357,50 +352,32 @@ auto collision()
     Domain_C::randomize(inp_C); // todo how to add an optional PRG
 
 
-
-    // extract 1 bit from the input of the next sequence.
-    int f_or_g = Domain_C::extract_1_bit(inp_C); // 1 if we use f, use g otherwise.
-
-
-    // loop until enough collisions is collected.
+    /* Collisions related variables */
     bool found_collision = false;
     size_t n_collisions = 0;
     size_t n_needed_collisions = 1LL<32;
-    // todo it should be of type A_t and B_t, C_t is just a proxy.
     std::vector< std::pair<C_t, C_t> >  collisions_container;
-    Iterate_F<Problem, C_t> F{};
-    Iterate_G<Problem, C_t>G;
 
     while (n_collisions < n_needed_collisions){
-        // todo why not using generate_dist_point?
-        /* Two iterations at once to save one copying */
-        if (f_or_g)
-            F(inp_C, out_C);
-        else
-            G(inp_C, out_C);
-        f_or_g = Domain_C::extract_1_bit(out_C); // 1 if we use f, use g otherwise.
+        /* Get a distinguished point */
+        generate_dist_point<Problem, C_t>(theta,
+                                          inp_C,
+                                          out_C,
+                                          c_serial);
 
-        /* send the result to dictionary */
+
+        /* send the result to dictionary, check if it has a collision  */
         found_collision = dict.pop_insert(inp_C,
                                           out_C, // todo just wrong
                                           tmp_C, // todo just wrong
                                           Domain_C::extract_k_bits);
+
         if (found_collision) [[unlikely]]{
             // treat collision
             // todo walk function has not been used!
             treat_collision(inp_C, tmp_C, collisions_container);
             ++n_collisions;
         }
-
-
-        if (f_or_g)
-            F(out_C, inp_C);
-        else
-            G(out_C, inp_C);
-        f_or_g = Domain_C::extract_1_bit(inp_C); // 1 if we use f, use g otherwise.
-
-        /* send the result to dictionary */
-        // repeat the code above
     }
 
 
