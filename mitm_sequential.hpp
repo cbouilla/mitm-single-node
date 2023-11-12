@@ -142,7 +142,7 @@ struct Iterate_G : Problem{
 /// Thus, no need write two version of the function below (one starts with f, the other starts with g).
 ///  Instead, switch the order of the arguments
 template<typename Problem, typename C_t>
-auto generate_dist_point(const uint64_t theta, /* mask to test if the first k bits are zero */
+auto generate_dist_point(const uint64_t theta, /* #bits are zero at the beginning */
                          C_t& inp_C, /* WARNING: this function will edit this argument */
                          C_t& out_C,
                          uint8_t* out_C_serialized)
@@ -295,14 +295,21 @@ auto walk(C_t& inp1,
     return std::pair(inp1_array[idx_inp1], inp2_array[idx_inp2]);
 }
 
-template <typename C_t, typename PAIR >
+template <typename Problem, typename C_t >
 auto treat_collision(C_t& inp1,
                      C_t& inp2,
-                     std::vector<PAIR>& container)
+                     const uint64_t theta,
+                     std::vector<typename Problem::A, typename Problem::B>& container)
                      -> bool {
     /* Convert the input types to A_t and B_t. */
     /*  Either save it to disk then later */
-    container.push_back(std::pair(inp1, inp2));
+    using A_t = typename Problem::A_t;
+    using B_t = typename Problem::B_t;
+
+    std::pair<A_t, B_t> pair = walk<Problem>(inp1, inp2, theta);
+
+    /* todo here we should add more tests */
+    container.push_back(pair);
     return true;
 }
 
@@ -356,7 +363,8 @@ auto collision()
     bool found_collision = false;
     size_t n_collisions = 0;
     size_t n_needed_collisions = 1LL<32;
-    std::vector< std::pair<C_t, C_t> >  collisions_container;
+    /* a:A_t -f-> x <-g- b:B_t */
+    std::vector< std::pair<A_t, B_t> >  collisions_container;
 
     while (n_collisions < n_needed_collisions){
         /* Get a distinguished point */
@@ -375,7 +383,7 @@ auto collision()
         if (found_collision) [[unlikely]]{
             // treat collision
             // todo walk function has not been used!
-            treat_collision(inp_C, tmp_C, collisions_container);
+            treat_collision<Problem>(inp_C, tmp_C, collisions_container);
             ++n_collisions;
         }
     }
