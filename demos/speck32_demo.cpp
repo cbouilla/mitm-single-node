@@ -49,6 +49,7 @@ public:
 
     inline static auto extract_k_bits(const t& inp, int k) -> uint64_t {
         /* k = 16j + r, we would like to get the values of r and j  */
+        k = k+1; /* Read bits after the first bit */
         uint16_t nbits_first_word = k&(16 - 1); /* read it mod 16 */
         /* first remove r and 16 at once by division, then make sure number < 16 */
         uint16_t nbits_second_word = (k>>4)&(16 - 1);
@@ -58,7 +59,7 @@ public:
         uint16_t mask2 = (1<<nbits_second_word) - 1;
 
         /* maximally extrat 32 bits */
-        return inp[0]&mask1 | ((uint64_t) inp[1]&mask2)<<16;
+        return (inp[0]>>1)&mask1 | ((uint64_t) inp[1]&mask2)<<16;
     }
 };
 

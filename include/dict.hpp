@@ -35,7 +35,7 @@ struct Dict {
         /// another pair from the dictionary (Because they have the same index)
         /// write the removed key to out and return true.
 
-        uint32_t idx = extract_k_bits(key, sizeof(Val_t) ) % n_slots;
+        uint32_t idx = extract_k_bits(key, sizeof(Val_t )*8) % n_slots;
         bool flag = 0;
         ++n_elmenents; /* since we are going to add an element */
         /* probe the dictionary at location idx */

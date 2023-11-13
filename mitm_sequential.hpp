@@ -138,8 +138,6 @@ struct Iterate_G : Problem{
     }
 };
 
-
-
 /// Since we check the dist point at the beginning we don't need to use the length explicitly.
 /// Thus, no need write two version of the function below (one starts with f, the other starts with g).
 ///  Instead, switch the order of the arguments
@@ -184,13 +182,36 @@ auto generate_dist_point(const int64_t theta, /* #bits are zero at the beginning
             G(inp_C, out_C);
         }
 
-        //
+	found_distinguished = (0 == (mask & C::extract_k_bits(inp_C, theta))  );
         /* decide what is the next function based on the output */
         f_or_g = C::extract_1_bit(out_C);
+
+	/* we may get a dist point here */
+	if (found_distinguished) [[unlikely]]{/* especially with high values of theta */
+	  C::serialize(out_C, out_C_serialized);
+	  return true; /* exit the whole function */
+	}
+	
+	/* save 1 copy */
+	if (f_or_g == 1){ // i.e. next use f to iterate
+            // summary:  Domain_C -> A -f-> Domain_C
+            /* convert output to A input */
+            // send_C_to_A(inp_A, out_C);
+           //  f(inp_A, out_C);
+           F(out_C, inp_C);
+        } else { // use g in the sequence
+            // summary:  Domain_C -> Domain_B -g-> Domain_C
+            // send_C_to_B(inp_B, out_C);
+            // g(inp_B, out_C);
+            G(out_C, inp_C);
+        }
+
+
+	
     }
 
     /* save the output in a serial form  */
-    C::serialize(out_C, out_C_serialized);
+    C::serialize(inp_C, out_C_serialized);
     /* For later use when we are going to bound the loop */
     return true;
 }
@@ -294,7 +315,7 @@ auto walk(typename Problem::C::t& inp1,
     size_t idx_inp2 = inp2_chain_length - i;
 
     /* I don't have a good feeling about the line below */
-    return std::pair(inp1_array[idx_inp1], inp2_array[idx_inp2]);
+    return std::pair<C_t, C_t>(inp1_array[idx_inp1], inp2_array[idx_inp2]);
 }
 
 template <typename Problem >
@@ -410,6 +431,6 @@ auto collision()
 
 
 
-    return std::pair(out_C, tmp_C); // todo wrong values
+    return std::pair<C_t, C_t>(out_C, tmp_C); // todo wrong values
 }
 #endif
