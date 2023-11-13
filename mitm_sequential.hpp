@@ -95,10 +95,11 @@ public:
 /******************************************************************************/
 /* a user does not need to look at the code below                             */
 /******************************************************************************/
-template <typename P, typename C_t>
+template <typename P>
 struct Iterate_F {
     ///  A wrapper for calling f that uses
     using A_t = typename P::A::t;
+    using C_t = typename P::C::t;
     inline static A_t inp_A; /* A placeholder for the input */
     Iterate_F() {}
 
@@ -113,12 +114,13 @@ struct Iterate_F {
 };
 
 
-template <typename Problem, typename C_t>
+template <typename Problem>
 struct Iterate_G : Problem{
      /* accessing Problem::g will generate an error*/
     // Problem::g; /* Original iteration function */
     // using Problem::send_C_to_B;
     using B_t = typename Problem::B::t;
+    using C_t = typename Problem::C::t;
 
     // todo should not be local to each thread?
     inline static B_t inp_B{}; /* A placeholder for the input */
@@ -141,34 +143,30 @@ struct Iterate_G : Problem{
 /// Since we check the dist point at the beginning we don't need to use the length explicitly.
 /// Thus, no need write two version of the function below (one starts with f, the other starts with g).
 ///  Instead, switch the order of the arguments
-template<typename Problem, typename C_t>
-auto generate_dist_point(const uint64_t theta, /* #bits are zero at the beginning */
-                         C_t& inp_C, /* WARNING: this function will edit this argument */
-                         C_t& out_C,
-                         uint8_t* out_C_serialized)
+template<typename Problem>
+auto generate_dist_point(const int64_t theta, /* #bits are zero at the beginning */
+                         typename Problem::C::t& inp_C, /* WARNING: this function will edit this argument */
+                         typename Problem::C::t& out_C,
+                         uint8_t* out_C_serialized,
+                         Iterate_F<Problem>& F,
+                         Iterate_G<Problem>& G)
+                         -> bool
 {
 
     static const uint64_t mask = (1LL<<theta) - 1;
 
-    // using C_t = typename Problem::Domain_C::t;
-    using Domain_C = typename  Problem::C;
-    // inline static auto extract_1_bit(t& inp) -> int;
-    using Domain_C::extract_1_bit;
-    // inline static auto extract_k_bits(t& inp, int k) -> uint64_t;
-    using Domain_C::extract_k_bits;
-    // void (serialize)(const C_t&, uint8_t*),
-    using Domain_C::serialize;
+    // using C_t = typename Problem::C::t;
+    using C = typename  Problem::C;
     /* F: Domain_C -> Domain_C, instead of C_t -> A_t -f-> C_t */
-    Iterate_F<Problem, C_t> F{};
-    Iterate_G<Problem, C_t> G{};
+
     bool found_distinguished = false;
     int f_or_g; // 1 if the next function is f,
 
 
     /* The decision is based on the input for the next iteration, now it's inp_C then out_C */
-    f_or_g = extract_1_bit(inp_C);// next_f_or_g(out_C_serialized);
+    f_or_g = C::extract_1_bit(inp_C);// next_f_or_g(out_C_serialized);
 
-    found_distinguished = (0 == (mask & extract_k_bits(inp_C, theta))  );
+    found_distinguished = (0 == (mask & C::extract_k_bits(inp_C, theta))  );
 
     /* potentially infinite loop, todo limit  the number of iteration as a function of theta */
     while (not found_distinguished){
@@ -188,38 +186,36 @@ auto generate_dist_point(const uint64_t theta, /* #bits are zero at the beginnin
 
         //
         /* decide what is the next function based on the output */
-        f_or_g = extract_1_bit(out_C);
+        f_or_g = C::extract_1_bit(out_C);
     }
 
     /* save the output in a serial form  */
-    serialize(out_C, out_C_serialized);
+    C::serialize(out_C, out_C_serialized);
     /* For later use when we are going to bound the loop */
     return true;
 }
 
 
-template<typename Problem, typename C_t>
-auto fill_sequence(C_t& inp_C,
-                   std::vector<C_t>& inp_array,
-                   int theta,
-                   Iterate_F<Problem, C_t>& F,
-                   Iterate_G<Problem, C_t>& G)
+template<typename Problem>
+auto fill_sequence(typename Problem::C::t& inp_C,
+                   std::vector<typename Problem::C::t>& inp_array,
+                   const int theta,
+                   Iterate_F<Problem>& F,
+                   Iterate_G<Problem>& G)
                    -> size_t
 {
     /// Given an input C_t inp, fill the inp_array with all output of f/g (inp)
     /// until a distinguished point is found. Return the number of steps needed
     /// to arrive at a distinguished point.
+    using C = typename Problem::C;
+    using C_t = typename Problem::C::t;
 
-    // inline static auto extract_1_bit(t& inp) -> int;
-    using Problem::extract_1_bit;
-    // inline static auto extract_k_bits(t& inp, int k) -> uint64_t;
-    using Problem::extract_k_bits;
 
     static C_t out_C{};
     const uint64_t mask = (theta<<1LL) - 1;
     size_t chain_length = 0;
     int found_dist = 0;
-    int f_or_g = extract_1_bit(inp_C);
+    int f_or_g = C::extract_1_bit(inp_C);
 
     for (; chain_length < (3 * (theta << 1LL)) ; chain_length += 2 ){
         /* do 2 rounds at once to avoid input swapping with output */
@@ -230,8 +226,8 @@ auto fill_sequence(C_t& inp_C,
             G(inp_C, out_C);
         }
 
-        f_or_g = extract_1_bit(out_C);
-        found_dist = (0 == (mask & extract_k_bits(out_C, theta)));
+        f_or_g = C::extract_1_bit(out_C);
+        found_dist = (0 == (mask & C::extract_k_bits(out_C, theta)));
 
         if (found_dist) break; // exit the loop
 
@@ -242,8 +238,8 @@ auto fill_sequence(C_t& inp_C,
             G(inp_C, out_C);
         }
 
-        f_or_g = extract_1_bit(out_C);
-        found_dist = (0 == (mask & extract_k_bits(out_C, theta)));
+        f_or_g = C::extract_1_bit(out_C);
+        found_dist = (0 == (mask & C::extract_k_bits(out_C, theta)));
 
         if (found_dist) {
             ++chain_length; /* one step more */
@@ -257,29 +253,35 @@ auto fill_sequence(C_t& inp_C,
 
 
 
-template<typename Problem, typename C_t>
-auto walk(C_t& inp1,
-          C_t& inp2,
-          const uint64_t theta) -> std::pair<C_t, C_t>
+template<typename Problem>
+auto walk(typename Problem::C::t& inp1,
+          typename Problem::C::t& inp2,
+          const uint64_t theta,
+          Iterate_F<Problem>& F,
+          Iterate_G<Problem>& G)
+          -> std::pair<typename Problem::C::t, typename Problem::C::t>
 {
     /// Given two inputs that lead to the same distinguished point,
     /// find the earliest collision in the sequence before the distinguished point
     /// add a drawing to illustrate this.
 
-    // inline static auto extract_1_bit(t& inp) -> int;
-    using Problem::extract_1_bit;
-    // inline static auto extract_k_bits(t& inp, int k) -> uint64_t;
-    using Problem::extract_k_bits;
-
-    Iterate_F<Problem, C_t> F{};
-    Iterate_G<Problem, C_t> G{};
-
+    using C_t = typename Problem::C::t;
     std::vector<C_t> inp2_array(3*theta); /* inp 2 output chain */
     std::vector<C_t> inp1_array(3*theta); /* inp 1 output chain */
 
 
-    size_t inp1_chain_length = fill_sequence(inp1, inp1_array);
-    size_t inp2_chain_length = fill_sequence(inp2, inp2_array);
+    size_t inp1_chain_length = fill_sequence(inp1,
+                                             inp1_array,
+                                             theta,
+                                             F, /* Iteration function */
+                                             G); /* Iteration function */
+
+    size_t inp2_chain_length = fill_sequence(inp2,
+                                             inp2_array,
+                                             theta,
+                                             F, /* Iteration function */
+                                             G); /* Iteration function */
+
 
     /* now walk backward until you find the last point where they share the */
     size_t i = 1;
@@ -295,18 +297,25 @@ auto walk(C_t& inp1,
     return std::pair(inp1_array[idx_inp1], inp2_array[idx_inp2]);
 }
 
-template <typename Problem, typename C_t >
-auto treat_collision(C_t& inp1,
-                     C_t& inp2,
+template <typename Problem >
+auto treat_collision(typename Problem::C::t& inp1,
+                     typename Problem::C::t& inp2,
                      const uint64_t theta,
-                     std::vector<typename Problem::A, typename Problem::B>& container)
+                     std::vector< std::pair<typename Problem::C::t, typename Problem::C::t> >& container,
+                     Iterate_F<Problem>& F,
+                     Iterate_G<Problem>& G)
                      -> bool {
     /* Convert the input types to A_t and B_t. */
     /*  Either save it to disk then later */
-    using A_t = typename Problem::A_t;
-    using B_t = typename Problem::B_t;
+    using A_t = typename Problem::A::t;
+    using B_t = typename Problem::B::t;
+    using C_t = typename Problem::C::t;
 
-    std::pair<A_t, B_t> pair = walk<Problem>(inp1, inp2, theta);
+    std::pair<C_t, C_t> pair = walk<Problem>(inp1, /* and inp2 leads to the same dist point */
+                                             inp2,
+                                             theta, /* #zero bits at the beginning */
+                                             F, /* Iteration function */
+                                             G); /* Iteration function */
 
     /* todo here we should add more tests */
     container.push_back(pair);
@@ -366,12 +375,18 @@ auto collision()
     /* a:A_t -f-> x <-g- b:B_t */
     std::vector< std::pair<A_t, B_t> >  collisions_container;
 
+    /* Iteration Functions */
+    Iterate_F<Problem> F{};
+    Iterate_G<Problem> G{};
+
     while (n_collisions < n_needed_collisions){
         /* Get a distinguished point */
-        generate_dist_point<Problem, C_t>(theta,
+        generate_dist_point<Problem>(theta,
                                           inp_C,
                                           out_C,
-                                          c_serial);
+                                          c_serial,
+                                          F,
+                                          G);
 
 
         /* send the result to dictionary, check if it has a collision  */
@@ -383,7 +398,12 @@ auto collision()
         if (found_collision) [[unlikely]]{
             // treat collision
             // todo walk function has not been used!
-            treat_collision<Problem>(inp_C, tmp_C, collisions_container);
+            treat_collision<Problem>(inp_C,
+                                          tmp_C,
+                                          theta,
+                                          collisions_container,
+                                          F,
+                                          G);
             ++n_collisions;
         }
     }
