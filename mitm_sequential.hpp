@@ -1,5 +1,6 @@
 #ifndef MITM_SEQUENTIAL
 #define MITM_SEQUENTIAL
+#include <cstddef>
 #include <iostream>
 #include <assert.h>
 #include <vector>
@@ -33,7 +34,7 @@ public:
 template<class repr>           /* repr must support comparisons, and assignment */
 class AbstractDomain {
 public:
-  static int length;  /* nbytes needed to encode an element */                                   /* size in bytes of the serialization */
+  static int length;  /* nbytes needed to encode an element */
   static size_t n_elements; /* how many elements in the domain */
   using t = repr;            /* t is the machine representation of elements of the domain */
 
@@ -143,7 +144,7 @@ struct Iterate_G : Problem{
 ///  Instead, switch the order of the arguments
 template<typename Problem>
 auto generate_dist_point(const int64_t theta, /* #bits are zero at the beginning */
-                         typename Problem::C::t& inp_C, /* WARNING: this function will edit this argument */
+                         typename Problem::C::t& inp_C, // we need to exchange pointers
                          typename Problem::C::t& out_C,
                          uint8_t* out_C_serialized,
                          Iterate_F<Problem>& F,
@@ -162,58 +163,34 @@ auto generate_dist_point(const int64_t theta, /* #bits are zero at the beginning
 
 
   /* The decision is based on the input for the next iteration, now it's inp_C then out_C */
-  f_or_g = C::extract_1_bit(inp_C);// next_f_or_g(out_C_serialized);
+ f_or_g = C::extract_1_bit(inp_C);// next_f_or_g(out_C_serialized);
 
   found_distinguished = (0 == (mask & C::extract_k_bits(inp_C, theta))  );
 
+  // typename Problem::C::t* tmp; /* dummy pointer for exchange */
   /* potentially infinite loop, todo limit  the number of iteration as a function of theta */
-  while (not found_distinguished){
-    // tood bug switch input and output
-    if (f_or_g == 1){ // i.e. next use f to iterate
-      // summary:  Domain_C -> A -f-> Domain_C
-      /* convert output to A input */
-      // send_C_to_A(inp_A, out_C);
-      //  f(inp_A, out_C);
+  for (size_t i = 0; i < 3*(1LL<<theta); ++i){
+    if (f_or_g == 1)
       F(inp_C, out_C);
-    } else { // use g in the sequence
-      // summary:  Domain_C -> Domain_B -g-> Domain_C
-      // send_C_to_B(inp_B, out_C);
-      // g(inp_B, out_C);
+    else
       G(inp_C, out_C);
-    }
-
-    found_distinguished = (0 == (mask & C::extract_k_bits(inp_C, theta))  );
-    /* decide what is the next function based on the output */
-    f_or_g = C::extract_1_bit(out_C);
 
     /* we may get a dist point here */
+    found_distinguished = (0 == (mask & C::extract_k_bits(inp_C, theta))  );
     if (found_distinguished) [[unlikely]]{/* especially with high values of theta */
       C::serialize(out_C, out_C_serialized);
       return true; /* exit the whole function */
     }
-	
-    /* save 1 copy */
-    if (f_or_g == 1){ // i.e. next use f to iterate
-      // summary:  Domain_C -> A -f-> Domain_C
-      /* convert output to A input */
-      // send_C_to_A(inp_A, out_C);
-      //  f(inp_A, out_C);
-      F(out_C, inp_C);
-    } else { // use g in the sequence
-      // summary:  Domain_C -> Domain_B -g-> Domain_C
-      // send_C_to_B(inp_B, out_C);
-      // g(inp_B, out_C);
-      G(out_C, inp_C);
-    }
-
-
-	
+    
+    /* decide what is the next function based on the output */    
+    f_or_g = C::extract_1_bit(out_C);
+    /* swap inp and out */
+    // tmp = inp_C;
+    inp_C = out_C;
+    /* Actually we don't care about the output, it will be overwritten */
+    // out_C = tmp;
   }
-
-  /* save the output in a serial form  */
-  C::serialize(inp_C, out_C_serialized);
-  /* For later use when we are going to bound the loop */
-  return true;
+  return false; /* no distinguished point were found */
 }
 
 
@@ -241,11 +218,8 @@ auto fill_sequence(typename Problem::C::t& inp_C,
   for (; chain_length < (3 * (theta << 1LL)) ; chain_length += 2 ){
     /* do 2 rounds at once to avoid input swapping with output */
     /* iterate: 1 out of 2  */
-    if (f_or_g){
-      F(inp_C, out_C);
-    } else {
-      G(inp_C, out_C);
-    }
+    if (f_or_g){ F(inp_C, out_C); }
+    else       { G(inp_C, out_C); }
 
     f_or_g = C::extract_1_bit(out_C);
     found_dist = (0 == (mask & C::extract_k_bits(out_C, theta)));
@@ -403,8 +377,8 @@ auto collision()
   while (n_collisions < n_needed_collisions){
     /* Get a distinguished point */
     generate_dist_point<Problem>(theta,
-				 inp_C,
-				 out_C,
+				 inp_C, /* convert this to a pointer */
+				 out_C, /* convert this to a pointer */
 				 c_serial,
 				 F,
 				 G);
