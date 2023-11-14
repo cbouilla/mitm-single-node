@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <iostream>
 #include <assert.h>
+#include <utility>
 #include <vector>
 #include <algorithm>
 
@@ -144,8 +145,8 @@ struct Iterate_G : Problem{
 ///  Instead, switch the order of the arguments
 template<typename Problem>
 auto generate_dist_point(const int64_t theta, /* #bits are zero at the beginning */
-                         typename Problem::C::t& inp_C, // we need to exchange pointers
-                         typename Problem::C::t& out_C,
+                         typename Problem::C::t* inp_C, // we need to exchange pointers
+                         typename Problem::C::t* out_C,
                          uint8_t* out_C_serialized,
                          Iterate_F<Problem>& F,
                          Iterate_G<Problem>& G)
@@ -163,27 +164,27 @@ auto generate_dist_point(const int64_t theta, /* #bits are zero at the beginning
 
 
   /* The decision is based on the input for the next iteration, now it's inp_C then out_C */
- f_or_g = C::extract_1_bit(inp_C);// next_f_or_g(out_C_serialized);
+ f_or_g = C::extract_1_bit(*inp_C);// next_f_or_g(out_C_serialized);
 
-  found_distinguished = (0 == (mask & C::extract_k_bits(inp_C, theta))  );
+  found_distinguished = (0 == (mask & C::extract_k_bits(*inp_C, theta))  );
 
   // typename Problem::C::t* tmp; /* dummy pointer for exchange */
   /* potentially infinite loop, todo limit  the number of iteration as a function of theta */
   for (size_t i = 0; i < 3*(1LL<<theta); ++i){
     if (f_or_g == 1)
-      F(inp_C, out_C);
+      F(*inp_C, *out_C);
     else
-      G(inp_C, out_C);
+      G(*inp_C, *out_C);
 
     /* we may get a dist point here */
-    found_distinguished = (0 == (mask & C::extract_k_bits(inp_C, theta))  );
+    found_distinguished = (0 == (mask & C::extract_k_bits(*inp_C, theta))  );
     if (found_distinguished) [[unlikely]]{/* especially with high values of theta */
-      C::serialize(out_C, out_C_serialized);
+      C::serialize(*out_C, out_C_serialized);
       return true; /* exit the whole function */
     }
     
     /* decide what is the next function based on the output */    
-    f_or_g = C::extract_1_bit(out_C);
+    f_or_g = C::extract_1_bit(*out_C);
     /* swap inp and out */
     // tmp = inp_C;
     inp_C = out_C;
@@ -195,7 +196,8 @@ auto generate_dist_point(const int64_t theta, /* #bits are zero at the beginning
 
 
 template<typename Problem>
-auto fill_sequence(typename Problem::C::t& inp_C,
+auto fill_sequence(typename Problem::C::t* inp_C,
+		   typename Problem::C::t* out_C,
                    std::vector<typename Problem::C::t>& inp_array,
                    const int theta,
                    Iterate_F<Problem>& F,
@@ -206,40 +208,23 @@ auto fill_sequence(typename Problem::C::t& inp_C,
   /// until a distinguished point is found. Return the number of steps needed
   /// to arrive at a distinguished point.
   using C = typename Problem::C;
-  using C_t = typename Problem::C::t;
 
-
-  static C_t out_C{};
   const uint64_t mask = (theta<<1LL) - 1;
-  size_t chain_length = 0;
+  int64_t chain_length = 0;
   int found_dist = 0;
-  int f_or_g = C::extract_1_bit(inp_C);
+  int f_or_g = C::extract_1_bit(*inp_C);
 
-  for (; chain_length < (3 * (theta << 1LL)) ; chain_length += 2 ){
-    /* do 2 rounds at once to avoid input swapping with output */
-    /* iterate: 1 out of 2  */
-    if (f_or_g){ F(inp_C, out_C); }
-    else       { G(inp_C, out_C); }
+  for (; chain_length < (3 * (theta << 1LL)) ; ++chain_length ){
+    if (f_or_g)
+      F(*inp_C, *out_C);
+    else
+      G(*inp_C, *out_C);
 
-    f_or_g = C::extract_1_bit(out_C);
-    found_dist = (0 == (mask & C::extract_k_bits(out_C, theta)));
+    f_or_g = C::extract_1_bit(*out_C);
+    found_dist = (0 == (mask & C::extract_k_bits(*out_C, theta)));
 
-    if (found_dist) break; // exit the loop
-
-    /* iterate: 2 out of 2  */
-    if (f_or_g){
-      F(inp_C, out_C);
-    } else {
-      G(inp_C, out_C);
-    }
-
-    f_or_g = C::extract_1_bit(out_C);
-    found_dist = (0 == (mask & C::extract_k_bits(out_C, theta)));
-
-    if (found_dist) {
-      ++chain_length; /* one step more */
+    if (found_dist) [[unlikely]]
       break; // exit the loop
-    }
   }
 
   return chain_length;
@@ -265,13 +250,17 @@ auto walk(typename Problem::C::t& inp1,
   std::vector<C_t> inp1_array(3*theta); /* inp 1 output chain */
 
 
-  size_t inp1_chain_length = fill_sequence(inp1,
+  typename Problem::C::t out_tmp;
+  
+  size_t inp1_chain_length = fill_sequence(&inp1,
+					   &out_tmp,
 					   inp1_array,
 					   theta,
 					   F, /* Iteration function */
 					   G); /* Iteration function */
 
-  size_t inp2_chain_length = fill_sequence(inp2,
+  size_t inp2_chain_length = fill_sequence(&inp2,
+					   &out_tmp,
 					   inp2_array,
 					   theta,
 					   F, /* Iteration function */
@@ -306,8 +295,8 @@ auto treat_collision(typename Problem::C::t& inp1,
   using B_t = typename Problem::B::t;
   using C_t = typename Problem::C::t;
 
-  std::pair<C_t, C_t> pair = walk<Problem>(inp1, /* and inp2 leads to the same dist point */
-					   inp2,
+  std::pair<C_t, C_t> pair = walk<Problem>(&inp1, /* address of value of inp1  */
+					   &inp2, /* inp1 -> * <- inp2, i.e. they lead to same value */
 					   theta, /* #zero bits at the beginning */
 					   F, /* Iteration function */
 					   G); /* Iteration function */
@@ -377,8 +366,8 @@ auto collision()
   while (n_collisions < n_needed_collisions){
     /* Get a distinguished point */
     generate_dist_point<Problem>(theta,
-				 inp_C, /* convert this to a pointer */
-				 out_C, /* convert this to a pointer */
+				 &inp_C, /* convert this to a pointer */
+				 &out_C, /* convert this to a pointer */
 				 c_serial,
 				 F,
 				 G);
@@ -393,12 +382,13 @@ auto collision()
     if (found_collision) [[unlikely]]{
       // treat collision
       // todo walk function has not been used!
-      treat_collision<Problem>(inp_C,
+      treat_collision<Problem>(inp_C, /* re*/
 			       tmp_C,
 			       theta,
 			       collisions_container,
 			       F,
 			       G);
+
       ++n_collisions;
     }
   }
