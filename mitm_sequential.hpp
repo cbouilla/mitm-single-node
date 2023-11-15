@@ -265,9 +265,6 @@ auto walk(typename Problem::C::t* inp1,
   std::vector<C_t> inp2_array(3*theta); /* inp 2 output chain */
   std::vector<C_t> inp1_array(3*theta); /* inp 1 output chain */
 
-
-
-  
   size_t inp1_chain_length = fill_sequence(inp1,
                                            out_tmp,
                                            inp1_array,
@@ -373,7 +370,7 @@ auto collision()
   /* Collisions related variables */
   bool found_collision = false;
   size_t n_collisions = 0;
-  size_t n_needed_collisions = 1LL<32;
+  size_t n_needed_collisions = 1LL<<32;
   /* a:A_t -f-> x <-g- b:B_t */
   std::vector< std::pair<A_t, B_t> >  collisions_container;
 
@@ -400,6 +397,7 @@ auto collision()
     if (found_collision) [[unlikely]]{
       // treat collision
       // todo walk function has not been used!
+      std::cout << "found a collision " << n_collisions <<  "out of " << n_needed_collisions << "\n";
       treat_collision<Problem>(&inp_C,
                                &out_C,
                                &tmp_C,
