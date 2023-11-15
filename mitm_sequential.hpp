@@ -13,6 +13,23 @@
 /* Document for standard implementation                                       */
 /******************************************************************************/
 
+
+/* source : https://gist.github.com/mortenpi/9745042 */
+#include <fstream>
+template<class T>
+T read_urandom()
+{
+    union {
+        T value;
+        char cs[sizeof(T)];
+    } u;
+
+    std::ifstream rfin("/dev/urandom");
+    rfin.read(u.cs, sizeof(u.cs));
+    rfin.close();
+
+    return u.value;
+}
 /*
  * Generic interface for a PRNG. The sequence of pseudo-random numbers
  * depends on both seed and seq
@@ -66,6 +83,7 @@ public:
  * E.g. In the attack on double-encryption, where the goal is to find
  *      x, y s.t. f(x, a) == g(y, b), the problem should contain (a, b).
  */
+
 template<typename Domain_A, typename Domain_B, typename Domain_C>
 class AbstractProblem {
 public:
@@ -393,8 +411,10 @@ auto collision()
 
   while (n_collisions < n_needed_collisions){
     /* Get a distinguished point */
+    *pt_inp_C = read_urandom<C_t>();
     //std::cout << "bf inp = " << (*pt_inp_C)[0] << ", " << (*pt_inp_C)[1] << "\n";
     //std::cout << "bf out = " << (*pt_out_C)[0] << ", " << (*pt_out_C)[1] << "\n";
+
     generate_dist_point<Problem>(theta,
 				 pt_inp_C, /* convert this to a pointer */
 				 pt_out_C, /* convert this to a pointer */
@@ -421,12 +441,12 @@ auto collision()
         }
 
       /* tmp_C contains a candidate for collision */
-      std::cout << "popped = " << (*pt_tmp_C)[0] << (*pt_tmp_C)[0] << "\n";
+      std::cout << "popped = " << (*pt_tmp_C)[0] << (*pt_tmp_C)[1] << "\n";
       swap_pointers(pt_tmp_C, pt_inp2_C);
 
       std::cout << "before walking ... \n";
-      std::cout << "inp1 = " << (*pt_inp_C)[0] << (*pt_inp_C)[0] << "\n";
-        std::cout << "inp2 = " << (*pt_inp2_C)[0] << (*pt_inp2_C)[0] << "\n";
+      std::cout << "inp1 = " << (*pt_inp_C)[0] << (*pt_inp_C)[1] << "\n";
+        std::cout << "inp2 = " << (*pt_inp2_C)[0] << (*pt_inp2_C)[1] << "\n";
       treat_collision<Problem>(pt_inp_C,
                                pt_inp2_C,
                                pt_tmp_C,
@@ -438,27 +458,27 @@ auto collision()
       C_t dummy_out_inp1{};
       C_t dummy_out_inp2{};
 
-      std::cout << "inp1 = " << (*pt_inp_C)[0] << (*pt_inp_C)[0] << "\n";
-      std::cout << "inp2 = " << (*pt_inp2_C)[0] << (*pt_inp2_C)[0] << "\n";
+      std::cout << "inp1 = " << (*pt_inp_C)[0] << (*pt_inp_C)[1] << "\n";
+      std::cout << "inp2 = " << (*pt_inp2_C)[0] << (*pt_inp2_C)[1] << "\n";
       F(*pt_inp_C, dummy_out_inp1);
       F(*pt_inp2_C, dummy_out_inp2);
-      std::cout << "Fout1 = " << dummy_out_inp1[0] << dummy_out_inp1[0] << "\n";
-      std::cout << "Fout2 = " << dummy_out_inp2[0] << dummy_out_inp2[0] << "\n";
+      std::cout << "Fout1 = " << dummy_out_inp1[0] << dummy_out_inp1[1] << "\n";
+      std::cout << "Fout2 = " << dummy_out_inp2[0] << dummy_out_inp2[1] << "\n";
 
       G(*pt_inp_C, dummy_out_inp1);
       G(*pt_inp_C, dummy_out_inp2);
-      std::cout << "Gout1 = " << dummy_out_inp1[0] << dummy_out_inp1[0] << "\n";
-      std::cout << "Gout2 = " << dummy_out_inp2[0] << dummy_out_inp2[0] << "\n";
+      std::cout << "Gout1 = " << dummy_out_inp1[0] << dummy_out_inp1[1] << "\n";
+      std::cout << "Gout2 = " << dummy_out_inp2[0] << dummy_out_inp2[1] << "\n";
 
       F(*pt_inp_C, dummy_out_inp1);
       G(*pt_inp_C, dummy_out_inp2);
-      std::cout << "Fout1 = " << dummy_out_inp1[0] << dummy_out_inp1[0] << "\n";
-      std::cout << "Gout2 = " << dummy_out_inp2[0] << dummy_out_inp2[0] << "\n";
+      std::cout << "Fout1 = " << dummy_out_inp1[0] << dummy_out_inp1[1] << "\n";
+      std::cout << "Gout2 = " << dummy_out_inp2[0] << dummy_out_inp2[1] << "\n";
 
       G(*pt_inp_C, dummy_out_inp1);
       F(*pt_inp_C, dummy_out_inp2);
-      std::cout << "Gout1 = " << dummy_out_inp1[0] << dummy_out_inp1[0] << "\n";
-      std::cout << "Fout2 = " << dummy_out_inp2[0] << dummy_out_inp2[0] << "\n";
+      std::cout << "Gout1 = " << dummy_out_inp1[0] << dummy_out_inp1[1] << "\n";
+      std::cout << "Fout2 = " << dummy_out_inp2[0] << dummy_out_inp2[1] << "\n";
 
       ++n_collisions;
 
