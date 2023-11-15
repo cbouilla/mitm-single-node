@@ -66,6 +66,8 @@ public:
       out[0] = inp[0];
       out[1] = inp[1];
   }
+
+
 };
 
 class Problem : AbstractProblem<SPECK_DOMAIN, SPECK_DOMAIN, SPECK_DOMAIN >{
@@ -96,8 +98,7 @@ public:
 };
 
 
-int main(int argc, char* argv[]){
-  collision<Problem>();
+int main(int argc, char* argv[]) {
+    collision<Problem>();
 
 }
-

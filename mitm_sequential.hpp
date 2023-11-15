@@ -322,6 +322,9 @@ auto treat_collision(typename Problem::C::t* inp1,
 }
 
 
+
+
+
 template<typename Problem>
 auto collision()
   -> std::pair<typename Problem::C::t, typename Problem::C::t>
@@ -362,6 +365,9 @@ auto collision()
   C_t tmp_C{}; /* placeholder to save popped values from dict */
   uint8_t c_serial[Domain_C::length];
 
+  C_t* pt_inp_C = &inp_C; /* input output */
+  C_t* pt_out_C = &out_C; /* output input */
+  C_t* pt_tmp_C = &tmp_C; /* placeholder to save popped values from dict */
 
   /* fill the input */
   Domain_C::randomize(inp_C); // todo how to add an optional PRG
@@ -378,29 +384,38 @@ auto collision()
   Iterate_F<Problem> F{};
   Iterate_G<Problem> G{};
 
+  int i = 0;
+  C_t* pt;
+
   while (n_collisions < n_needed_collisions){
     /* Get a distinguished point */
+    std::cout << "bf inp = " << (*pt_inp_C)[0] << ", " << (*pt_inp_C)[1] << "\n";
+    std::cout << "bf out = " << (*pt_out_C)[0] << ", " << (*pt_out_C)[1] << "\n";
     generate_dist_point<Problem>(theta,
-				 &inp_C, /* convert this to a pointer */
-				 &out_C, /* convert this to a pointer */
+				 pt_inp_C, /* convert this to a pointer */
+				 pt_out_C, /* convert this to a pointer */
 				 c_serial,
 				 F,
 				 G);
-
-
+    std::cout << "af inp = " << (*pt_inp_C)[0] << ", " << (*pt_inp_C)[1] << "\n";
+    std::cout << "bf out = " << (*pt_out_C)[0] << ", " << (*pt_out_C)[1] << "\n";
+    //return std::pair(pt_inp_C, pt_inp_C);
     /* send the result to dictionary, check if it has a collision  */
     found_collision = dict.pop_insert(inp_C,
-				      out_C, // todo just wrong
-				      tmp_C, // todo just wrong
-				      Domain_C::extract_k_bits);
+                                      out_C,
+                                      tmp_C,
+                                      Domain_C::extract_k_bits);
 
     if (found_collision) [[unlikely]]{
       // treat collision
       // todo walk function has not been used!
-      std::cout << "found a collision " << n_collisions <<  "out of " << n_needed_collisions << "\n";
-      treat_collision<Problem>(&inp_C,
-                               &out_C,
-                               &tmp_C,
+      std::cout << "found a collision " << n_collisions <<  " out of " << n_needed_collisions << "\n";
+      std::cout << out_C[0] << "\n";
+      std::cout << tmp_C[0] << "\n";
+      std::cout << "----------------------\n";
+      treat_collision<Problem>(pt_inp_C,
+                               pt_out_C,
+                               pt_tmp_C,
                                theta,
                                collisions_container,
                                F,
@@ -408,6 +423,17 @@ auto collision()
 
       ++n_collisions;
     }
+    //swap_pointers(&pt_inp_C, &pt_out_C);
+    pt = pt_inp_C;
+    pt_inp_C = pt_out_C;
+    pt_out_C = pt;
+    // std::cout << "sw inp = " << inp_C[0] << ", " << inp_C[1] << "\n";
+    // std::cout << "sw out = " << out_C[0] << ", " << out_C[1] << "\n";
+    ++i;
+    if(i>3)
+        return std::pair(inp_C, inp_C);
+
+    std::cout << "\n\n\n";
   }
 
 
