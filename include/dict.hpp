@@ -36,13 +36,19 @@ struct Dict {
     /// write the removed key to out and return true.
 
     uint64_t idx = extract_k_bits(key, sizeof(Val_t )*8) % n_slots;
-    bool flag = 0;
+    bool flag = false;
     ++n_elmenents; /* since we are going to add an element */
     /* probe the dictionary at location idx */
     Val_t val = extract_k_bits(value, sizeof(Val_t)); // todo remove hardcoding
     if (table[idx].second != 0){ /* not an empyt slot */
       out = table[idx].first;
       flag = ( table[idx].second == val);
+      if (flag)
+          std::cout << "dict entry  " << table[idx].second
+          << " val = " << val
+          << " idx = " << idx
+          << ", sizeof(Val) = " << sizeof(Val_t) << "\n";
+
       --n_elmenents; /* we're kicking an element from the dictionary */
     }
     table[idx].first = key;

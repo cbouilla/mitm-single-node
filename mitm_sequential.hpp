@@ -349,7 +349,7 @@ auto collision()
   // ------------------------------------------------------------------------/
   // --------------------------------- INIT --------------------------------/
   // DICT
-  size_t n_slots = 1LL<<25; /* base this number on the available memory */
+  size_t n_slots = 1LL<<30; /* base this number on the available memory */
   Dict<C_t, uint32_t> dict{n_slots}; /* create a dictionary */
 
   // Pseudo-Random Number Generator
@@ -361,13 +361,17 @@ auto collision()
   int theta = 1; // difficulty;
   /* inp/out variables are used as input and output to save one 1 copy */
   C_t inp_C{}; /* input output */
+  C_t inp2_C{}; /* input output */
   C_t out_C{}; /* output input */
   C_t tmp_C{}; /* placeholder to save popped values from dict */
+  C_t tmp2_C{}; /* placeholder to save popped values from dict */
   uint8_t c_serial[Domain_C::length];
 
   C_t* pt_inp_C = &inp_C; /* input output */
+  C_t* pt_inp2_C = &inp_C; /* input output */
   C_t* pt_out_C = &out_C; /* output input */
   C_t* pt_tmp_C = &tmp_C; /* placeholder to save popped values from dict */
+  C_t* pt_tmp2_C = &tmp_C; /* placeholder to save popped values from dict */
 
   /* fill the input */
   Domain_C::randomize(inp_C); // todo how to add an optional PRG
@@ -389,39 +393,78 @@ auto collision()
 
   while (n_collisions < n_needed_collisions){
     /* Get a distinguished point */
-    std::cout << "bf inp = " << (*pt_inp_C)[0] << ", " << (*pt_inp_C)[1] << "\n";
-    std::cout << "bf out = " << (*pt_out_C)[0] << ", " << (*pt_out_C)[1] << "\n";
+    //std::cout << "bf inp = " << (*pt_inp_C)[0] << ", " << (*pt_inp_C)[1] << "\n";
+    //std::cout << "bf out = " << (*pt_out_C)[0] << ", " << (*pt_out_C)[1] << "\n";
     generate_dist_point<Problem>(theta,
 				 pt_inp_C, /* convert this to a pointer */
 				 pt_out_C, /* convert this to a pointer */
 				 c_serial,
 				 F,
 				 G);
-    std::cout << "af inp = " << (*pt_inp_C)[0] << ", " << (*pt_inp_C)[1] << "\n";
-    std::cout << "bf out = " << (*pt_out_C)[0] << ", " << (*pt_out_C)[1] << "\n";
+    //std::cout << "af inp = " << (*pt_inp_C)[0] << ", " << (*pt_inp_C)[1] << "\n";
+    //std::cout << "bf out = " << (*pt_out_C)[0] << ", " << (*pt_out_C)[1] << "\n";
     //return std::pair(pt_inp_C, pt_inp_C);
     /* send the result to dictionary, check if it has a collision  */
-    found_collision = dict.pop_insert(inp_C,
-                                      out_C,
-                                      tmp_C,
+    found_collision = dict.pop_insert(*pt_inp_C,
+                                      *pt_out_C,
+                                      *pt_tmp_C, /* popped value saved here */
                                       Domain_C::extract_k_bits);
 
+
     if (found_collision) [[unlikely]]{
-      // treat collision
-      // todo walk function has not been used!
       std::cout << "found a collision " << n_collisions <<  " out of " << n_needed_collisions << "\n";
-      std::cout << out_C[0] << "\n";
-      std::cout << tmp_C[0] << "\n";
-      std::cout << "----------------------\n";
+      if (Domain_C::is_equal(*pt_inp_C, *pt_tmp_C)){
+        std::cout << "FALSE COLLISION \n";
+        std::cout << "inp1 = "; Domain_C::print(*pt_inp_C);
+        std::cout << "\ninp2 = "; Domain_C::print(*pt_tmp_C);
+        std::cout << "\n";
+        }
+
+      /* tmp_C contains a candidate for collision */
+      std::cout << "popped = " << (*pt_tmp_C)[0] << (*pt_tmp_C)[0] << "\n";
+      swap_pointers(pt_tmp_C, pt_inp2_C);
+
+      std::cout << "before walking ... \n";
+      std::cout << "inp1 = " << (*pt_inp_C)[0] << (*pt_inp_C)[0] << "\n";
+        std::cout << "inp2 = " << (*pt_inp2_C)[0] << (*pt_inp2_C)[0] << "\n";
       treat_collision<Problem>(pt_inp_C,
-                               pt_out_C,
+                               pt_inp2_C,
                                pt_tmp_C,
                                theta,
                                collisions_container,
                                F,
                                G);
 
+      C_t dummy_out_inp1{};
+      C_t dummy_out_inp2{};
+
+      std::cout << "inp1 = " << (*pt_inp_C)[0] << (*pt_inp_C)[0] << "\n";
+      std::cout << "inp2 = " << (*pt_inp2_C)[0] << (*pt_inp2_C)[0] << "\n";
+      F(*pt_inp_C, dummy_out_inp1);
+      F(*pt_inp2_C, dummy_out_inp2);
+      std::cout << "Fout1 = " << dummy_out_inp1[0] << dummy_out_inp1[0] << "\n";
+      std::cout << "Fout2 = " << dummy_out_inp2[0] << dummy_out_inp2[0] << "\n";
+
+      G(*pt_inp_C, dummy_out_inp1);
+      G(*pt_inp_C, dummy_out_inp2);
+      std::cout << "Gout1 = " << dummy_out_inp1[0] << dummy_out_inp1[0] << "\n";
+      std::cout << "Gout2 = " << dummy_out_inp2[0] << dummy_out_inp2[0] << "\n";
+
+      F(*pt_inp_C, dummy_out_inp1);
+      G(*pt_inp_C, dummy_out_inp2);
+      std::cout << "Fout1 = " << dummy_out_inp1[0] << dummy_out_inp1[0] << "\n";
+      std::cout << "Gout2 = " << dummy_out_inp2[0] << dummy_out_inp2[0] << "\n";
+
+      G(*pt_inp_C, dummy_out_inp1);
+      F(*pt_inp_C, dummy_out_inp2);
+      std::cout << "Gout1 = " << dummy_out_inp1[0] << dummy_out_inp1[0] << "\n";
+      std::cout << "Fout2 = " << dummy_out_inp2[0] << dummy_out_inp2[0] << "\n";
+
       ++n_collisions;
+
+      /* restore the pointers locations for ease of debugging  */
+      swap_pointers(pt_tmp_C, pt_inp2_C);
+      std::cout << "---------------------------\n";
     }
     //swap_pointers(&pt_inp_C, &pt_out_C);
     pt = pt_inp_C;
@@ -430,10 +473,8 @@ auto collision()
     // std::cout << "sw inp = " << inp_C[0] << ", " << inp_C[1] << "\n";
     // std::cout << "sw out = " << out_C[0] << ", " << out_C[1] << "\n";
     ++i;
-    if(i>3)
-        return std::pair(inp_C, inp_C);
 
-    std::cout << "\n\n\n";
+
   }
 
 
@@ -441,3 +482,26 @@ auto collision()
   return std::pair<C_t, C_t>(out_C, tmp_C); // todo wrong values
 }
 #endif
+
+/*
+For future check
+dict entry  1127 val = 1127 idx = 58832, sizeof(Val) = 4
+found a collision 48974 out of 4294967296
+FALSE COLLISION
+inp1 = 2864258832
+inp2 = 2864258832
+popped = 2864228642
+before walking ...
+inp1 = 2864228642
+inp2 = 5141451414
+inp1 = 2864228642
+inp2 = 5141451414
+Fout1 = 1924619246
+Fout2 = 6008560085
+Gout1 = 5141451414
+Gout2 = 5141451414
+Fout1 = 1924619246
+Gout2 = 5141451414
+Gout1 = 5141451414
+Fout2 = 1924619246
+ */

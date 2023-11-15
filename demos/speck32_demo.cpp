@@ -23,7 +23,7 @@ public:
   static const int length = 32;
   static const size_t n_elements = (1LL<<32);
 
-  static bool is_equal(const t& x, const t& y){
+  static inline bool is_equal(const t& x, const t& y){
     return x == y;
   }
 
@@ -46,8 +46,12 @@ public:
   inline static auto extract_1_bit(const t& inp) -> int {
     return inp[0]&1;
   }
-
+  static void print(const t& x){
+      std::cout << x[0] << x[1];
+  }
   inline static auto extract_k_bits(const t& inp, int k) -> uint64_t {
+      return ((uint64_t ) inp[1]) ; //| ((uint64_t)  inp[1]) << 16;
+    /////////////// old code before dubgging //////////
     /* k = 16j + r, we would like to get the values of r and j  */
     k = k+1; /* Read bits after the first bit */
     uint16_t nbits_first_word = k&(16 - 1); /* read it mod 16 */
