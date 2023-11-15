@@ -61,6 +61,11 @@ public:
     /* maximally extrat 32 bits */
     return (inp[0]>>1)&mask1 | ((uint64_t) inp[1]&mask2)<<16;
   }
+
+  inline static void copy(t& out, const t& inp){
+      out[0] = inp[0];
+      out[1] = inp[1];
+  }
 };
 
 class Problem : AbstractProblem<SPECK_DOMAIN, SPECK_DOMAIN, SPECK_DOMAIN >{

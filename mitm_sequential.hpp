@@ -47,10 +47,10 @@ public:
 
 
   /* get the next element after x. What matters is getting a different element each time, not the order. */
-  auto next(t& x) -> t;
-  static void serialize(const t &x, const uint8_t *out);   /* write this to out */
-  static void unserialize(t &x, const uint8_t *in);        /* read this from in */
-  static void copy(t& out, const t& inp); /* deepcopy inp to out */
+  inline auto next(t& x) -> t;
+  inline static void serialize(const t &x, const uint8_t *out);   /* write this to out */
+  inline static void unserialize(t &x, const uint8_t *in);        /* read this from in */
+  inline static void copy(t& out, const t& inp); /* deepcopy inp to out */
   inline static auto extract_1_bit(const t& inp) -> int;
   inline static auto extract_k_bits(const t& inp, int k) -> uint64_t;
 
@@ -140,9 +140,16 @@ struct Iterate_G : Problem{
   }
 };
 
-/// Since we check the dist point at the beginning we don't need to use the length explicitly.
-/// Thus, no need write two version of the function below (one starts with f, the other starts with g).
-///  Instead, switch the order of the arguments
+
+template<typename C_t>
+inline void swap_pointers(C_t* pt1,
+                          C_t* pt2){
+    /// pt1 will point to what pt2 was pointing at, and vice versa.
+    C_t* tmp_pt = pt1;
+    pt1 = pt2;
+    pt1 = tmp_pt;
+}
+
 template<typename Problem>
 auto generate_dist_point(const int64_t theta, /* #bits are zero at the beginning */
                          typename Problem::C::t* inp_C, // we need to exchange pointers
@@ -150,7 +157,7 @@ auto generate_dist_point(const int64_t theta, /* #bits are zero at the beginning
                          uint8_t* out_C_serialized,
                          Iterate_F<Problem>& F,
                          Iterate_G<Problem>& G)
-  -> bool
+                         -> bool
 {
 
   static const uint64_t mask = (1LL<<theta) - 1;
@@ -170,7 +177,7 @@ auto generate_dist_point(const int64_t theta, /* #bits are zero at the beginning
 
   // typename Problem::C::t* tmp; /* dummy pointer for exchange */
   /* potentially infinite loop, todo limit  the number of iteration as a function of theta */
-  for (size_t i = 0; i < 3*(1LL<<theta); ++i){
+  for (int64_t i = 0; i < 3*(1LL<<theta); ++i){
     if (f_or_g == 1)
       F(*inp_C, *out_C);
     else
@@ -185,11 +192,9 @@ auto generate_dist_point(const int64_t theta, /* #bits are zero at the beginning
     
     /* decide what is the next function based on the output */    
     f_or_g = C::extract_1_bit(*out_C);
+
     /* swap inp and out */
-    // tmp = inp_C;
-    inp_C = out_C;
-    /* Actually we don't care about the output, it will be overwritten */
-    // out_C = tmp;
+    swap_pointers(inp_C, out_C);
   }
   return false; /* no distinguished point were found */
 }
@@ -202,7 +207,7 @@ auto fill_sequence(typename Problem::C::t* inp_C,
                    const int theta,
                    Iterate_F<Problem>& F,
                    Iterate_G<Problem>& G)
-  -> size_t
+                   -> size_t
 {
   /// Given an input C_t inp, fill the inp_array with all output of f/g (inp)
   /// until a distinguished point is found. Return the number of steps needed
@@ -210,32 +215,43 @@ auto fill_sequence(typename Problem::C::t* inp_C,
   using C = typename Problem::C;
 
   const uint64_t mask = (theta<<1LL) - 1;
-  int64_t chain_length = 0;
+
   int found_dist = 0;
   int f_or_g = C::extract_1_bit(*inp_C);
 
-  for (; chain_length < (3 * (theta << 1LL)) ; ++chain_length ){
+  /* First element of the chain is the input */
+  Problem::C::copy(inp_array[0], *out_C);
+
+  int64_t i = 1;
+  for (; i < (3 * (theta << 1LL)) ; ++i ){
     if (f_or_g)
       F(*inp_C, *out_C);
     else
       G(*inp_C, *out_C);
 
+    /* copy the output to the array */
+      Problem::C::copy(inp_array[i], *out_C);
+
     f_or_g = C::extract_1_bit(*out_C);
     found_dist = (0 == (mask & C::extract_k_bits(*out_C, theta)));
+
+    /* input will point to the current output value */
+    swap_pointers(inp_C, out_C);
 
     if (found_dist) [[unlikely]]
       break; // exit the loop
   }
 
-  return chain_length;
+  return i; /* chain length */
 }
 
 
 
 
 template<typename Problem>
-auto walk(typename Problem::C::t& inp1,
-          typename Problem::C::t& inp2,
+auto walk(typename Problem::C::t* inp1,
+          typename Problem::C::t* inp2,
+          typename Problem::C::t* out_tmp, /* place in memory for tmp calculation */
           const uint64_t theta,
           Iterate_F<Problem>& F,
           Iterate_G<Problem>& G)
@@ -250,25 +266,25 @@ auto walk(typename Problem::C::t& inp1,
   std::vector<C_t> inp1_array(3*theta); /* inp 1 output chain */
 
 
-  typename Problem::C::t out_tmp;
-  
-  size_t inp1_chain_length = fill_sequence(&inp1,
-					   &out_tmp,
-					   inp1_array,
-					   theta,
-					   F, /* Iteration function */
-					   G); /* Iteration function */
 
-  size_t inp2_chain_length = fill_sequence(&inp2,
-					   &out_tmp,
-					   inp2_array,
-					   theta,
-					   F, /* Iteration function */
-					   G); /* Iteration function */
+  
+  size_t inp1_chain_length = fill_sequence(inp1,
+                                           out_tmp,
+                                           inp1_array,
+                                           theta,
+                                           F, /* Iteration function */
+                                           G); /* Iteration function */
+
+  size_t inp2_chain_length = fill_sequence(inp2,
+                                           out_tmp,
+                                           inp2_array,
+                                           theta,
+                                           F, /* Iteration function */
+                                           G); /* Iteration function */
 
 
   /* now walk backward until you find the last point where they share the */
-  size_t i = 1;
+  int64_t i = 1;
   for (; i < 3*(1LL<<theta); ++i) {
     if (inp1_array[inp1_chain_length - i] != inp2_array[inp2_chain_length]){
       break;
@@ -282,8 +298,9 @@ auto walk(typename Problem::C::t& inp1,
 }
 
 template <typename Problem >
-auto treat_collision(typename Problem::C::t& inp1,
-                     typename Problem::C::t& inp2,
+auto treat_collision(typename Problem::C::t* inp1,
+                     typename Problem::C::t* inp2,
+                     typename Problem::C::t* tmp,
                      const uint64_t theta,
                      std::vector< std::pair<typename Problem::C::t, typename Problem::C::t> >& container,
                      Iterate_F<Problem>& F,
@@ -295,11 +312,12 @@ auto treat_collision(typename Problem::C::t& inp1,
   using B_t = typename Problem::B::t;
   using C_t = typename Problem::C::t;
 
-  std::pair<C_t, C_t> pair = walk<Problem>(&inp1, /* address of value of inp1  */
-					   &inp2, /* inp1 -> * <- inp2, i.e. they lead to same value */
-					   theta, /* #zero bits at the beginning */
-					   F, /* Iteration function */
-					   G); /* Iteration function */
+  std::pair<C_t, C_t> pair = walk<Problem>(inp1, /* address of value of inp1  */
+                                           inp2, /* inp1 -> * <- inp2, i.e. they lead to same value */
+                                           tmp,
+                                           theta, /* #zero bits at the beginning */
+                                           F, /* Iteration function */
+                                           G); /* Iteration function */
 
   /* todo here we should add more tests */
   container.push_back(pair);
@@ -382,12 +400,13 @@ auto collision()
     if (found_collision) [[unlikely]]{
       // treat collision
       // todo walk function has not been used!
-      treat_collision<Problem>(inp_C, /* re*/
-			       tmp_C,
-			       theta,
-			       collisions_container,
-			       F,
-			       G);
+      treat_collision<Problem>(&inp_C,
+                               &out_C,
+                               &tmp_C,
+                               theta,
+                               collisions_container,
+                               F,
+                               G);
 
       ++n_collisions;
     }
