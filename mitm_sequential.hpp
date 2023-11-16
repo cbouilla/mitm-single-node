@@ -165,7 +165,7 @@ inline void swap_pointers(C_t* pt1,
     /// pt1 will point to what pt2 was pointing at, and vice versa.
     C_t* tmp_pt = pt1;
     pt1 = pt2;
-    pt1 = tmp_pt;
+    pt2 = tmp_pt;
 }
 
 template<typename Problem>
@@ -386,7 +386,7 @@ auto collision()
   uint8_t c_serial[Domain_C::length];
 
   C_t* pt_inp_C = &inp_C; /* input output */
-  C_t* pt_inp2_C = &inp_C; /* input output */
+  C_t* pt_inp2_C = &inp2_C; /* input output */
   C_t* pt_out_C = &out_C; /* output input */
   C_t* pt_tmp_C = &tmp_C; /* placeholder to save popped values from dict */
   C_t* pt_tmp2_C = &tmp_C; /* placeholder to save popped values from dict */
@@ -433,20 +433,28 @@ auto collision()
 
     if (found_collision) [[unlikely]]{
       std::cout << "found a collision " << n_collisions <<  " out of " << n_needed_collisions << "\n";
+      bool false_collision = false;
+      
       if (Domain_C::is_equal(*pt_inp_C, *pt_tmp_C)){
+	false_collision = true;
         std::cout << "FALSE COLLISION \n";
+        std::cout << "addresses are : " << pt_inp_C << ", " << pt_tmp_C << "\n";
         std::cout << "inp1 = "; Domain_C::print(*pt_inp_C);
         std::cout << "\ninp2 = "; Domain_C::print(*pt_tmp_C);
         std::cout << "\n";
         }
 
+     
+
       /* tmp_C contains a candidate for collision */
+      std::cout << "bf inp2= " << (*pt_inp2_C)[0] << (*pt_inp2_C)[1] << "\n";
       std::cout << "popped = " << (*pt_tmp_C)[0] << (*pt_tmp_C)[1] << "\n";
       swap_pointers(pt_tmp_C, pt_inp2_C);
 
       std::cout << "before walking ... \n";
       std::cout << "inp1 = " << (*pt_inp_C)[0] << (*pt_inp_C)[1] << "\n";
-        std::cout << "inp2 = " << (*pt_inp2_C)[0] << (*pt_inp2_C)[1] << "\n";
+      std::cout << "inp2 = " << (*pt_inp2_C)[0] << (*pt_inp2_C)[1] << "\n";
+
       treat_collision<Problem>(pt_inp_C,
                                pt_inp2_C,
                                pt_tmp_C,
@@ -455,31 +463,21 @@ auto collision()
                                F,
                                G);
 
-      C_t dummy_out_inp1{};
-      C_t dummy_out_inp2{};
-
+      std::cout << "after walking ... \n";
+      
       std::cout << "inp1 = " << (*pt_inp_C)[0] << (*pt_inp_C)[1] << "\n";
       std::cout << "inp2 = " << (*pt_inp2_C)[0] << (*pt_inp2_C)[1] << "\n";
+
+      C_t dummy_out_inp1{};
+      C_t dummy_out_inp2{};
       F(*pt_inp_C, dummy_out_inp1);
       F(*pt_inp2_C, dummy_out_inp2);
-      std::cout << "Fout1 = " << dummy_out_inp1[0] << dummy_out_inp1[1] << "\n";
-      std::cout << "Fout2 = " << dummy_out_inp2[0] << dummy_out_inp2[1] << "\n";
 
       G(*pt_inp_C, dummy_out_inp1);
       G(*pt_inp_C, dummy_out_inp2);
       std::cout << "Gout1 = " << dummy_out_inp1[0] << dummy_out_inp1[1] << "\n";
       std::cout << "Gout2 = " << dummy_out_inp2[0] << dummy_out_inp2[1] << "\n";
-
-      F(*pt_inp_C, dummy_out_inp1);
-      G(*pt_inp_C, dummy_out_inp2);
-      std::cout << "Fout1 = " << dummy_out_inp1[0] << dummy_out_inp1[1] << "\n";
-      std::cout << "Gout2 = " << dummy_out_inp2[0] << dummy_out_inp2[1] << "\n";
-
-      G(*pt_inp_C, dummy_out_inp1);
-      F(*pt_inp_C, dummy_out_inp2);
-      std::cout << "Gout1 = " << dummy_out_inp1[0] << dummy_out_inp1[1] << "\n";
-      std::cout << "Fout2 = " << dummy_out_inp2[0] << dummy_out_inp2[1] << "\n";
-
+      
       ++n_collisions;
 
       /* restore the pointers locations for ease of debugging  */
