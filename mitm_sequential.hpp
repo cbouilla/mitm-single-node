@@ -241,7 +241,7 @@ auto fill_sequence(typename Problem::C::t* inp_C,
   Problem::C::copy(inp_array[0], *out_C);
 
   int64_t i = 1;
-  for (; i < (3 * (theta << 1LL)) ; ++i ){
+  for (; i < (3 * (1LL<<theta)) ; ++i ){
     if (f_or_g)
       F(*inp_C, *out_C);
     else
@@ -280,8 +280,8 @@ auto walk(typename Problem::C::t* inp1,
   /// add a drawing to illustrate this.
 
   using C_t = typename Problem::C::t;
-  std::vector<C_t> inp2_array(3*theta); /* inp 2 output chain */
-  std::vector<C_t> inp1_array(3*theta); /* inp 1 output chain */
+  std::vector<C_t> inp2_array(3*(1LL<<theta)); /* inp 2 output chain */
+  std::vector<C_t> inp1_array(3*(1LL<<theta)); /* inp 1 output chain */
 
   size_t inp1_chain_length = fill_sequence(inp1,
                                            out_tmp,
@@ -291,13 +291,14 @@ auto walk(typename Problem::C::t* inp1,
                                            G); /* Iteration function */
 
   size_t inp2_chain_length = fill_sequence(inp2,
-                                           out_tmp,
+                                             out_tmp,
                                            inp2_array,
                                            theta,
                                            F, /* Iteration function */
                                            G); /* Iteration function */
 
 
+  
   /* now walk backward until you find the last point where they share the */
   int64_t i = 1;
   for (; i < 3*(1LL<<theta); ++i) {
@@ -305,6 +306,7 @@ auto walk(typename Problem::C::t* inp1,
       break;
     }
   }
+  std::cout << "reached the 2nd point \n";
   size_t idx_inp1 = inp1_chain_length - i;
   size_t idx_inp2 = inp2_chain_length - i;
 
@@ -333,7 +335,9 @@ auto treat_collision(typename Problem::C::t* inp1,
                                            theta, /* #zero bits at the beginning */
                                            F, /* Iteration function */
                                            G); /* Iteration function */
+  
 
+  std::cout << "before pushback\n";
   /* todo here we should add more tests */
   container.push_back(pair);
   return true;
@@ -376,7 +380,7 @@ auto collision()
 
   // -----------------------------------------------------------------------------/
   // VARIABLES FOR GENERATING RANDOM DISTINGUISHED POINTS
-  int theta = 4; // difficulty;
+  int theta = 2; // difficulty;
   /* inp/out variables are used as input and output to save one 1 copy */
   C_t inp_C{}; /* input output */
   C_t inp2_C{}; /* input output */
@@ -398,9 +402,9 @@ auto collision()
   /* Collisions related variables */
   bool found_collision = false;
   size_t n_collisions = 0;
-  size_t n_needed_collisions = 1LL<<32;
+  size_t n_needed_collisions = 1LL<<20;
   /* a:A_t -f-> x <-g- b:B_t */
-  std::vector< std::pair<A_t, B_t> >  collisions_container;
+  std::vector< std::pair<A_t, B_t> >  collisions_container{};
 
   /* Iteration Functions */
   Iterate_F<Problem> F{};
