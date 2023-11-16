@@ -160,8 +160,8 @@ struct Iterate_G : Problem{
 
 
 template<typename C_t>
-inline void swap_pointers(C_t* pt1,
-                          C_t* pt2){
+inline void swap_pointers(C_t*& pt1,
+                          C_t*& pt2){
     /// pt1 will point to what pt2 was pointing at, and vice versa.
     C_t* tmp_pt = pt1;
     pt1 = pt2;
@@ -376,7 +376,7 @@ auto collision()
 
   // -----------------------------------------------------------------------------/
   // VARIABLES FOR GENERATING RANDOM DISTINGUISHED POINTS
-  int theta = 1; // difficulty;
+  int theta = 4; // difficulty;
   /* inp/out variables are used as input and output to save one 1 copy */
   C_t inp_C{}; /* input output */
   C_t inp2_C{}; /* input output */
