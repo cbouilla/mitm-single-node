@@ -6,6 +6,7 @@
 #include <utility>
 #include <vector>
 #include <algorithm>
+#include <chrono>
 
 #include "include/dict.hpp"
 
@@ -410,21 +411,33 @@ auto collision()
   Iterate_F<Problem> F{};
   Iterate_G<Problem> G{};
 
-  int i = 0;
+  size_t i = 0;
   C_t* pt;
 
+  size_t false_collisions = 0;
+  size_t real_collisions = 0;
+
+  // auto begin = std::chrono::high_resolution_clock::now();
+  // auto end  = std::chrono::high_resolution_clock::now();
+  // auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(end - begin).count();
+  
   while (n_collisions < n_needed_collisions){
     /* Get a distinguished point */
     *pt_inp_C = read_urandom<C_t>();
     //std::cout << "bf inp = " << (*pt_inp_C)[0] << ", " << (*pt_inp_C)[1] << "\n";
     //std::cout << "bf out = " << (*pt_out_C)[0] << ", " << (*pt_out_C)[1] << "\n";
 
+    // begin = std::chrono::high_resolution_clock::now();
     generate_dist_point<Problem>(theta,
 				 pt_inp_C, /* convert this to a pointer */
 				 pt_out_C, /* convert this to a pointer */
 				 c_serial,
 				 F,
 				 G);
+    // end  = std::chrono::high_resolution_clock::now();
+    // elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(end - begin).count();
+    // std::cout << "Gen dist took " << elapsed/(1000000000.0) << "sec \n";
+
     //std::cout << "af inp = " << (*pt_inp_C)[0] << ", " << (*pt_inp_C)[1] << "\n";
     //std::cout << "bf out = " << (*pt_out_C)[0] << ", " << (*pt_out_C)[1] << "\n";
     //return std::pair(pt_inp_C, pt_inp_C);
@@ -436,51 +449,62 @@ auto collision()
 
 
     if (found_collision) [[unlikely]]{
-      std::cout << "found a collision " << n_collisions <<  " out of " << n_needed_collisions << "\n";
-      bool false_collision = false;
+
+      bool is_false_collision = false;
       
       if (Domain_C::is_equal(*pt_inp_C, *pt_tmp_C)){
-	false_collision = true;
+	is_false_collision = true;
         std::cout << "FALSE COLLISION \n";
         std::cout << "addresses are : " << pt_inp_C << ", " << pt_tmp_C << "\n";
         std::cout << "inp1 = "; Domain_C::print(*pt_inp_C);
         std::cout << "\ninp2 = "; Domain_C::print(*pt_tmp_C);
         std::cout << "\n";
+	++false_collisions;
         }
 
+      if (!is_false_collision)
+	++real_collisions;
      
-
+      std::cout << "found a collision " << n_collisions
+		<<  " out of " << n_needed_collisions
+		<< " #dist point queried = " << i << "\n";
+      i = 0; /* i is the number of distinguished point generated */
+      
+      std::cout << "found a collision " << n_collisions <<  " out of " << n_needed_collisions << "\n";
+      std::cout <<  "false collisions = " << false_collisions <<  " real collisions = " << real_collisions << "\n";
       /* tmp_C contains a candidate for collision */
-      std::cout << "bf inp2= " << (*pt_inp2_C)[0] << (*pt_inp2_C)[1] << "\n";
-      std::cout << "popped = " << (*pt_tmp_C)[0] << (*pt_tmp_C)[1] << "\n";
+      // std::cout << "bf inp2= " << (*pt_inp2_C)[0] << (*pt_inp2_C)[1] << "\n";
+      // std::cout << "popped = " << (*pt_tmp_C)[0] << (*pt_tmp_C)[1] << "\n";
       swap_pointers(pt_tmp_C, pt_inp2_C);
 
-      std::cout << "before walking ... \n";
-      std::cout << "inp1 = " << (*pt_inp_C)[0] << (*pt_inp_C)[1] << "\n";
-      std::cout << "inp2 = " << (*pt_inp2_C)[0] << (*pt_inp2_C)[1] << "\n";
+      // std::cout << "before walking ... \n";
+      // std::cout << "inp1 = " << (*pt_inp_C)[0] << (*pt_inp_C)[1] << "\n";
+      // std::cout << "inp2 = " << (*pt_inp2_C)[0] << (*pt_inp2_C)[1] << "\n";
+      if (!is_false_collision){
+	treat_collision<Problem>(pt_inp_C,
+				 pt_inp2_C,
+				 pt_tmp_C,
+				 theta,
+				 collisions_container,
+				 F,
+				 G);
 
-      treat_collision<Problem>(pt_inp_C,
-                               pt_inp2_C,
-                               pt_tmp_C,
-                               theta,
-                               collisions_container,
-                               F,
-                               G);
-
-      std::cout << "after walking ... \n";
+	// std::cout << "after walking ... \n";
       
-      std::cout << "inp1 = " << (*pt_inp_C)[0] << (*pt_inp_C)[1] << "\n";
-      std::cout << "inp2 = " << (*pt_inp2_C)[0] << (*pt_inp2_C)[1] << "\n";
+	std::cout << "inp1 = " << (*pt_inp_C)[0] << (*pt_inp_C)[1] << "\n";
+	std::cout << "inp2 = " << (*pt_inp2_C)[0] << (*pt_inp2_C)[1] << "\n";
 
-      C_t dummy_out_inp1{};
-      C_t dummy_out_inp2{};
-      F(*pt_inp_C, dummy_out_inp1);
-      F(*pt_inp2_C, dummy_out_inp2);
+	C_t dummy_out_inp1{};
+	C_t dummy_out_inp2{};
+	F(*pt_inp_C, dummy_out_inp1);
+	F(*pt_inp2_C, dummy_out_inp2);
 
-      G(*pt_inp_C, dummy_out_inp1);
-      G(*pt_inp_C, dummy_out_inp2);
-      std::cout << "Gout1 = " << dummy_out_inp1[0] << dummy_out_inp1[1] << "\n";
-      std::cout << "Gout2 = " << dummy_out_inp2[0] << dummy_out_inp2[1] << "\n";
+	G(*pt_inp_C, dummy_out_inp1);
+	G(*pt_inp_C, dummy_out_inp2);
+	std::cout << "Gout1 = " << dummy_out_inp1[0] << dummy_out_inp1[1] << "\n";
+	std::cout << "Gout2 = " << dummy_out_inp2[0] << dummy_out_inp2[1] << "\n";
+
+      }
       
       ++n_collisions;
 
@@ -494,12 +518,9 @@ auto collision()
     pt_out_C = pt;
     // std::cout << "sw inp = " << inp_C[0] << ", " << inp_C[1] << "\n";
     // std::cout << "sw out = " << out_C[0] << ", " << out_C[1] << "\n";
-    ++i;
-
-
+    ++i; 
   }
-
-
+  
 
   return std::pair<C_t, C_t>(out_C, tmp_C); // todo wrong values
 }
