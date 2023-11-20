@@ -1,6 +1,9 @@
 #ifndef MITM_SEQUENTIAL
 #define MITM_SEQUENTIAL
+#include <array>
 #include <cstddef>
+#include <cstdint>
+#include <cstring>
 #include <iostream>
 #include <assert.h>
 #include <utility>
@@ -249,7 +252,7 @@ auto fill_sequence(typename Problem::C::t* inp_C,
       G(*inp_C, *out_C);
 
     /* copy the output to the array */
-      Problem::C::copy(inp_array[i], *out_C);
+    Problem::C::copy(inp_array[i], *out_C);
 
     f_or_g = C::extract_1_bit(*out_C);
     found_dist = (0 == (mask & C::extract_k_bits(*out_C, theta)));
@@ -344,6 +347,53 @@ auto treat_collision(typename Problem::C::t* inp1,
   return true;
 }
 
+template <typename Problem>
+auto f_list_orders() /* return a list of all f inputs outputs
+		      */
+  -> std::pair<typename Problem::A::t, /* this is hideous */
+	       std::array<uint8_t, Problem::A::length> >
+{
+  /* this vector will hold all (inp, out) pairs of F */
+  using A_t = typename Problem::C::t; 
+  using C_t = typename Problem::C::t;
+  /* number of bytes needed to code an element of C */
+  const int nbytes = Problem::C::length;
+  using C_serial = std::array<uint8_t, nbytes>;
+  std::vector< std::pair<A_t, C_serial> > inp_out(Problem::C::n_elements);
+  A_t inp{};
+  C_t out{};
+  
+
+
+
+  for (size_t i = 0; i < Problem::A::n_elements; ++i){
+    F(inp, out);
+
+    inp_out[i].first = inp;
+    /* put the output in the second element */
+    Problem::C::serialize(out, inp_out[i].second.data(), nbytes);
+
+    /* get ready for the next round */
+    inp = Problem::A::next(inp);
+  }
+
+
+  /* sort the input output according to the second element (the output ) */
+  std::sort(inp_out.begin(),
+	    inp_out.end(),
+	    [](std::pair<A_t, C_serial> io1, std::pair<A_t, C_serial> io2)
+	    {return io1.second < io2.second; });
+
+  /* Hopefully, NRVO will save the unwanted copying */
+  return inp_out; 
+  
+}
+
+
+
+template <typename Problem>
+auto all_collisions()
+    -> std::pair<typename Problem::C::t, typename Problem::C::t>;
 
 
 
@@ -448,6 +498,7 @@ auto collision()
                                       Domain_C::extract_k_bits);
 
 
+    
     if (found_collision) [[unlikely]]{
 
       bool is_false_collision = false;

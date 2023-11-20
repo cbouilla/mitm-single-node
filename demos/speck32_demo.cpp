@@ -63,7 +63,7 @@ public:
     uint16_t mask2 = (1<<nbits_second_word) - 1;
 
     /* maximally extrat 32 bits */
-    return (inp[0]>>1)&mask1 | ((uint64_t) inp[1]&mask2)<<16;
+    return ((inp[0]>>1)&mask1) | (((uint64_t) inp[1])&mask2)<<16;
   }
 
   inline static void copy(t& out, const t& inp){
