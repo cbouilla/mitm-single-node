@@ -3,6 +3,7 @@
 /// specifies different length for k, we are using shorter key for simplicity
 /// since security is not a concern.
 
+#include <cstdint>
 #include <stdint.h>
 #include <iostream>
 #include <array>
@@ -38,6 +39,14 @@ public:
     out[1] = x[1];
     out[1] = x[1]>>8;
   }
+
+  static void serialize(const t& x, std::array<uint8_t, length>& out){
+    out[0] = x[0];
+    out[0] = x[0]>>8;
+    out[1] = x[1];
+    out[1] = x[1]>>8;
+  }
+
   static void unserialize(t& out, const uint8_t* in){
     out[0] = in[0] | ((uint16_t ) in[1])<<8;
     out[1] = in[2] | ((uint16_t ) in[3])<<8;
@@ -69,6 +78,13 @@ public:
   inline static void copy(t& out, const t& inp){
       out[0] = inp[0];
       out[1] = inp[1];
+  }
+
+  inline static void next(t& inp){
+    uint32_t n = inp[0] | ((uint32_t) inp[1])<<16;
+    ++n;
+    inp[0] = n;
+    inp[1] = n>>16;
   }
 
 

@@ -348,13 +348,13 @@ auto treat_collision(typename Problem::C::t* inp1,
 }
 
 template <typename Problem>
-auto f_list_orders() /* return a list of all f inputs outputs
+auto f_inp_out_ordered() /* return a list of all f inputs outputs
 		      */
-  -> std::pair<typename Problem::A::t, /* this is hideous */
-	       std::array<uint8_t, Problem::A::length> >
+  -> std::vector<std::pair<typename Problem::A::t, /* this is hideousxo */
+	                   std::array<uint8_t, Problem::A::length> > >
 {
   /* this vector will hold all (inp, out) pairs of F */
-  using A_t = typename Problem::C::t; 
+  using A_t = typename Problem::A::t;
   using C_t = typename Problem::C::t;
   /* number of bytes needed to code an element of C */
   const int nbytes = Problem::C::length;
@@ -367,14 +367,14 @@ auto f_list_orders() /* return a list of all f inputs outputs
 
 
   for (size_t i = 0; i < Problem::A::n_elements; ++i){
-    F(inp, out);
+    Problem::f(inp, out);
 
     inp_out[i].first = inp;
     /* put the output in the second element */
-    Problem::C::serialize(out, inp_out[i].second.data(), nbytes);
+    Problem::C::serialize(out, inp_out[i].second.data());
 
     /* get ready for the next round */
-    inp = Problem::A::next(inp);
+    Problem::A::next(inp);
   }
 
 
@@ -389,11 +389,76 @@ auto f_list_orders() /* return a list of all f inputs outputs
   
 }
 
+template <typename A, typename C>
+auto binary_search_idx(std::vector< std::pair<A, C> > arr,
+                       C elm) -> int64_t
+{
+  /// * This binary search returns the index of the found element,
+  /// *  -1 if no element was found!
+  int64_t left = 0;
+  int64_t right = arr.size();
+  int64_t  mid;
+  while (left <= right ){
+    mid = (right - left)>>1;
+
+    if (elm == arr[mid].second )
+      return mid; /* found the index of collision */
+    if (elm < arr[mid].second )
+      right = mid - 1;
+    else /* (arr[mid].second < elm ) */
+      left = mid + 1;
+  }
+  return -1;
+}
+
 
 
 template <typename Problem>
-auto all_collisions()
-    -> std::pair<typename Problem::C::t, typename Problem::C::t>;
+auto all_collisions_by_list()
+  -> std::vector< std::tuple<typename Problem::A::t,
+			     typename Problem::B::t,
+			     typename Problem::C::t>>
+  
+{
+  /* this vector will hold all (inp, out) pairs of F */
+  using A_t = typename Problem::A::t;
+  using B_t = typename Problem::B::t;
+  using C_t = typename Problem::C::t;
+
+
+  /* number of bytes needed to code an element of C */
+  const int nbytes = Problem::C::length;
+  using C_serial = std::array<uint8_t, nbytes>;
+
+  /* collision container */
+
+  std::vector< std::pair<A_t, C_serial> >
+      inp_out_f_A_C = f_inp_out_ordered<Problem>();
+
+  /* now let's test all inputs of g and register those gets a collision */
+  B_t inp_B{};
+  C_t out_C{};
+  C_serial out_serial{};
+
+  std::vector< std::tuple<A_t, B_t, C_t>  > all_collisions_vec{};
+  int64_t idx = 0;
+  for (size_t i = 0; i < Problem::B::n_elements; ++i){
+    Problem::g(inp_B, out_C);
+    Problem::C::serialize(out_C, out_serial);
+    idx = binary_search_idx(inp_out_f_A_C, out_serial);
+
+    if (idx > -1){
+      A_t inp_A = inp_out_f_A_C[idx].first;
+
+      all_collisions_vec.push_back(std::tuple(inp_A,
+                                              inp_B,
+                                              out_C));
+    }
+    Problem::B::next(inp_B);
+    
+  }
+  return all_collisions_vec;
+}
 
 
 
@@ -415,6 +480,18 @@ auto collision()
 
 
 
+  /* EXPERIMENT BY NAIVE METHOD        */
+  auto start = std::chrono::high_resolution_clock::now();
+  auto list_of_collisions = all_collisions_by_list<Problem>();
+  auto end = std::chrono::high_resolution_clock::now();
+  std::chrono::duration<double> diff = end - start;
+  std::cout << "The naive method tells us that there are "
+            << list_of_collisions.size()
+            << " collisions. Took: "
+            << diff.count()
+            << "s\n";
+
+  /* end of EXPERIMENT BY NAIVE METHOD */
 
   /* save some boilerplate typing */
   using t_pair = typename std::pair<A_t, C_t>;
@@ -437,14 +514,14 @@ auto collision()
   C_t inp2_C{}; /* input output */
   C_t out_C{}; /* output input */
   C_t tmp_C{}; /* placeholder to save popped values from dict */
-  C_t tmp2_C{}; /* placeholder to save popped values from dict */
+
   uint8_t c_serial[Domain_C::length];
 
   C_t* pt_inp_C = &inp_C; /* input output */
   C_t* pt_inp2_C = &inp2_C; /* input output */
   C_t* pt_out_C = &out_C; /* output input */
   C_t* pt_tmp_C = &tmp_C; /* placeholder to save popped values from dict */
-  C_t* pt_tmp2_C = &tmp_C; /* placeholder to save popped values from dict */
+
 
   /* fill the input */
   Domain_C::randomize(inp_C); // todo how to add an optional PRG
