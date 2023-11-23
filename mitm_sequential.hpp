@@ -359,11 +359,20 @@ auto f_inp_out_ordered() /* return a list of all f inputs outputs
   /* number of bytes needed to code an element of C */
   const int nbytes = Problem::C::length;
   using C_serial = std::array<uint8_t, nbytes>;
+
+  auto begin = std::chrono::high_resolution_clock::now();
   std::vector< std::pair<A_t, C_serial> > inp_out(Problem::C::n_elements);
+  auto end = std::chrono::high_resolution_clock::now();
+  auto elapsed_sec = std::chrono::duration_cast<std::chrono::nanoseconds>(end - begin).count() / 1000000000.0;
+  std::cout << "Initializing the first vector took " <<  elapsed_sec <<"\n";
   A_t inp{};
   C_t out{};
   
 
+
+  std::cout << "Starting to fill the A list "
+            << Problem::A::n_elements
+            << " elements\n";
 
 
   for (size_t i = 0; i < Problem::A::n_elements; ++i){
@@ -375,14 +384,30 @@ auto f_inp_out_ordered() /* return a list of all f inputs outputs
 
     /* get ready for the next round */
     Problem::A::next(inp);
+
+    if (i % (Problem::A::n_elements/100) == 0){
+      end = std::chrono::high_resolution_clock::now();
+      elapsed_sec  = std::chrono::duration_cast<std::chrono::nanoseconds>(end - begin).count() / 1000000000.0;
+      std::cout << "It took " << elapsed_sec << "s to do "
+                <<  100*(i/Problem::A::n_elements) << "% \n";
+      begin = std::chrono::high_resolution_clock::now();
+
+    }
   }
+  std::cout << "Done with the first list in time ≈ " << 100 * elapsed_sec
+            <<" seconds\n";
 
 
+  begin = std::chrono::high_resolution_clock::now();
   /* sort the input output according to the second element (the output ) */
   std::sort(inp_out.begin(),
 	    inp_out.end(),
 	    [](std::pair<A_t, C_serial> io1, std::pair<A_t, C_serial> io2)
 	    {return io1.second < io2.second; });
+
+  end = std::chrono::high_resolution_clock::now();
+  elapsed_sec  = std::chrono::duration_cast<std::chrono::nanoseconds>(end - begin).count() / 1000000000.0;
+  std::cout << "Sorting took " << elapsed_sec << "s\n";
 
   /* Hopefully, NRVO will save the unwanted copying */
   return inp_out; 
@@ -440,8 +465,15 @@ auto all_collisions_by_list()
   C_t out_C{};
   C_serial out_serial{};
 
+  auto begin = std::chrono::high_resolution_clock::now();
+  auto end = std::chrono::high_resolution_clock::now();
+  auto elapsed_sec = std::chrono::duration_cast<std::chrono::nanoseconds>(end - begin).count() / 1000000000.0;
+
   std::vector< std::tuple<A_t, B_t, C_t>  > all_collisions_vec{};
   int64_t idx = 0;
+  std::cout << "The problem has " << Problem::B::n_elements << " elements\n";
+
+  begin = std::chrono::high_resolution_clock::now();
   for (size_t i = 0; i < Problem::B::n_elements; ++i){
     Problem::g(inp_B, out_C);
     Problem::C::serialize(out_C, out_serial);
@@ -455,7 +487,15 @@ auto all_collisions_by_list()
                                               out_C));
     }
     Problem::B::next(inp_B);
-    
+    if (i % (Problem::B::n_elements/100) == 0){
+      end = std::chrono::high_resolution_clock::now();
+      elapsed_sec = std::chrono::duration_cast<std::chrono::nanoseconds>(end - begin).count() / 1000000000.0;
+
+      std::cout << "second list took " << elapsed_sec << " s to do "
+                << 100*(i /Problem::B::n_elements) << "%\n";
+
+      begin = std::chrono::high_resolution_clock::now();
+    }
   }
   return all_collisions_vec;
 }
@@ -481,10 +521,11 @@ auto collision()
 
 
   /* EXPERIMENT BY NAIVE METHOD        */
-  auto start = std::chrono::high_resolution_clock::now();
+  std::cout << "Starting with naive method ...\n";
+  auto begin = std::chrono::high_resolution_clock::now();
   auto list_of_collisions = all_collisions_by_list<Problem>();
   auto end = std::chrono::high_resolution_clock::now();
-  std::chrono::duration<double> diff = end - start;
+  std::chrono::duration<double> diff = end - begin;
   std::cout << "The naive method tells us that there are "
             << list_of_collisions.size()
             << " collisions. Took: "
@@ -544,9 +585,9 @@ auto collision()
   size_t false_collisions = 0;
   size_t real_collisions = 0;
 
-  // auto begin = std::chrono::high_resolution_clock::now();
-  // auto end  = std::chrono::high_resolution_clock::now();
-  // auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(end - begin).count();
+  begin = std::chrono::high_resolution_clock::now();
+  end  = std::chrono::high_resolution_clock::now();
+  auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(end - begin).count();
   
   while (n_collisions < n_needed_collisions){
     /* Get a distinguished point */
@@ -554,16 +595,16 @@ auto collision()
     //std::cout << "bf inp = " << (*pt_inp_C)[0] << ", " << (*pt_inp_C)[1] << "\n";
     //std::cout << "bf out = " << (*pt_out_C)[0] << ", " << (*pt_out_C)[1] << "\n";
 
-    // begin = std::chrono::high_resolution_clock::now();
+    begin = std::chrono::high_resolution_clock::now();
     generate_dist_point<Problem>(theta,
 				 pt_inp_C, /* convert this to a pointer */
 				 pt_out_C, /* convert this to a pointer */
 				 c_serial,
 				 F,
 				 G);
-    // end  = std::chrono::high_resolution_clock::now();
-    // elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(end - begin).count();
-    // std::cout << "Gen dist took " << elapsed/(1000000000.0) << "sec \n";
+    end  = std::chrono::high_resolution_clock::now();
+    elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(end - begin).count();
+    std::cout << "Gen dist took " << elapsed/(1000000000.0) << "sec \n";
 
     //std::cout << "af inp = " << (*pt_inp_C)[0] << ", " << (*pt_inp_C)[1] << "\n";
     //std::cout << "bf out = " << (*pt_out_C)[0] << ", " << (*pt_out_C)[1] << "\n";
