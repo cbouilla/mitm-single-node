@@ -436,30 +436,12 @@ auto inp_out_ordered() /* return a list of all f inputs outputs */
   
 }
 
-template <typename A, typename C>
-auto binary_search_idx(std::vector< std::pair<A, C> > arr,
-                       C elm) -> int64_t
-{
-  /// * This binary search returns the index of the found element,
-  /// *  -1 if no element was found!
-  int64_t left = 0;
-  int64_t right = arr.size();
-  int64_t  mid;
-  while (left <= right ){
-    mid = (right - left)>>1;
 
-    if (elm == arr[mid].second )
-      return mid; /* found the index of collision */
-    if (elm < arr[mid].second )
-      right = mid - 1;
-    else /* (arr[mid].second < elm ) */
-      left = mid + 1;
-  }
-  return -1;
-}
+// todo contiue from here
 
+/* implement a comparison for serial elements */
 
-
+/* get all collisions by naive algorithm */
 template <typename Problem>
 auto all_collisions_by_list()
   -> std::vector< std::tuple<typename Problem::A::t,
@@ -489,43 +471,63 @@ auto all_collisions_by_list()
 				    Problem::A::next,
 				    Problem::A::ith_elm>();
 
+  std::vector< std::pair<B_t, C_serial> >
+    inp_out_f_B_C = inp_out_ordered<Problem,
+				    B_t,
+				    C_t,
+				    Problem::B::length,
+				    Problem::B::n_elements,
+				    Problem::g,
+				    Problem::B::next,
+				    Problem::B::ith_elm>();
+
   /* now let's test all inputs of g and register those gets a collision */
-  B_t inp_B{};
-  C_t out_C{};
-  C_serial out_serial{};
+
+
+
 
   auto begin = std::chrono::high_resolution_clock::now();
   auto end = std::chrono::high_resolution_clock::now();
   auto elapsed_sec = std::chrono::duration_cast<std::chrono::nanoseconds>(end - begin).count() / 1000000000.0;
 
+
+
+
   std::vector< std::tuple<A_t, B_t, C_t>  > all_collisions_vec{};
-  int64_t idx = 0;
-  std::cout << "The problem has " << Problem::B::n_elements << " elements\n";
-
+  size_t A_n_elements = inp_out_f_A_C.size();
+  size_t B_n_elements = inp_out_f_B_C.size();
+  
   begin = std::chrono::high_resolution_clock::now();
-  for (size_t i = 0; i < Problem::B::n_elements; ++i){
-    Problem::g(inp_B, out_C);
-    Problem::C::serialize(out_C, out_serial);
-    idx = binary_search_idx(inp_out_f_A_C, out_serial);
 
-    if (idx > -1){
-      A_t inp_A = inp_out_f_A_C[idx].first;
+  size_t idx_A = 0;
+  size_t idx_B = 0;
 
-      all_collisions_vec.push_back(std::tuple(inp_A,
-                                              inp_B,
-                                              out_C));
+
+  while ((idx_A < A_n_elements) || (idx_B < B_n_elements)) {
+    /* 1st case: we have a collision  */
+    if( inp_out_f_A_C[idx_A].second ==  inp_out_f_B_C[idx_A].second ) {
+      
     }
-    Problem::B::next(inp_B);
-    if (i % (Problem::B::n_elements/100) == 0){
-      end = std::chrono::high_resolution_clock::now();
-      elapsed_sec = std::chrono::duration_cast<std::chrono::nanoseconds>(end - begin).count() / 1000000000.0;
-
-      std::cout << "second list took " << elapsed_sec << " s to do "
-                << (100.0*i) /Problem::B::n_elements << "%\n";
-
-      begin = std::chrono::high_resolution_clock::now();
-    }
+    /* todo contiue from here */
+    /* when */
+    if( inp_out_f_A_C[idx_A].second ==  inp_out_f_B_C[idx_A].second ) 
+    
   }
+
+
+
+
+
+  if (i % (Problem::B::n_elements/100) == 0){
+    end = std::chrono::high_resolution_clock::now();
+    elapsed_sec = std::chrono::duration_cast<std::chrono::nanoseconds>(end - begin).count() / 1000000000.0;
+
+    std::cout << "second list took " << elapsed_sec << " s to do "
+	      << (100.0*i) /Problem::B::n_elements << "%\n";
+
+    begin = std::chrono::high_resolution_clock::now();
+  }
+  
   return all_collisions_vec;
 }
 
