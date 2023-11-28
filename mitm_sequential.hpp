@@ -6,11 +6,13 @@
 #include <cstring>
 #include <iostream>
 #include <assert.h>
+#include <pstl/glue_execution_defs.h>
 #include <utility>
 #include <vector>
 #include <algorithm>
 #include <chrono>
-
+#include <omp.h>
+#include <execution>
 #include "include/dict.hpp"
 
 /******************************************************************************/
@@ -347,60 +349,80 @@ auto treat_collision(typename Problem::C::t* inp1,
   return true;
 }
 
-template <typename Problem>
-auto f_inp_out_ordered() /* return a list of all f inputs outputs
-		      */
-  -> std::vector<std::pair<typename Problem::A::t, /* this is hideousxo */
-	                   std::array<uint8_t, Problem::A::length> > >
+
+/* ----------------------------- Naive method ------------------------------ */
+template <typename Problem, typename A_t, typename C_t,
+          int length,               /* output length in bytes */
+          size_t A_n_elements,
+	  auto f, /* f: A_t -> C_t */
+          auto next_A,
+	  auto ith_elm> /* next_A(A_t& inp), edit inp to the next input  */
+
+auto inp_out_ordered() /* return a list of all f inputs outputs */
+  -> std::vector<std::pair<A_t, std::array<uint8_t, length> > >
+  
 {
   /* this vector will hold all (inp, out) pairs of F */
-  using A_t = typename Problem::A::t;
-  using C_t = typename Problem::C::t;
+
+
   /* number of bytes needed to code an element of C */
-  const int nbytes = Problem::C::length;
-  using C_serial = std::array<uint8_t, nbytes>;
+  using C_serial = std::array<uint8_t, length>;
 
   auto begin = std::chrono::high_resolution_clock::now();
   std::vector< std::pair<A_t, C_serial> > inp_out(Problem::C::n_elements);
   auto end = std::chrono::high_resolution_clock::now();
   auto elapsed_sec = std::chrono::duration_cast<std::chrono::nanoseconds>(end - begin).count() / 1000000000.0;
   std::cout << "Initializing the first vector took " <<  elapsed_sec <<"\n";
-  A_t inp{};
-  C_t out{};
   
 
 
   std::cout << "Starting to fill the A list "
-            << Problem::A::n_elements
+            << A_n_elements
             << " elements\n";
 
+  omp_set_num_threads(omp_get_max_threads());
+  std::cout << "We are going to use " << omp_get_max_threads() << " threads\n";
+  begin = std::chrono::high_resolution_clock::now();
 
-  for (size_t i = 0; i < Problem::A::n_elements; ++i){
-    Problem::f(inp, out);
+  const int nthds = omp_get_max_threads();
+#pragma omp parallel for schedule(static)
 
-    inp_out[i].first = inp;
-    /* put the output in the second element */
-    Problem::C::serialize(out, inp_out[i].second.data());
+  
+  for (int thd = 0; thd < nthds; ++thd){
+    size_t offset = thd * (A_n_elements/nthds);
+    size_t end_idx = (thd+1) * (A_n_elements/nthds);
+    if (thd == nthds - 1) end_idx = A_n_elements;
 
-    /* get ready for the next round */
-    Problem::A::next(inp);
+    A_t inp{}; /* private variable for a thread */
+    C_t out{}; /* private variable for a thread */
 
-    if (i % (Problem::A::n_elements/100) == 0){
-      end = std::chrono::high_resolution_clock::now();
-      elapsed_sec  = std::chrono::duration_cast<std::chrono::nanoseconds>(end - begin).count() / 1000000000.0;
-      std::cout << "It took " << elapsed_sec << "s to do "
-                <<  100*(i/Problem::A::n_elements) << "% \n";
-      begin = std::chrono::high_resolution_clock::now();
+    ith_elm(inp, offset); /* set inp_A to the ith element */
 
-    }
+    for (size_t i = offset; i < end_idx; ++i){
+
+      Problem::f(inp, out);
+
+      inp_out[i].first = inp;
+      /* put the output in the second element */
+      Problem::C::serialize(out, inp_out[i].second.data());
+
+      /* get ready for the next round */
+      next_A(inp);
+
+
+    }    
   }
-  std::cout << "Done with the first list in time ≈ " << 100 * elapsed_sec
+
+  end = std::chrono::high_resolution_clock::now();
+  elapsed_sec  = std::chrono::duration_cast<std::chrono::nanoseconds>(end - begin).count() / 1000000000.0;
+  std::cout << "Done with the first list in time = " << elapsed_sec
             <<" seconds\n";
 
 
   begin = std::chrono::high_resolution_clock::now();
   /* sort the input output according to the second element (the output ) */
-  std::sort(inp_out.begin(),
+  std::sort(std::execution::par,
+	    inp_out.begin(),
 	    inp_out.end(),
 	    [](std::pair<A_t, C_serial> io1, std::pair<A_t, C_serial> io2)
 	    {return io1.second < io2.second; });
@@ -458,7 +480,14 @@ auto all_collisions_by_list()
   /* collision container */
 
   std::vector< std::pair<A_t, C_serial> >
-      inp_out_f_A_C = f_inp_out_ordered<Problem>();
+    inp_out_f_A_C = inp_out_ordered<Problem,
+				    A_t,
+				    C_t,
+				    Problem::A::length,
+				    Problem::A::n_elements,
+				    Problem::f,
+				    Problem::A::next,
+				    Problem::A::ith_elm>();
 
   /* now let's test all inputs of g and register those gets a collision */
   B_t inp_B{};
@@ -492,7 +521,7 @@ auto all_collisions_by_list()
       elapsed_sec = std::chrono::duration_cast<std::chrono::nanoseconds>(end - begin).count() / 1000000000.0;
 
       std::cout << "second list took " << elapsed_sec << " s to do "
-                << 100*(i /Problem::B::n_elements) << "%\n";
+                << (100.0*i) /Problem::B::n_elements << "%\n";
 
       begin = std::chrono::high_resolution_clock::now();
     }
@@ -500,7 +529,7 @@ auto all_collisions_by_list()
   return all_collisions_vec;
 }
 
-
+/* --------------------------- end of Naive method ---------------------------- */
 
 
 template<typename Problem>
@@ -717,3 +746,8 @@ Gout2 = 5141451414
 Gout1 = 5141451414
 Fout2 = 1924619246
  */
+// to use parallel sort sort
+// install tbb lib
+// sudo apt install libtbb-dev
+// compiling
+// g++ -flto -O3 -std=c++17  -fopenmp demos/speck32_demo.cpp -o speck32_demo -ltbb

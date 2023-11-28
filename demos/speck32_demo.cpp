@@ -3,6 +3,7 @@
 /// specifies different length for k, we are using shorter key for simplicity
 /// since security is not a concern.
 
+#include <cstddef>
 #include <cstdint>
 #include <stdint.h>
 #include <iostream>
@@ -86,6 +87,12 @@ public:
     inp[0] = n;
     inp[1] = n>>16;
   }
+
+  inline static void ith_elm(t& inp, size_t i){
+    inp[0] = i;
+    inp[1] = i>>16;
+  }
+
 
 
 };
