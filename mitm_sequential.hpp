@@ -7,6 +7,7 @@
 #include <iostream>
 #include <assert.h>
 #include <pstl/glue_execution_defs.h>
+#include <tuple>
 #include <utility>
 #include <vector>
 #include <algorithm>
@@ -437,9 +438,21 @@ auto inp_out_ordered() /* return a list of all f inputs outputs */
 }
 
 
-// todo contiue from here
 
-/* implement a comparison for serial elements */
+auto wtime() -> double
+{
+  auto begin = std::chrono::high_resolution_clock::now();
+  auto end = std::chrono::high_resolution_clock::now();
+  double elapsed_nsec = std::chrono::duration_cast<std::chrono::nanoseconds>(end - begin).count();
+
+  return (elapsed_nsec/1000000000.0);
+  
+}
+
+
+
+
+
 
 /* get all collisions by naive algorithm */
 template <typename Problem>
@@ -472,7 +485,7 @@ auto all_collisions_by_list()
 				    Problem::A::ith_elm>();
 
   std::vector< std::pair<B_t, C_serial> >
-    inp_out_f_B_C = inp_out_ordered<Problem,
+    inp_out_g_B_C = inp_out_ordered<Problem,
 				    B_t,
 				    C_t,
 				    Problem::B::length,
@@ -481,6 +494,8 @@ auto all_collisions_by_list()
 				    Problem::B::next,
 				    Problem::B::ith_elm>();
 
+
+  std::cout << "Done createing the two lists!\n";
   /* now let's test all inputs of g and register those gets a collision */
 
 
@@ -494,8 +509,9 @@ auto all_collisions_by_list()
 
 
   std::vector< std::tuple<A_t, B_t, C_t>  > all_collisions_vec{};
+  C_t val{};
   size_t A_n_elements = inp_out_f_A_C.size();
-  size_t B_n_elements = inp_out_f_B_C.size();
+  size_t B_n_elements = inp_out_g_B_C.size();
   
   begin = std::chrono::high_resolution_clock::now();
 
@@ -503,30 +519,32 @@ auto all_collisions_by_list()
   size_t idx_B = 0;
 
 
+
+  auto start = wtime();
   while ((idx_A < A_n_elements) || (idx_B < B_n_elements)) {
     /* 1st case: we have a collision  */
-    if( inp_out_f_A_C[idx_A].second ==  inp_out_f_B_C[idx_A].second ) {
-      
+    if( inp_out_f_A_C[idx_A].second ==  inp_out_g_B_C[idx_A].second ) {
+      Problem::C::unserialize(val, inp_out_f_A_C[idx_A].second);
+      std::tuple col{inp_out_f_A_C[idx_A].first, inp_out_g_B_C[idx_B].first,  val };
+      all_collisions_vec.push_back(col);
     }
-    /* todo contiue from here */
+
     /* when */
-    if( inp_out_f_A_C[idx_A].second ==  inp_out_f_B_C[idx_A].second ) 
-    
+    /* the list of inputs is sorted in increasing order */
+    if( inp_out_f_A_C[idx_A].second <  inp_out_g_B_C[idx_A].second ){
+      ++idx_A; 
+    } else {
+      ++idx_B;
+    }
   }
 
+  elapsed_sec = wtime() - start;
+  std::cout << "it took " << elapsed_sec << " sec to find all collisions\n";
+  std::cout << "total " << all_collisions_vec.size() << " collisions\n";
 
 
 
 
-  if (i % (Problem::B::n_elements/100) == 0){
-    end = std::chrono::high_resolution_clock::now();
-    elapsed_sec = std::chrono::duration_cast<std::chrono::nanoseconds>(end - begin).count() / 1000000000.0;
-
-    std::cout << "second list took " << elapsed_sec << " s to do "
-	      << (100.0*i) /Problem::B::n_elements << "%\n";
-
-    begin = std::chrono::high_resolution_clock::now();
-  }
   
   return all_collisions_vec;
 }

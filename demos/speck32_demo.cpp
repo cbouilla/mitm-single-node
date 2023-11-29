@@ -53,6 +53,12 @@ public:
     out[1] = in[2] | ((uint16_t ) in[3])<<8;
   }
 
+  static void unserialize(t& out, const std::array<uint8_t, length>& in){
+    out[0] = in[0] | ((uint16_t ) in[1])<<8;
+    out[1] = in[2] | ((uint16_t ) in[3])<<8;
+  }
+
+
   inline static auto extract_1_bit(const t& inp) -> int {
     return inp[0]&1;
   }
