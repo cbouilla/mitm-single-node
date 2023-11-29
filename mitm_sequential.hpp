@@ -73,8 +73,8 @@ public:
   /* get the next element after x. What matters is getting a different element each time, not the order. */
   inline auto next(t& x) -> t;
   inline static void serialize(const t &x, const uint8_t *out);   /* write this to out */
-  inline static void unserialize(t &x, const uint8_t *in);        /* read this from in */
-  inline static void copy(t& out, const t& inp); /* deepcopy inp to out */
+  inline static void unserialize(const uint8_t *in, t &x);        /* read this from in */
+  inline static void copy(const t& inp, t& out); /* deepcopy inp to out */
   inline static auto extract_1_bit(const t& inp) -> int;
   inline static auto extract_k_bits(const t& inp, int k) -> uint64_t;
 
@@ -115,8 +115,8 @@ public:
 		  "A not derived from AbstractDomain");
   }
 
-  static void send_C_to_A(A_t& out_A, C_t& inp_C);
-  static void send_C_to_B(B_t& out_B, C_t& inp_C);
+  static void send_C_to_A(C_t& inp_C, A_t& out_A);
+  static void send_C_to_B(C_t& inp_C, B_t& out_B);
 };
 
 /******************************************************************************/
@@ -244,8 +244,8 @@ auto fill_sequence(typename Problem::C::t* inp_C,
   int found_dist = 0;
   int f_or_g = C::extract_1_bit(*inp_C);
 
-  /* First element of the chain is the input */
-  Problem::C::copy(inp_array[0], *out_C);
+  /* i.e. inp_array[0] := out_C */
+  Problem::C::copy(*out_C, inp_array[0]);
 
   int64_t i = 1;
   for (; i < (3 * (1LL<<theta)) ; ++i ){
@@ -255,7 +255,10 @@ auto fill_sequence(typename Problem::C::t* inp_C,
       G(*inp_C, *out_C);
 
     /* copy the output to the array */
-    Problem::C::copy(inp_array[i], *out_C);
+    /* i.e. inp_array[i] := out_C */
+    Problem::C::copy(*out_C, inp_array[i]);
+
+
 
     f_or_g = C::extract_1_bit(*out_C);
     found_dist = (0 == (mask & C::extract_k_bits(*out_C, theta)));
@@ -524,7 +527,7 @@ auto all_collisions_by_list()
   while ((idx_A < A_n_elements) || (idx_B < B_n_elements)) {
     /* 1st case: we have a collision  */
     if( inp_out_f_A_C[idx_A].second ==  inp_out_g_B_C[idx_A].second ) {
-      Problem::C::unserialize(val, inp_out_f_A_C[idx_A].second);
+      Problem::C::unserialize(inp_out_f_A_C[idx_A].second, val);
       std::tuple col{inp_out_f_A_C[idx_A].first, inp_out_g_B_C[idx_B].first,  val };
       all_collisions_vec.push_back(col);
     }

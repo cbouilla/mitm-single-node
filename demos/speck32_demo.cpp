@@ -48,12 +48,14 @@ public:
     out[1] = x[1]>>8;
   }
 
-  static void unserialize(t& out, const uint8_t* in){
+  static void unserialize(const uint8_t* in, t& out){
     out[0] = in[0] | ((uint16_t ) in[1])<<8;
     out[1] = in[2] | ((uint16_t ) in[3])<<8;
   }
 
-  static void unserialize(t& out, const std::array<uint8_t, length>& in){
+  static void unserialize(const std::array<uint8_t, length>& in,
+			  t& out)
+  {
     out[0] = in[0] | ((uint16_t ) in[1])<<8;
     out[1] = in[2] | ((uint16_t ) in[3])<<8;
   }
@@ -82,7 +84,7 @@ public:
     return ((inp[0]>>1)&mask1) | (((uint64_t) inp[1])&mask2)<<16;
   }
 
-  inline static void copy(t& out, const t& inp){
+  inline static void copy(const t& inp, t& out){
       out[0] = inp[0];
       out[1] = inp[1];
   }
@@ -94,9 +96,9 @@ public:
     inp[1] = n>>16;
   }
 
-  inline static void ith_elm(t& inp, size_t i){
-    inp[0] = i;
-    inp[1] = i>>16;
+  inline static void ith_elm(t& inp_out, size_t i){
+    inp_out[0] = i;
+    inp_out[1] = i>>16;
   }
 
 
