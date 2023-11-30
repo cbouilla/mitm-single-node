@@ -324,6 +324,32 @@ auto walk(typename Problem::C::t* inp1,
   return std::pair<C_t, C_t>(inp1_array[idx_inp1], inp2_array[idx_inp2]);
 }
 
+template <typename Problem>
+auto test_serialize_unserialize() -> bool
+{
+  /// Test that unserialize(serialize(r)) == r for a randomly chosen r
+  using C_t = typename Problem::C::t;
+  const size_t length = Problem::C::length; 
+
+  C_t orig{};
+  C_t copy{};
+  std::array<uint8_t, length> serial;
+
+  for(int i = 0; i < 10; ++i){
+    /* */
+    Problem::C::randomize(orig);
+    Problem::C::serialize(orig, serial);
+    Problem::C::unserialize(serial, copy);
+
+    if (copy != orig)
+      return false; /* there is a bug in the adaptationof the code  */
+  }
+
+  return true;
+  
+}
+
+
 template <typename Problem >
 auto treat_collision(typename Problem::C::t* inp1,
                      typename Problem::C::t* inp2,
@@ -388,10 +414,9 @@ auto inp_out_ordered() /* return a list of all f inputs outputs */
   std::cout << "We are going to use " << omp_get_max_threads() << " threads\n";
   begin = std::chrono::high_resolution_clock::now();
 
-  const int nthds = omp_get_max_threads();
-#pragma omp parallel for schedule(static)
+  const int nthds = 1;//omp_get_max_threads();
 
-  
+  //#pragma omp parallel for schedule(static)
   for (int thd = 0; thd < nthds; ++thd){
     size_t offset = thd * (A_n_elements/nthds);
     size_t end_idx = (thd+1) * (A_n_elements/nthds);
@@ -408,7 +433,40 @@ auto inp_out_ordered() /* return a list of all f inputs outputs */
 
       inp_out[i].first = inp;
       /* put the output in the second element */
-      Problem::C::serialize(out, inp_out[i].second.data());
+      /* serialize(input, output), the name of the variable is unfortunate */
+      // std::cout << "before serialization: inp_out[i] = "
+      // 		<< static_cast<uint64_t>(inp_out[i].second[0])
+      //           << static_cast<uint64_t>(inp_out[i].second[1]) << ","
+      //           << static_cast<uint64_t>(inp_out[i].second[2])
+      //           << static_cast<uint64_t>(inp_out[i].second[3]);
+
+      Problem::C::serialize(out, inp_out[i].second);
+      std::cout << "thd" << omp_get_thread_num() << " has out = " << out[0]
+                << "," << out[1] << " and inp_out[i] = "
+                << std::hex << static_cast<uint64_t>(inp_out[i].second[0])
+                << std::hex << static_cast<uint64_t>(inp_out[i].second[1]) << ","
+                << std::hex << static_cast<uint64_t>(inp_out[i].second[2])
+                << std::hex << static_cast<uint64_t>(inp_out[i].second[3])
+                << " and inp = " << inp[0] << "," << inp[1]
+                << " and inp_out[i].first = "
+                << std::hex <<  static_cast<uint64_t>(inp_out[i].first[0])
+		<< ","
+		<< std::hex << static_cast<uint64_t>(inp_out[i].first[1])
+	        << "\n";
+
+      Problem::C::unserialize(inp_out[i].second, out);
+      std::cout << "AFTER unserialize thd" << omp_get_thread_num() << " has out = " << out[0]
+                << "," << out[1] << " and inp_out[i] = "
+                << std::hex << static_cast<uint64_t>(inp_out[i].second[0])
+                << std::hex << static_cast<uint64_t>(inp_out[i].second[1]) << ","
+                << std::hex << static_cast<uint64_t>(inp_out[i].second[2])
+                << std::hex << static_cast<uint64_t>(inp_out[i].second[3])
+                << " and inp = " << inp[0] << "," << inp[1]
+                << " and inp_out[i].first = "
+                << std::hex <<  static_cast<uint64_t>(inp_out[i].first[0])
+		<< ","
+		<< std::hex << static_cast<uint64_t>(inp_out[i].first[1])
+	        << "\n";
 
       /* get ready for the next round */
       next_A(inp);
@@ -774,3 +832,6 @@ Fout2 = 1924619246
 // sudo apt install libtbb-dev
 // compiling
 // g++ -flto -O3 -std=c++17  -fopenmp demos/speck32_demo.cpp -o speck32_demo -ltbb
+
+// thd0 has out = 9ace,f6f8 and inp_out[i] = ce9a,f8f6 and inp = 1,0 and inp_out[i].first = 1,0
+//AFTER unserialize thd0           has out = 9ace,f6f8 and inp_out[i] = ce9a,f8f6 and inp = 1,0 and inp_out[i].first = 1,0

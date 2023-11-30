@@ -36,16 +36,16 @@ public:
 
   static void serialize(const t& x, uint8_t * out){
     out[0] = x[0];
-    out[0] = x[0]>>8;
-    out[1] = x[1];
-    out[1] = x[1]>>8;
+    out[1] = x[0]>>8;
+    out[2] = x[1];
+    out[3] = x[1]>>8;
   }
 
   static void serialize(const t& x, std::array<uint8_t, length>& out){
     out[0] = x[0];
-    out[0] = x[0]>>8;
-    out[1] = x[1];
-    out[1] = x[1]>>8;
+    out[1] = x[0]>>8;
+    out[2] = x[1];
+    out[3] = x[1]>>8;
   }
 
   static void unserialize(const uint8_t* in, t& out){
