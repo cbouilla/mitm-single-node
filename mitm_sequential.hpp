@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <ios>
 #include <iostream>
 #include <assert.h>
 #include <pstl/glue_execution_defs.h>
@@ -11,10 +12,29 @@
 #include <utility>
 #include <vector>
 #include <algorithm>
-#include <chrono>
 #include <omp.h>
 #include <execution>
 #include "include/dict.hpp"
+
+
+
+/******************************************************************************/
+// independent code 
+#include <chrono>
+inline auto wtime() -> double /* with inline it doesn't violate one definition rule */
+{
+
+  auto clock = std::chrono::high_resolution_clock::now();
+  auto nanoseconds = std::chrono::duration_cast<std::chrono::nanoseconds>(clock.time_since_epoch()).count();
+  double seconds = nanoseconds / (static_cast<double>(1000000000.0));
+
+  
+  return seconds;
+  
+}
+
+
+/******************************************************************************/
 
 /******************************************************************************/
 /* Document for standard implementation                                       */
@@ -335,7 +355,12 @@ auto test_serialize_unserialize() -> bool
   C_t copy{};
   std::array<uint8_t, length> serial;
 
-  for(int i = 0; i < 10; ++i){
+  size_t n_elements = Problem::C::n_elements;
+
+  const size_t n_tests = std::min(n_elements, static_cast<size_t>(1024));
+				 
+  
+  for(int i = 0; i < n_tests; ++i){
     /* */
     Problem::C::randomize(orig);
     Problem::C::serialize(orig, serial);
@@ -398,10 +423,10 @@ auto inp_out_ordered() /* return a list of all f inputs outputs */
   /* number of bytes needed to code an element of C */
   using C_serial = std::array<uint8_t, length>;
 
-  auto begin = std::chrono::high_resolution_clock::now();
+  auto begin = wtime();
   std::vector< std::pair<A_t, C_serial> > inp_out(Problem::C::n_elements);
-  auto end = std::chrono::high_resolution_clock::now();
-  auto elapsed_sec = std::chrono::duration_cast<std::chrono::nanoseconds>(end - begin).count() / 1000000000.0;
+  auto end = wtime();
+  auto elapsed_sec = end - begin;
   std::cout << "Initializing the first vector took " <<  elapsed_sec <<"\n";
   
 
@@ -412,11 +437,11 @@ auto inp_out_ordered() /* return a list of all f inputs outputs */
 
   omp_set_num_threads(omp_get_max_threads());
   std::cout << "We are going to use " << omp_get_max_threads() << " threads\n";
-  begin = std::chrono::high_resolution_clock::now();
+
 
   const int nthds = 1;//omp_get_max_threads();
-
-  //#pragma omp parallel for schedule(static)
+  begin = wtime();
+  #pragma omp parallel for schedule(static)
   for (int thd = 0; thd < nthds; ++thd){
     size_t offset = thd * (A_n_elements/nthds);
     size_t end_idx = (thd+1) * (A_n_elements/nthds);
@@ -441,32 +466,32 @@ auto inp_out_ordered() /* return a list of all f inputs outputs */
       //           << static_cast<uint64_t>(inp_out[i].second[3]);
 
       Problem::C::serialize(out, inp_out[i].second);
-      std::cout << "thd" << omp_get_thread_num() << " has out = " << out[0]
-                << "," << out[1] << " and inp_out[i] = "
-                << std::hex << static_cast<uint64_t>(inp_out[i].second[0])
-                << std::hex << static_cast<uint64_t>(inp_out[i].second[1]) << ","
-                << std::hex << static_cast<uint64_t>(inp_out[i].second[2])
-                << std::hex << static_cast<uint64_t>(inp_out[i].second[3])
-                << " and inp = " << inp[0] << "," << inp[1]
-                << " and inp_out[i].first = "
-                << std::hex <<  static_cast<uint64_t>(inp_out[i].first[0])
-		<< ","
-		<< std::hex << static_cast<uint64_t>(inp_out[i].first[1])
-	        << "\n";
+      // std::cout << "thd" << omp_get_thread_num() << " has out = " << out[0]
+      //           << "," << out[1] << " and inp_out[i] = "
+      //           << std::hex << static_cast<uint64_t>(inp_out[i].second[0])
+      //           << std::hex << static_cast<uint64_t>(inp_out[i].second[1]) << ","
+      //           << std::hex << static_cast<uint64_t>(inp_out[i].second[2])
+      //           << std::hex << static_cast<uint64_t>(inp_out[i].second[3])
+      //           << " and inp = " << inp[0] << "," << inp[1]
+      //           << " and inp_out[i].first = "
+      //           << std::hex <<  static_cast<uint64_t>(inp_out[i].first[0])
+      // 		<< ","
+      // 		<< std::hex << static_cast<uint64_t>(inp_out[i].first[1])
+      // 	        << "\n";
 
       Problem::C::unserialize(inp_out[i].second, out);
-      std::cout << "AFTER unserialize thd" << omp_get_thread_num() << " has out = " << out[0]
-                << "," << out[1] << " and inp_out[i] = "
-                << std::hex << static_cast<uint64_t>(inp_out[i].second[0])
-                << std::hex << static_cast<uint64_t>(inp_out[i].second[1]) << ","
-                << std::hex << static_cast<uint64_t>(inp_out[i].second[2])
-                << std::hex << static_cast<uint64_t>(inp_out[i].second[3])
-                << " and inp = " << inp[0] << "," << inp[1]
-                << " and inp_out[i].first = "
-                << std::hex <<  static_cast<uint64_t>(inp_out[i].first[0])
-		<< ","
-		<< std::hex << static_cast<uint64_t>(inp_out[i].first[1])
-	        << "\n";
+      // std::cout << "AFTER unserialize thd" << omp_get_thread_num() << " has out = " << out[0]
+      //           << "," << out[1] << " and inp_out[i] = "
+      //           << std::hex << static_cast<uint64_t>(inp_out[i].second[0])
+      //           << std::hex << static_cast<uint64_t>(inp_out[i].second[1]) << ","
+      //           << std::hex << static_cast<uint64_t>(inp_out[i].second[2])
+      //           << std::hex << static_cast<uint64_t>(inp_out[i].second[3])
+      //           << " and inp = " << inp[0] << "," << inp[1]
+      //           << " and inp_out[i].first = "
+      //           << std::hex <<  static_cast<uint64_t>(inp_out[i].first[0])
+      // 		<< ","
+      // 		<< std::hex << static_cast<uint64_t>(inp_out[i].first[1])
+      // 	        << "\n";
 
       /* get ready for the next round */
       next_A(inp);
@@ -475,13 +500,13 @@ auto inp_out_ordered() /* return a list of all f inputs outputs */
     }    
   }
 
-  end = std::chrono::high_resolution_clock::now();
-  elapsed_sec  = std::chrono::duration_cast<std::chrono::nanoseconds>(end - begin).count() / 1000000000.0;
-  std::cout << "Done with the first list in time = " << elapsed_sec
+  end = wtime();
+  elapsed_sec  = wtime();
+  std::cout << std::fixed << "Done with the first list in time = " << elapsed_sec
             <<" seconds\n";
 
 
-  begin = std::chrono::high_resolution_clock::now();
+  begin = wtime();
   /* sort the input output according to the second element (the output ) */
   std::sort(std::execution::par,
 	    inp_out.begin(),
@@ -489,9 +514,9 @@ auto inp_out_ordered() /* return a list of all f inputs outputs */
 	    [](std::pair<A_t, C_serial> io1, std::pair<A_t, C_serial> io2)
 	    {return io1.second < io2.second; });
 
-  end = std::chrono::high_resolution_clock::now();
-  elapsed_sec  = std::chrono::duration_cast<std::chrono::nanoseconds>(end - begin).count() / 1000000000.0;
-  std::cout << "Sorting took " << elapsed_sec << "s\n";
+  end = wtime();
+  elapsed_sec  = end - begin;
+  std::cout << std::fixed << "Sorting took " << elapsed_sec << "s\n";
 
   /* Hopefully, NRVO will save the unwanted copying */
   return inp_out; 
@@ -500,16 +525,7 @@ auto inp_out_ordered() /* return a list of all f inputs outputs */
 
 
 
-auto wtime() -> double
-{
-  auto begin = std::chrono::high_resolution_clock::now();
-  auto end = std::chrono::high_resolution_clock::now();
-  double elapsed_nsec = std::chrono::duration_cast<std::chrono::nanoseconds>(end - begin).count();
-
-  return (elapsed_nsec/1000000000.0);
-  
-}
-
+ 
 
 
 
@@ -562,9 +578,9 @@ auto all_collisions_by_list()
 
 
 
-  auto begin = std::chrono::high_resolution_clock::now();
-  auto end = std::chrono::high_resolution_clock::now();
-  auto elapsed_sec = std::chrono::duration_cast<std::chrono::nanoseconds>(end - begin).count() / 1000000000.0;
+  auto begin = wtime();
+  auto end = wtime();
+  auto elapsed_sec = end - begin;
 
 
 
@@ -574,7 +590,7 @@ auto all_collisions_by_list()
   size_t A_n_elements = inp_out_f_A_C.size();
   size_t B_n_elements = inp_out_g_B_C.size();
   
-  begin = std::chrono::high_resolution_clock::now();
+  begin = wtime();
 
   size_t idx_A = 0;
   size_t idx_B = 0;
@@ -600,8 +616,8 @@ auto all_collisions_by_list()
   }
 
   elapsed_sec = wtime() - start;
-  std::cout << "it took " << elapsed_sec << " sec to find all collisions\n";
-  std::cout << "total " << all_collisions_vec.size() << " collisions\n";
+  std::cout << std::fixed  << "it took " << elapsed_sec << " sec to find all collisions\n";
+  std::cout << std::fixed <<"total " << all_collisions_vec.size() << " collisions\n";
 
 
 
@@ -631,15 +647,18 @@ auto collision()
 
 
   /* EXPERIMENT BY NAIVE METHOD        */
+  std::cout << "unserial(serial(.)) =?= id(.) : " << test_serialize_unserialize<Problem>() << "\n";
   std::cout << "Starting with naive method ...\n";
-  auto begin = std::chrono::high_resolution_clock::now();
+  auto begin = wtime();
   auto list_of_collisions = all_collisions_by_list<Problem>();
-  auto end = std::chrono::high_resolution_clock::now();
-  std::chrono::duration<double> diff = end - begin;
-  std::cout << "The naive method tells us that there are "
+  auto end = wtime();
+  auto elapsed = end - begin;
+  
+  std::cout << std::fixed
+	    << "The naive method tells us that there are "
             << list_of_collisions.size()
             << " collisions. Took: "
-            << diff.count()
+            << elapsed
             << "s\n";
 
   /* end of EXPERIMENT BY NAIVE METHOD */
@@ -695,26 +714,23 @@ auto collision()
   size_t false_collisions = 0;
   size_t real_collisions = 0;
 
-  begin = std::chrono::high_resolution_clock::now();
-  end  = std::chrono::high_resolution_clock::now();
-  auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(end - begin).count();
-  
+
   while (n_collisions < n_needed_collisions){
     /* Get a distinguished point */
     *pt_inp_C = read_urandom<C_t>();
     //std::cout << "bf inp = " << (*pt_inp_C)[0] << ", " << (*pt_inp_C)[1] << "\n";
     //std::cout << "bf out = " << (*pt_out_C)[0] << ", " << (*pt_out_C)[1] << "\n";
 
-    begin = std::chrono::high_resolution_clock::now();
+    begin = wtime();
     generate_dist_point<Problem>(theta,
 				 pt_inp_C, /* convert this to a pointer */
 				 pt_out_C, /* convert this to a pointer */
 				 c_serial,
 				 F,
 				 G);
-    end  = std::chrono::high_resolution_clock::now();
-    elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(end - begin).count();
-    std::cout << "Gen dist took " << elapsed/(1000000000.0) << "sec \n";
+    end  = wtime();
+    elapsed = begin - end;
+    std::cout << "Gen dist took " << elapsed << "sec \n";
 
     //std::cout << "af inp = " << (*pt_inp_C)[0] << ", " << (*pt_inp_C)[1] << "\n";
     //std::cout << "bf out = " << (*pt_out_C)[0] << ", " << (*pt_out_C)[1] << "\n";

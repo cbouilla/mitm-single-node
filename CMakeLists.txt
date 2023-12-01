@@ -34,17 +34,20 @@ elseif (CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     add_compile_options(-Rpass=.*)
 endif()
 
-
+# Find the TBB package
+find_package(TBB REQUIRED)
 
 include_directories(include)
 
 
-add_executable(demo_speck32
+add_executable(speck32_demo
         demos/speck32_demo.cpp
         mitm_sequential.hpp
         include/dict.hpp
         demos/speck32.hpp)
 
+# Link TBB to your executable
+target_link_libraries(speck32_demo PRIVATE TBB::tbb)
 #[[
 add_executable(test demos/basic_demo.cpp mitm_sequential.hpp
         include/dict.hpp
