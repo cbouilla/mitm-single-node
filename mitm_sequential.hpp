@@ -427,7 +427,7 @@ auto inp_out_ordered() /* return a list of all f inputs outputs */
   std::vector< std::pair<A_t, C_serial> > inp_out(Problem::C::n_elements);
   auto end = wtime();
   auto elapsed_sec = end - begin;
-  std::cout << "Initializing the first vector took " <<  elapsed_sec <<"\n";
+  std::cout << "Initializing the first vector took " <<  elapsed_sec <<"sec\n";
   
 
 
@@ -501,9 +501,9 @@ auto inp_out_ordered() /* return a list of all f inputs outputs */
   }
 
   end = wtime();
-  elapsed_sec  = wtime();
+  elapsed_sec  = end - begin;
   std::cout << std::fixed << "Done with the first list in time = " << elapsed_sec
-            <<" seconds\n";
+            <<" sec\n";
 
 
   begin = wtime();
@@ -516,7 +516,7 @@ auto inp_out_ordered() /* return a list of all f inputs outputs */
 
   end = wtime();
   elapsed_sec  = end - begin;
-  std::cout << std::fixed << "Sorting took " << elapsed_sec << "s\n";
+  std::cout << std::fixed << "Sorting took " << elapsed_sec << "sec\n";
 
   /* Hopefully, NRVO will save the unwanted copying */
   return inp_out; 
@@ -598,7 +598,7 @@ auto all_collisions_by_list()
 
 
   auto start = wtime();
-  while ((idx_A < A_n_elements) || (idx_B < B_n_elements)) {
+  while ((idx_A < A_n_elements) and (idx_B < B_n_elements)) {
     /* 1st case: we have a collision  */
     if( inp_out_f_A_C[idx_A].second ==  inp_out_g_B_C[idx_A].second ) {
       Problem::C::unserialize(inp_out_f_A_C[idx_A].second, val);
