@@ -34,6 +34,14 @@ inline auto wtime() -> double /* with inline it doesn't violate one definition r
 }
 
 
+template <typename T>
+void print_array(T arr){
+  /* Would not be a better choice if we just to overload << for std::array? */
+  for (auto& item: arr)
+    std::cout << item << ", ";
+  std::cout << "\n";
+}
+
 /******************************************************************************/
 
 /******************************************************************************/
@@ -601,6 +609,13 @@ auto all_collisions_by_list()
   while ((idx_A < A_n_elements) and (idx_B < B_n_elements)) {
     /* 1st case: we have a collision  */
     if( inp_out_f_A_C[idx_A].second ==  inp_out_g_B_C[idx_A].second ) {
+      std::cout << "Found collision at idx_A=" << idx_A << ", idx_B=" << idx_B
+		<< "Do they collide? "<< (inp_out_f_A_C[idx_A].second ==  inp_out_g_B_C[idx_A].second)q
+		<<"\n";
+      print_array(inp_out_f_A_C[idx_A].second);
+      print_array(inp_out_g_B_C[idx_B].second);
+      std::cout << "---------\n";
+      
       Problem::C::unserialize(inp_out_f_A_C[idx_A].second, val);
       std::tuple col{inp_out_f_A_C[idx_A].first, inp_out_g_B_C[idx_B].first,  val };
       all_collisions_vec.push_back(col);
