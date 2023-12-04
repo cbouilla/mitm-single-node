@@ -22,7 +22,7 @@ class SPECK_DOMAIN : AbstractDomain< Speck32_t >{
 
 public:
   using t = Speck32_t;
-  static const int length = 32;
+  static const int length = 4;
   static const size_t n_elements = (1LL<<32);
 
   static inline bool is_equal(const t& x, const t& y){

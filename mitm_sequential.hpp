@@ -6,6 +6,7 @@
 #include <cstring>
 #include <ios>
 #include <iostream>
+#include <stdio.h>
 #include <assert.h>
 #include <pstl/glue_execution_defs.h>
 #include <tuple>
@@ -37,10 +38,26 @@ inline auto wtime() -> double /* with inline it doesn't violate one definition r
 template <typename T>
 void print_array(T arr){
   /* Would not be a better choice if we just to overload << for std::array? */
+  printf("0x");
   for (auto& item: arr)
-    std::cout << item << ", ";
-  std::cout << "\n";
+    printf("%x", item);
+  printf("\n");
 }
+
+template <size_t n>
+auto is_equal(std::array<uint8_t, n> arr1,
+	      std::array<uint8_t, n> arr2)
+  -> bool
+{
+  for (size_t i = 0; i<n; ++i){
+    if (arr1[i] != arr2[i])
+      return false;
+  }
+  return true;
+}
+  
+
+
 
 /******************************************************************************/
 
@@ -569,6 +586,8 @@ auto all_collisions_by_list()
 				    Problem::A::next,
 				    Problem::A::ith_elm>();
 
+
+  
   std::vector< std::pair<B_t, C_serial> >
     inp_out_g_B_C = inp_out_ordered<Problem,
 				    B_t,
@@ -604,13 +623,18 @@ auto all_collisions_by_list()
   size_t idx_B = 0;
 
 
-
+  C_serial arr{};
+  std::cout << "length of c output = " << arr.max_size() << ", or size = " << arr.size()
+	    << "nbytes = " << nbytes << "\n" ;
+  
   auto start = wtime();
   while ((idx_A < A_n_elements) and (idx_B < B_n_elements)) {
     /* 1st case: we have a collision  */
-    if( inp_out_f_A_C[idx_A].second ==  inp_out_g_B_C[idx_A].second ) {
+    if( inp_out_f_A_C[idx_A].second ==  inp_out_g_B_C[idx_B].second ) {
       std::cout << "Found collision at idx_A=" << idx_A << ", idx_B=" << idx_B
-		<< "Do they collide? "<< (inp_out_f_A_C[idx_A].second ==  inp_out_g_B_C[idx_A].second)q
+		<< " Do they collide? "<< (inp_out_f_A_C[idx_A].second ==  inp_out_g_B_C[idx_B].second)
+		<< "\n in another way = " << is_equal(inp_out_f_A_C[idx_B].second,
+						      inp_out_g_B_C[idx_B].second)
 		<<"\n";
       print_array(inp_out_f_A_C[idx_A].second);
       print_array(inp_out_g_B_C[idx_B].second);
@@ -619,6 +643,9 @@ auto all_collisions_by_list()
       Problem::C::unserialize(inp_out_f_A_C[idx_A].second, val);
       std::tuple col{inp_out_f_A_C[idx_A].first, inp_out_g_B_C[idx_B].first,  val };
       all_collisions_vec.push_back(col);
+
+      ++idx_A;
+      ++idx_B;
     }
 
     /* when */
