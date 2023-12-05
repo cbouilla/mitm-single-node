@@ -16,7 +16,7 @@
 #include <omp.h>
 #include <execution>
 #include "include/dict.hpp"
-
+#include <set>
 
 
 /******************************************************************************/
@@ -430,7 +430,25 @@ auto treat_collision(typename Problem::C::t* inp1,
 }
 
 
+
 /* ----------------------------- Naive method ------------------------------ */
+template <typename T1, typename T2>
+auto count_unique_2nd_elm(std::vector<std::pair<T1, T2>> arr) -> size_t
+{
+  if (arr.size() == 0) return 0;
+  
+  size_t n_unique_elm = 1;
+  T2 tmp{arr[0].second};
+  
+  for (auto& elm_pair: arr ){
+    if (tmp != elm_pair.second)
+      ++n_unique_elm;
+    tmp = elm_pair.second;
+  }
+
+  return n_unique_elm;
+}
+
 template <typename Problem, typename A_t, typename C_t,
           int length,               /* output length in bytes */
           size_t A_n_elements,
@@ -450,6 +468,8 @@ auto inp_out_ordered() /* return a list of all f inputs outputs */
 
   auto begin = wtime();
   std::vector< std::pair<A_t, C_serial> > inp_out(Problem::C::n_elements);
+
+  
   auto end = wtime();
   auto elapsed_sec = end - begin;
   std::cout << "Initializing the first vector took " <<  elapsed_sec <<"sec\n";
@@ -491,6 +511,7 @@ auto inp_out_ordered() /* return a list of all f inputs outputs */
       //           << static_cast<uint64_t>(inp_out[i].second[3]);
 
       Problem::C::serialize(out, inp_out[i].second);
+
       // std::cout << "thd" << omp_get_thread_num() << " has out = " << out[0]
       //           << "," << out[1] << " and inp_out[i] = "
       //           << std::hex << static_cast<uint64_t>(inp_out[i].second[0])
@@ -504,7 +525,7 @@ auto inp_out_ordered() /* return a list of all f inputs outputs */
       // 		<< std::hex << static_cast<uint64_t>(inp_out[i].first[1])
       // 	        << "\n";
 
-      Problem::C::unserialize(inp_out[i].second, out);
+  
       // std::cout << "AFTER unserialize thd" << omp_get_thread_num() << " has out = " << out[0]
       //           << "," << out[1] << " and inp_out[i] = "
       //           << std::hex << static_cast<uint64_t>(inp_out[i].second[0])
@@ -527,10 +548,15 @@ auto inp_out_ordered() /* return a list of all f inputs outputs */
 
   end = wtime();
   elapsed_sec  = end - begin;
+
   std::cout << std::fixed << "Done with the first list in time = " << elapsed_sec
             <<" sec\n";
 
 
+  /* free important memory */
+
+
+  
   begin = wtime();
   /* sort the input output according to the second element (the output ) */
   std::sort(std::execution::par,
@@ -543,6 +569,14 @@ auto inp_out_ordered() /* return a list of all f inputs outputs */
   elapsed_sec  = end - begin;
   std::cout << std::fixed << "Sorting took " << elapsed_sec << "sec\n";
 
+  begin = wtime();
+  size_t n_unique = count_unique_2nd_elm(inp_out);
+  elapsed_sec  = wtime() - begin;
+  std::cout << "counting #unique elements took " << elapsed_sec << "sec. it has "
+	    << n_unique << "elements\n";
+
+
+  
   /* Hopefully, NRVO will save the unwanted copying */
   return inp_out; 
   
