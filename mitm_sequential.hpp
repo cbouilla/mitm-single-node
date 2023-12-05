@@ -484,7 +484,7 @@ auto inp_out_ordered() /* return a list of all f inputs outputs */
   std::cout << "We are going to use " << omp_get_max_threads() << " threads\n";
 
 
-  const int nthds = 1;//omp_get_max_threads();
+  const int nthds = omp_get_max_threads();
   begin = wtime();
   #pragma omp parallel for schedule(static)
   for (int thd = 0; thd < nthds; ++thd){
@@ -573,7 +573,7 @@ auto inp_out_ordered() /* return a list of all f inputs outputs */
   size_t n_unique = count_unique_2nd_elm(inp_out);
   elapsed_sec  = wtime() - begin;
   std::cout << "counting #unique elements took " << elapsed_sec << "sec. it has "
-	    << n_unique << "elements\n";
+	    << n_unique << " elements\n";
 
 
   
@@ -636,6 +636,12 @@ auto all_collisions_by_list()
   std::cout << "Done createing the two lists!\n";
   /* now let's test all inputs of g and register those gets a collision */
 
+  std::cout << "let's see the first 10 output sorted\n";
+  for (int i = 0; i < 10; ++i){
+    print_array(inp_out_f_A_C[i].second);
+    print_array(inp_out_g_B_C[i].second);
+    std::cout << "----------\n";
+  }
 
 
 
@@ -681,12 +687,12 @@ auto all_collisions_by_list()
       ++idx_A;
       ++idx_B;
     }
-
+    std::cout << "idx_A = " << idx_A << ", idx_B = " << idx_B << "\n";
     /* when */
     /* the list of inputs is sorted in increasing order */
     if( inp_out_f_A_C[idx_A].second <  inp_out_g_B_C[idx_A].second ){
       ++idx_A; 
-    } else {
+    } if( inp_out_f_A_C[idx_A].second >  inp_out_g_B_C[idx_A].second ){
       ++idx_B;
     }
   }
