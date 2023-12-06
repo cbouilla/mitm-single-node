@@ -417,10 +417,12 @@ auto walk(typename Problem::C::t* inp1,
   }
     
   
-  printf("min_len=%lu, j=%lu\nchain_length1=%lu idx_inp1=%lu\nchain_length2=%lu idx_inp2=%lu\n"
+  printf("min_len=%lu, j=%lu, equal_inputs=%d\n"
+	 "chain_length1=%lu idx_inp1=%lu\nchain_length2=%lu idx_inp2=%lu\n"
 	 "#f_called = %lu = 2^%0.2f, #g_called=%lu = 2^%0.2f\n",
 	 min_len,
 	 j,
+	 *inp1 == *inp2,
 	 inp1_chain_length,
 	 idx_inp1,
 	 inp2_chain_length,
@@ -450,6 +452,7 @@ auto treat_collision(typename Problem::C::t* inp1,
   using B_t = typename Problem::B::t;
   using C_t = typename Problem::C::t;
 
+  /* Warning Danger we use different types in collision_container!!!! */
   std::pair<C_t, C_t> pair = walk<Problem>(inp1, /* address of value of inp1  */
                                            inp2, /* inp1 -> * <- inp2, i.e. they lead to same value */
                                            tmp,
@@ -677,7 +680,7 @@ auto all_collisions_by_list()
 		<<"\n";
       print_array(inp_out_f_A_C[idx_A].second);
       print_array(inp_out_g_B_C[idx_B].second);
-      std::cout << "---------\n";
+      std::cout << "============================\n";
       
       Problem::C::unserialize(inp_out_f_A_C[idx_A].second, val);
       std::tuple col{inp_out_f_A_C[idx_A].first, inp_out_g_B_C[idx_B].first,  val };
@@ -826,18 +829,6 @@ auto collision()
 
       bool is_false_collision = false;
       
-      if (Domain_C::is_equal(*pt_inp_C, *pt_tmp_C)){
-	is_false_collision = true;
-        std::cout << "FALSE COLLISION \n";
-        std::cout << "addresses are : " << pt_inp_C << ", " << pt_tmp_C << "\n";
-        std::cout << "inp1 = "; Domain_C::print(*pt_inp_C);
-        std::cout << "\ninp2 = "; Domain_C::print(*pt_tmp_C);
-        std::cout << "\n";
-	++false_collisions;
-        }
-
-      if (!is_false_collision)
-	++real_collisions;
      
       
       std::cout << "found a collision " << n_collisions <<  " out of " << n_needed_collisions << "\n";
@@ -849,31 +840,79 @@ auto collision()
       
       swap_pointers(pt_tmp_C, pt_inp2_C);
 
+      treat_collision<Problem>(pt_inp_C, /* inp1 */
+			       pt_inp2_C, /* inp2 */
+			       pt_tmp_C,  /* scratch buffer for calculation */
+			       thetaFlipped, /* difficulty */
+			       collisions_container, /* put the found collisions here */
+			       F,
+			       G);
 
-      if (!is_false_collision){
-	treat_collision<Problem>(pt_inp_C,
-				 pt_inp2_C,
-				 pt_tmp_C,
-				 thetaFlipped,
-				 collisions_container,
-				 F,
-				 G);
 
-      
-	std::cout << "inp1 = " << (*pt_inp_C)[0] << (*pt_inp_C)[1] << "\n";
-	std::cout << "inp2 = " << (*pt_inp2_C)[0] << (*pt_inp2_C)[1] << "\n";
 
+      /**********************************************************************/
+      // Check if it's actually a false collision
+
+      /* Warning this a buggy code */
+      if (Domain_C::is_equal(collisions_container.back().first,
+			     collisions_container.back().second)){
+	++false_collisions;
+	is_false_collision = true;
+	
+        std::cout << "FALSE COLLISION \n";
+        std::cout << "inp1 = "; Domain_C::print(collisions_container.back().first);
+        std::cout << "\ninp2 = "; Domain_C::print(collisions_container.back().second);
+        std::cout << "\n";
+
+
+	C_t first_inp = collisions_container.back().first;
+	C_t second_inp = collisions_container.back().second;
+	
 	C_t dummy_out_inp1{};
 	C_t dummy_out_inp2{};
-	F(*pt_inp_C, dummy_out_inp1);
-	F(*pt_inp2_C, dummy_out_inp2);
-
-	G(*pt_inp_C, dummy_out_inp1);
-	G(*pt_inp_C, dummy_out_inp2);
+	F(first_inp, dummy_out_inp1);
+	F(second_inp, dummy_out_inp2);
 	std::cout << "Gout1 = " << dummy_out_inp1[0] << dummy_out_inp1[1] << "\n";
 	std::cout << "Gout2 = " << dummy_out_inp2[0] << dummy_out_inp2[1] << "\n";
 
+	
+	G(first_inp, dummy_out_inp1);
+	G(second_inp, dummy_out_inp2);
+	std::cout << "Gout1 = " << dummy_out_inp1[0] << dummy_out_inp1[1] << "\n";
+	std::cout << "Gout2 = " << dummy_out_inp2[0] << dummy_out_inp2[1] << "\n";
+
+
       }
+      
+
+      if (!is_false_collision){
+	std::cout << "inp1 = "; Domain_C::print(collisions_container.back().first);
+        std::cout << "\ninp2 = "; Domain_C::print(collisions_container.back().second);
+        std::cout << "\n--------------------------\n";
+
+
+	C_t first_inp = collisions_container.back().first;
+	C_t second_inp = collisions_container.back().second;
+	
+	C_t dummy_out_inp1{};
+	C_t dummy_out_inp2{};
+	F(first_inp, dummy_out_inp1);
+	F(second_inp, dummy_out_inp2);
+	std::cout << "Fout1 = " << dummy_out_inp1[0] << dummy_out_inp1[1] << "\n";
+	std::cout << "Fout2 = " << dummy_out_inp2[0] << dummy_out_inp2[1] << "\n";
+
+	
+	G(first_inp, dummy_out_inp1);
+	G(second_inp, dummy_out_inp2);
+	std::cout << "Gout1 = " << dummy_out_inp1[0] << dummy_out_inp1[1] << "\n";
+	std::cout << "Gout2 = " << dummy_out_inp2[0] << dummy_out_inp2[1] << "\n";
+	++real_collisions;
+
+      }
+
+
+      /**********************************************************************/
+      
       
       ++n_collisions;
 
