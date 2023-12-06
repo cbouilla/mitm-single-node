@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <cstring>
 #include <ios>
+#include <cmath>
 #include <iostream>
 #include <stdio.h>
 #include <assert.h>
@@ -17,8 +18,9 @@
 #include <execution>
 #include "include/dict.hpp"
 #include <set>
-
-
+size_t n_f_called{0};
+size_t n_g_called{0};
+size_t n_robinhood{0};
 /******************************************************************************/
 // independent code 
 #include <chrono>
@@ -57,6 +59,35 @@ auto is_equal(std::array<uint8_t, n> arr1,
 }
   
 
+template <typename Problem>
+auto test_serialize_unserialize() -> bool
+{
+  /// Test that unserialize(serialize(r)) == r for a randomly chosen r
+  using C_t = typename Problem::C::t;
+  const size_t length = Problem::C::length; 
+
+  C_t orig{};
+  C_t copy{};
+  std::array<uint8_t, length> serial;
+
+  size_t n_elements = Problem::C::n_elements;
+
+  const size_t n_tests = std::min(n_elements, static_cast<size_t>(1024));
+				 
+  
+  for(size_t i = 0; i < n_tests; ++i){
+    /* */
+    Problem::C::randomize(orig);
+    Problem::C::serialize(orig, serial);
+    Problem::C::unserialize(serial, copy);
+
+    if (copy != orig)
+      return false; /* there is a bug in the adaptationof the code  */
+  }
+
+  return true;
+  
+}
 
 
 /******************************************************************************/
@@ -221,7 +252,7 @@ inline void swap_pointers(C_t*& pt1,
 }
 
 template<typename Problem>
-auto generate_dist_point(const int64_t theta, /* #bits are zero at the beginning */
+auto generate_dist_point(const int64_t thetaFlipped, /* #bits are zero at the beginning */
                          typename Problem::C::t* inp_C, // we need to exchange pointers
                          typename Problem::C::t* out_C,
                          uint8_t* out_C_serialized,
@@ -230,7 +261,7 @@ auto generate_dist_point(const int64_t theta, /* #bits are zero at the beginning
                          -> bool
 {
 
-  static const uint64_t mask = (1LL<<theta) - 1;
+  static const uint64_t mask = (1LL<<thetaFlipped) - 1;
 
   // using C_t = typename Problem::C::t;
   using C = typename  Problem::C;
@@ -243,19 +274,24 @@ auto generate_dist_point(const int64_t theta, /* #bits are zero at the beginning
   /* The decision is based on the input for the next iteration, now it's inp_C then out_C */
  f_or_g = C::extract_1_bit(*inp_C);// next_f_or_g(out_C_serialized);
 
-  found_distinguished = (0 == (mask & C::extract_k_bits(*inp_C, theta))  );
+  found_distinguished = (0 == (mask & C::extract_k_bits(*inp_C, thetaFlipped))  );
 
   // typename Problem::C::t* tmp; /* dummy pointer for exchange */
-  /* potentially infinite loop, todo limit  the number of iteration as a function of theta */
-  for (int64_t i = 0; i < 3*(1LL<<theta); ++i){
-    if (f_or_g == 1)
+  /* potentially infinite loop, todo limit  the number of iteration as a function of thetaFlipped */
+  for (int64_t i = 0; i < 40*(1LL<<thetaFlipped); ++i){
+    if (f_or_g == 1){
       F(*inp_C, *out_C);
-    else
+      ++n_f_called;
+    }
+    else{
       G(*inp_C, *out_C);
+      ++n_g_called;
+    }
+      
 
     /* we may get a dist point here */
-    found_distinguished = (0 == (mask & C::extract_k_bits(*inp_C, theta))  );
-    if (found_distinguished) [[unlikely]]{/* especially with high values of theta */
+    found_distinguished = (0 == (mask & C::extract_k_bits(*inp_C, thetaFlipped))  );
+    if (found_distinguished) [[unlikely]]{/* especially with high values of thetaFlipped */
       C::serialize(*out_C, out_C_serialized);
       return true; /* exit the whole function */
     }
@@ -274,7 +310,7 @@ template<typename Problem>
 auto fill_sequence(typename Problem::C::t* inp_C,
 		   typename Problem::C::t* out_C,
                    std::vector<typename Problem::C::t>& inp_array,
-                   const int theta,
+                   const int thetaFlipped,
                    Iterate_F<Problem>& F,
                    Iterate_G<Problem>& G)
                    -> size_t
@@ -284,7 +320,7 @@ auto fill_sequence(typename Problem::C::t* inp_C,
   /// to arrive at a distinguished point.
   using C = typename Problem::C;
 
-  const uint64_t mask = (theta<<1LL) - 1;
+  const uint64_t mask = (thetaFlipped<<1LL) - 1;
 
   int found_dist = 0;
   int f_or_g = C::extract_1_bit(*inp_C);
@@ -293,11 +329,16 @@ auto fill_sequence(typename Problem::C::t* inp_C,
   Problem::C::copy(*out_C, inp_array[0]);
 
   int64_t i = 1;
-  for (; i < (3 * (1LL<<theta)) ; ++i ){
-    if (f_or_g)
+  for (; i < (3 * (1LL<<thetaFlipped)) ; ++i ){
+    if (f_or_g){
       F(*inp_C, *out_C);
-    else
+      ++n_f_called;
+    }
+    else{
       G(*inp_C, *out_C);
+      ++n_g_called;
+    }
+      
 
     /* copy the output to the array */
     /* i.e. inp_array[i] := out_C */
@@ -306,7 +347,7 @@ auto fill_sequence(typename Problem::C::t* inp_C,
 
 
     f_or_g = C::extract_1_bit(*out_C);
-    found_dist = (0 == (mask & C::extract_k_bits(*out_C, theta)));
+    found_dist = (0 == (mask & C::extract_k_bits(*out_C, thetaFlipped)));
 
     /* input will point to the current output value */
     swap_pointers(inp_C, out_C);
@@ -325,7 +366,7 @@ template<typename Problem>
 auto walk(typename Problem::C::t* inp1,
           typename Problem::C::t* inp2,
           typename Problem::C::t* out_tmp, /* place in memory for tmp calculation */
-          const uint64_t theta,
+          const uint64_t thetaFlipped,
           Iterate_F<Problem>& F,
           Iterate_G<Problem>& G)
   -> std::pair<typename Problem::C::t, typename Problem::C::t>
@@ -335,76 +376,70 @@ auto walk(typename Problem::C::t* inp1,
   /// add a drawing to illustrate this.
 
   using C_t = typename Problem::C::t;
-  std::vector<C_t> inp2_array(3*(1LL<<theta)); /* inp 2 output chain */
-  std::vector<C_t> inp1_array(3*(1LL<<theta)); /* inp 1 output chain */
+  std::vector<C_t> inp2_array(40*(1LL<<thetaFlipped)); /* inp 2 output chain */
+  std::vector<C_t> inp1_array(40*(1LL<<thetaFlipped)); /* inp 1 output chain */
 
   size_t inp1_chain_length = fill_sequence(inp1,
                                            out_tmp,
                                            inp1_array,
-                                           theta,
+                                           thetaFlipped,
                                            F, /* Iteration function */
                                            G); /* Iteration function */
 
   size_t inp2_chain_length = fill_sequence(inp2,
-                                             out_tmp,
+					   out_tmp,
                                            inp2_array,
-                                           theta,
+                                           thetaFlipped,
                                            F, /* Iteration function */
                                            G); /* Iteration function */
 
 
   
+
+  const size_t min_len = std::min(inp1_chain_length, inp2_chain_length);
   /* now walk backward until you find the last point where they share the */
-  int64_t i = 1;
-  for (; i < 3*(1LL<<theta); ++i) {
-    if (inp1_array[inp1_chain_length - i] != inp2_array[inp2_chain_length]){
+  int64_t j = -1; /* This to ensure we have an error by address sanitizier */
+  
+  for (size_t i = 1; i <= min_len; ++i) {
+    if (inp1_array[inp1_chain_length - i] != inp2_array[inp2_chain_length - i]){
+      j = i;
       break;
     }
   }
   std::cout << "reached the 2nd point \n";
-  size_t idx_inp1 = inp1_chain_length - i;
-  size_t idx_inp2 = inp2_chain_length - i;
+  size_t idx_inp1 = inp1_chain_length - j;
+  size_t idx_inp2 = inp2_chain_length - j;
 
+
+  if ((j == -1) and (inp1_chain_length != inp2_chain_length)){
+    ++n_robinhood;
+    j = 0;
+  }
+    
+  
+  printf("min_len=%lu, j=%lu\nchain_length1=%lu idx_inp1=%lu\nchain_length2=%lu idx_inp2=%lu\n"
+	 "#f_called = %lu = 2^%0.2f, #g_called=%lu = 2^%0.2f\n",
+	 min_len,
+	 j,
+	 inp1_chain_length,
+	 idx_inp1,
+	 inp2_chain_length,
+	 idx_inp2,
+	 n_f_called,
+	 std::log2(n_f_called),
+	 n_g_called,
+	 std::log2(n_g_called));
   /* I don't have a good feeling about the line below */
   return std::pair<C_t, C_t>(inp1_array[idx_inp1], inp2_array[idx_inp2]);
 }
 
-template <typename Problem>
-auto test_serialize_unserialize() -> bool
-{
-  /// Test that unserialize(serialize(r)) == r for a randomly chosen r
-  using C_t = typename Problem::C::t;
-  const size_t length = Problem::C::length; 
-
-  C_t orig{};
-  C_t copy{};
-  std::array<uint8_t, length> serial;
-
-  size_t n_elements = Problem::C::n_elements;
-
-  const size_t n_tests = std::min(n_elements, static_cast<size_t>(1024));
-				 
-  
-  for(int i = 0; i < n_tests; ++i){
-    /* */
-    Problem::C::randomize(orig);
-    Problem::C::serialize(orig, serial);
-    Problem::C::unserialize(serial, copy);
-
-    if (copy != orig)
-      return false; /* there is a bug in the adaptationof the code  */
-  }
-
-  return true;
-  
-}
 
 
 template <typename Problem >
 auto treat_collision(typename Problem::C::t* inp1,
                      typename Problem::C::t* inp2,
                      typename Problem::C::t* tmp,
-                     const uint64_t theta,
+                     const uint64_t thetaFlipped,
                      std::vector< std::pair<typename Problem::C::t, typename Problem::C::t> >& container,
                      Iterate_F<Problem>& F,
                      Iterate_G<Problem>& G)
@@ -418,7 +453,7 @@ auto treat_collision(typename Problem::C::t* inp1,
   std::pair<C_t, C_t> pair = walk<Problem>(inp1, /* address of value of inp1  */
                                            inp2, /* inp1 -> * <- inp2, i.e. they lead to same value */
                                            tmp,
-                                           theta, /* #zero bits at the beginning */
+                                           thetaFlipped, /* #zero bits at the beginning */
                                            F, /* Iteration function */
                                            G); /* Iteration function */
   
@@ -502,42 +537,8 @@ auto inp_out_ordered() /* return a list of all f inputs outputs */
       Problem::f(inp, out);
 
       inp_out[i].first = inp;
-      /* put the output in the second element */
-      /* serialize(input, output), the name of the variable is unfortunate */
-      // std::cout << "before serialization: inp_out[i] = "
-      // 		<< static_cast<uint64_t>(inp_out[i].second[0])
-      //           << static_cast<uint64_t>(inp_out[i].second[1]) << ","
-      //           << static_cast<uint64_t>(inp_out[i].second[2])
-      //           << static_cast<uint64_t>(inp_out[i].second[3]);
-
       Problem::C::serialize(out, inp_out[i].second);
 
-      // std::cout << "thd" << omp_get_thread_num() << " has out = " << out[0]
-      //           << "," << out[1] << " and inp_out[i] = "
-      //           << std::hex << static_cast<uint64_t>(inp_out[i].second[0])
-      //           << std::hex << static_cast<uint64_t>(inp_out[i].second[1]) << ","
-      //           << std::hex << static_cast<uint64_t>(inp_out[i].second[2])
-      //           << std::hex << static_cast<uint64_t>(inp_out[i].second[3])
-      //           << " and inp = " << inp[0] << "," << inp[1]
-      //           << " and inp_out[i].first = "
-      //           << std::hex <<  static_cast<uint64_t>(inp_out[i].first[0])
-      // 		<< ","
-      // 		<< std::hex << static_cast<uint64_t>(inp_out[i].first[1])
-      // 	        << "\n";
-
-  
-      // std::cout << "AFTER unserialize thd" << omp_get_thread_num() << " has out = " << out[0]
-      //           << "," << out[1] << " and inp_out[i] = "
-      //           << std::hex << static_cast<uint64_t>(inp_out[i].second[0])
-      //           << std::hex << static_cast<uint64_t>(inp_out[i].second[1]) << ","
-      //           << std::hex << static_cast<uint64_t>(inp_out[i].second[2])
-      //           << std::hex << static_cast<uint64_t>(inp_out[i].second[3])
-      //           << " and inp = " << inp[0] << "," << inp[1]
-      //           << " and inp_out[i].first = "
-      //           << std::hex <<  static_cast<uint64_t>(inp_out[i].first[0])
-      // 		<< ","
-      // 		<< std::hex << static_cast<uint64_t>(inp_out[i].first[1])
-      // 	        << "\n";
 
       /* get ready for the next round */
       next_A(inp);
@@ -673,8 +674,6 @@ auto all_collisions_by_list()
     if( inp_out_f_A_C[idx_A].second ==  inp_out_g_B_C[idx_B].second ) {
       std::cout << "Found collision at idx_A=" << idx_A << ", idx_B=" << idx_B
 		<< " Do they collide? "<< (inp_out_f_A_C[idx_A].second ==  inp_out_g_B_C[idx_B].second)
-		<< "\n in another way = " << is_equal(inp_out_f_A_C[idx_B].second,
-						      inp_out_g_B_C[idx_B].second)
 		<<"\n";
       print_array(inp_out_f_A_C[idx_A].second);
       print_array(inp_out_g_B_C[idx_B].second);
@@ -729,24 +728,24 @@ auto collision()
 
 
   /* EXPERIMENT BY NAIVE METHOD        */
-  std::cout << "unserial(serial(.)) =?= id(.) : " << test_serialize_unserialize<Problem>() << "\n";
-  std::cout << "Starting with naive method ...\n";
-  auto begin = wtime();
-  auto list_of_collisions = all_collisions_by_list<Problem>();
-  auto end = wtime();
-  auto elapsed = end - begin;
+  // std::cout << "unserial(serial(.)) =?= id(.) : " << test_serialize_unserialize<Problem>() << "\n";
+  // std::cout << "Starting with naive method ...\n";
+  // auto begin = wtime();
+  // auto list_of_collisions = all_collisions_by_list<Problem>();
+  // auto end = wtime();
+  // auto elapsed = end - begin;
   
-  std::cout << std::fixed
-	    << "The naive method tells us that there are "
-            << list_of_collisions.size()
-            << " collisions. Took: "
-            << elapsed
-            << "s\n";
+  // std::cout << std::fixed
+  // 	    << "The naive method tells us that there are "
+  //           << list_of_collisions.size()
+  //           << " collisions. Took: "
+  //           << elapsed
+  //           << "s\n";
 
   /* end of EXPERIMENT BY NAIVE METHOD */
 
-  /* save some boilerplate typing */
-  using t_pair = typename std::pair<A_t, C_t>;
+
+
 
   // ------------------------------------------------------------------------/
   // --------------------------------- INIT --------------------------------/
@@ -760,7 +759,7 @@ auto collision()
 
   // -----------------------------------------------------------------------------/
   // VARIABLES FOR GENERATING RANDOM DISTINGUISHED POINTS
-  int theta = 2; // difficulty;
+  int thetaFlipped = 2; // difficulty;
   /* inp/out variables are used as input and output to save one 1 copy */
   C_t inp_C{}; /* input output */
   C_t inp2_C{}; /* input output */
@@ -790,12 +789,12 @@ auto collision()
   Iterate_F<Problem> F{};
   Iterate_G<Problem> G{};
 
-  size_t i = 0;
+
   C_t* pt;
 
   size_t false_collisions = 0;
   size_t real_collisions = 0;
-
+  size_t n_dist_points = 0;
 
   while (n_collisions < n_needed_collisions){
     /* Get a distinguished point */
@@ -803,17 +802,15 @@ auto collision()
     //std::cout << "bf inp = " << (*pt_inp_C)[0] << ", " << (*pt_inp_C)[1] << "\n";
     //std::cout << "bf out = " << (*pt_out_C)[0] << ", " << (*pt_out_C)[1] << "\n";
 
-    begin = wtime();
-    generate_dist_point<Problem>(theta,
+
+    generate_dist_point<Problem>(thetaFlipped,
 				 pt_inp_C, /* convert this to a pointer */
 				 pt_out_C, /* convert this to a pointer */
 				 c_serial,
 				 F,
 				 G);
-    end  = wtime();
-    elapsed = begin - end;
-    std::cout << "Gen dist took " << elapsed << "sec \n";
 
+    ++n_dist_points;
     //std::cout << "af inp = " << (*pt_inp_C)[0] << ", " << (*pt_inp_C)[1] << "\n";
     //std::cout << "bf out = " << (*pt_out_C)[0] << ", " << (*pt_out_C)[1] << "\n";
     //return std::pair(pt_inp_C, pt_inp_C);
@@ -842,31 +839,26 @@ auto collision()
       if (!is_false_collision)
 	++real_collisions;
      
-      std::cout << "found a collision " << n_collisions
-		<<  " out of " << n_needed_collisions
-		<< " #dist point queried = " << i << "\n";
-      i = 0; /* i is the number of distinguished point generated */
       
       std::cout << "found a collision " << n_collisions <<  " out of " << n_needed_collisions << "\n";
-      std::cout <<  "false collisions = " << false_collisions <<  " real collisions = " << real_collisions << "\n";
-      /* tmp_C contains a candidate for collision */
-      // std::cout << "bf inp2= " << (*pt_inp2_C)[0] << (*pt_inp2_C)[1] << "\n";
-      // std::cout << "popped = " << (*pt_tmp_C)[0] << (*pt_tmp_C)[1] << "\n";
+      std::cout << "false collisions = " << false_collisions
+		<< " real collisions = " << real_collisions
+		<< " robinhoods = " << n_robinhood
+		<< "\n";
+      std::cout << "#dist points = " << n_dist_points <<  " = 2^" << std::log2(n_dist_points) << "\n";
+      
       swap_pointers(pt_tmp_C, pt_inp2_C);
 
-      // std::cout << "before walking ... \n";
-      // std::cout << "inp1 = " << (*pt_inp_C)[0] << (*pt_inp_C)[1] << "\n";
-      // std::cout << "inp2 = " << (*pt_inp2_C)[0] << (*pt_inp2_C)[1] << "\n";
+
       if (!is_false_collision){
 	treat_collision<Problem>(pt_inp_C,
 				 pt_inp2_C,
 				 pt_tmp_C,
-				 theta,
+				 thetaFlipped,
 				 collisions_container,
 				 F,
 				 G);
 
-	// std::cout << "after walking ... \n";
       
 	std::cout << "inp1 = " << (*pt_inp_C)[0] << (*pt_inp_C)[1] << "\n";
 	std::cout << "inp2 = " << (*pt_inp2_C)[0] << (*pt_inp2_C)[1] << "\n";
@@ -895,7 +887,6 @@ auto collision()
     pt_out_C = pt;
     // std::cout << "sw inp = " << inp_C[0] << ", " << inp_C[1] << "\n";
     // std::cout << "sw out = " << out_C[0] << ", " << out_C[1] << "\n";
-    ++i; 
   }
   
 
