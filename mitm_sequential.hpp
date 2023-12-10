@@ -200,7 +200,10 @@ public:
 /******************************************************************************/
 template <typename P>
 struct Iterate_F {
-  ///  A wrapper for calling f that uses
+  /* 
+   * A wrapper for calling f that uses
+   */
+  
   using A_t = typename P::A::t;
   using C_t = typename P::C::t;
   inline static A_t inp_A; /* A placeholder for the input */
@@ -251,188 +254,138 @@ inline void swap_pointers(C_t*& pt1,
     pt2 = tmp_pt;
 }
 
+/* todo pass the function number. e.g. first version of (f, g) second version */
+template <typename Problem>
+void iterate_once(typename Problem::C::t* inp_pt,
+		  typename Problem::C::t* out_pt,
+		  Iterate_F<Problem>& F,
+		  Iterate_G<Problem>& G)
+{
+  /*
+   * Do 1 iteration inp =(f/g)=> out, write the output in the address pointed
+   * by out_pt.
+   */
+  int f_or_g = Problem::C::extract_1_bit(*inp_pt);
+  if (f_or_g == 1){
+    F(*inp_pt, *out_pt);
+    ++n_f_called;
+  }
+  else { /* f_or_g == 0 */
+    G(*inp_pt, *out_pt);
+    ++n_g_called;
+  }
+}
+
+		  
+
+
 template<typename Problem>
 auto generate_dist_point(const int64_t thetaFlipped, /* #bits are zero at the beginning */
-                         typename Problem::C::t* inp_C, // we need to exchange pointers
-                         typename Problem::C::t* out_C,
-                         uint8_t* out_C_serialized,
+                         typename Problem::C::t*& inp_C_pt,
+			 typename Problem::C::t*& out_C_pt,
+                         uint8_t* const out_C_pt_serialized,
+			 uint64_t& chain_length, /* write chain lenght here */
                          Iterate_F<Problem>& F,
                          Iterate_G<Problem>& G)
                          -> bool
 {
+  /*
+   * Given an input, iterate functions either F or G until a distinguished point
+   * is found, save the distinguished point in out_C_pt and out_C_pt_serialized
+   * Then return `true`. If the iterations limit is passed, returns `false`.
+   */
 
+  
   static const uint64_t mask = (1LL<<thetaFlipped) - 1;
-
-  // using C_t = typename Problem::C::t;
   using C = typename  Problem::C;
+  chain_length = 0;
+  
   /* F: Domain_C -> Domain_C, instead of C_t -> A_t -f-> C_t */
 
   bool found_distinguished = false;
-  int f_or_g; // 1 if the next function is f,
 
 
-  /* The decision is based on the input for the next iteration, now it's inp_C then out_C */
- f_or_g = C::extract_1_bit(*inp_C);// next_f_or_g(out_C_serialized);
+  
+  found_distinguished =
+    (0 == (mask & C::extract_k_bits(*inp_C_pt, thetaFlipped))  );
 
-  found_distinguished = (0 == (mask & C::extract_k_bits(*inp_C, thetaFlipped))  );
+  /* 1 if the next function is f */
 
-  // typename Problem::C::t* tmp; /* dummy pointer for exchange */
-  /* potentially infinite loop, todo limit  the number of iteration as a function of thetaFlipped */
+  /* The probability of not finding a distinguished point during this loop is*/
+  /* 2^{-some big k} */
   for (int64_t i = 0; i < 40*(1LL<<thetaFlipped); ++i){
-    if (f_or_g == 1){
-      F(*inp_C, *out_C);
-      ++n_f_called;
-    }
-    else{
-      G(*inp_C, *out_C);
-      ++n_g_called;
-    }
-      
+    iterate_once(inp_C_pt, out_C_pt, F, G);
+
+    ++chain_length;
 
     /* we may get a dist point here */
-    found_distinguished = (0 == (mask & C::extract_k_bits(*inp_C, thetaFlipped))  );
-    if (found_distinguished) [[unlikely]]{/* especially with high values of thetaFlipped */
-      C::serialize(*out_C, out_C_serialized);
+    found_distinguished
+      = (0 == (mask & C::extract_k_bits(*inp_C_pt, thetaFlipped))  );
+
+    /* unlikely with high values of thetaFlipped */
+    if (found_distinguished) [[unlikely]]{
+      C::serialize(*out_C_pt, out_C_pt_serialized);
       return true; /* exit the whole function */
     }
     
-    /* decide what is the next function based on the output */    
-    f_or_g = C::extract_1_bit(*out_C);
-
     /* swap inp and out */
-    swap_pointers(inp_C, out_C);
+    swap_pointers(inp_C_pt, out_C_pt);
   }
   return false; /* no distinguished point were found */
 }
 
 
+
+
+
+/* Careful inp_i_pt and tmp_i_pt could be exchanged */
 template<typename Problem>
-auto fill_sequence(typename Problem::C::t* inp_C,
-		   typename Problem::C::t* out_C,
-                   std::vector<typename Problem::C::t>& inp_array,
-                   const int thetaFlipped,
-                   Iterate_F<Problem>& F,
-                   Iterate_G<Problem>& G)
-                   -> size_t
-{
-  /// Given an input C_t inp, fill the inp_array with all output of f/g (inp)
-  /// until a distinguished point is found. Return the number of steps needed
-  /// to arrive at a distinguished point.
-  using C = typename Problem::C;
-
-  const uint64_t mask = (thetaFlipped<<1LL) - 1;
-
-  int found_dist = 0;
-  int f_or_g = C::extract_1_bit(*inp_C);
-
-  /* i.e. inp_array[0] := out_C */
-  Problem::C::copy(*out_C, inp_array[0]);
-
-  int64_t i = 1;
-  for (; i < (3 * (1LL<<thetaFlipped)) ; ++i ){
-    if (f_or_g){
-      F(*inp_C, *out_C);
-      ++n_f_called;
-    }
-    else{
-      G(*inp_C, *out_C);
-      ++n_g_called;
-    }
-      
-
-    /* copy the output to the array */
-    /* i.e. inp_array[i] := out_C */
-    Problem::C::copy(*out_C, inp_array[i]);
-
-
-
-    f_or_g = C::extract_1_bit(*out_C);
-    found_dist = (0 == (mask & C::extract_k_bits(*out_C, thetaFlipped)));
-
-    /* input will point to the current output value */
-    swap_pointers(inp_C, out_C);
-
-    if (found_dist) [[unlikely]]
-      break; // exit the loop
-  }
-
-  return i; /* chain length */
-}
-
-
-
-
-template<typename Problem>
-auto walk(typename Problem::C::t* inp1,
-          typename Problem::C::t* inp2,
-          typename Problem::C::t* out_tmp, /* place in memory for tmp calculation */
-          const uint64_t thetaFlipped,
+auto walk(typename Problem::C::t*& inp1_pt,
+	  typename Problem::C::t*& tmp1_pt, /* inp1 calculation buffer */
+	  const uint64_t inp1_chain_len,
+          typename Problem::C::t*& inp2_pt,
+	  typename Problem::C::t*& tmp2_pt, /* inp2 calculation buffer */
+	  const uint64_t inp2_chain_len,
           Iterate_F<Problem>& F,
           Iterate_G<Problem>& G)
   -> std::pair<typename Problem::C::t, typename Problem::C::t>
 {
-  /// Given two inputs that lead to the same distinguished point,
-  /// find the earliest collision in the sequence before the distinguished point
-  /// add a drawing to illustrate this.
+  /* Given two inputs that lead to the same distinguished point,
+   * find the earliest collision in the sequence before the distinguished point
+   * add a drawing to illustrate this.
+   */ 
 
   using C_t = typename Problem::C::t;
-  std::vector<C_t> inp2_array(40*(1LL<<thetaFlipped)); /* inp 2 output chain */
-  std::vector<C_t> inp1_array(40*(1LL<<thetaFlipped)); /* inp 1 output chain */
-
-  size_t inp1_chain_length = fill_sequence(inp1,
-                                           out_tmp,
-                                           inp1_array,
-                                           thetaFlipped,
-                                           F, /* Iteration function */
-                                           G); /* Iteration function */
-
-  size_t inp2_chain_length = fill_sequence(inp2,
-					   out_tmp,
-                                           inp2_array,
-                                           thetaFlipped,
-                                           F, /* Iteration function */
-                                           G); /* Iteration function */
-
-
   
-
-  const size_t min_len = std::min(inp1_chain_length, inp2_chain_length);
-  /* now walk backward until you find the last point where they share the */
-  int64_t j = -1; /* This to ensure we have an error by address sanitizier */
   
-  for (size_t i = 1; i <= min_len; ++i) {
-    if (inp1_array[inp1_chain_length - i] != inp2_array[inp2_chain_length - i]){
-      j = i;
-      break;
+  size_t const diff_len = std::max(inp1_chain_len, inp2_chain_len)
+                        - std::min(inp1_chain_len, inp2_chain_len);
+
+  /* walk the longest sequenc until they are equal */
+  if (inp1_chain_len > inp2_chain_len){
+    for (size_t i = 0; i < diff_len; ++i){
+      iterate_once(inp1_pt, tmp1_pt, F, G);
+      swap_pointers(inp1_pt, tmp1_pt);
     }
   }
-  std::cout << "reached the 2nd point \n";
-  size_t idx_inp1 = inp1_chain_length - j;
-  size_t idx_inp2 = inp2_chain_length - j;
-
-
-  if ((j == -1) and (inp1_chain_length != inp2_chain_length)){
-    ++n_robinhood;
-    j = 0;
+  if (inp1_chain_len < inp2_chain_len){
+    for (size_t i = 0; i < diff_len; ++i){
+      iterate_once(inp2_pt, tmp2_pt, F, G);
+      swap_pointers(inp1_pt, tmp1_pt);
+    }
   }
-    
+
+  /* now both inputs have equal amount of steps to reach a distinguished point */
+  /* both sequences needs exactly `len` steps to reach dist point */
+  size_t len = std::min(inp1_chain_len, inp2_chain_len);
+
+  /* Check if the two inputs are equal then we have a robin hood */
   
-  printf("min_len=%lu, j=%lu, equal_inputs=%d\n"
-	 "chain_length1=%lu idx_inp1=%lu\nchain_length2=%lu idx_inp2=%lu\n"
-	 "#f_called = %lu = 2^%0.2f, #g_called=%lu = 2^%0.2f\n",
-	 min_len,
-	 j,
-	 *inp1 == *inp2,
-	 inp1_chain_length,
-	 idx_inp1,
-	 inp2_chain_length,
-	 idx_inp2,
-	 n_f_called,
-	 std::log2(n_f_called),
-	 n_g_called,
-	 std::log2(n_g_called));
-  /* I don't have a good feeling about the line below */
-  return std::pair<C_t, C_t>(inp1_array[idx_inp1], inp2_array[idx_inp2]);
+  for (size_t i = 0; i < len; ++i){
+    /* walk them together and check each time if their output are equal */
+    /* return as soon equality is found */
+    
+  }
 }
 
 
@@ -764,50 +717,81 @@ auto collision()
   // VARIABLES FOR GENERATING RANDOM DISTINGUISHED POINTS
   int thetaFlipped = 2; // difficulty;
   /* inp/out variables are used as input and output to save one 1 copy */
-  C_t inp_C{}; /* input output */
-  C_t inp2_C{}; /* input output */
+
+  C_t inp_C{}; /* container for input, it may contains the output! */
+  // C_t* pt_inp_C = &inp_C; /* However, this always points to an input  */
+
+  
+
   C_t out_C{}; /* output input */
-  C_t tmp_C{}; /* placeholder to save popped values from dict */
+  C_t* pt_out_C = &out_C; /* output input */
+
+  /* when generating a distinguished point we have: */
+  /*  1)   inp0           =f/g=> out0   */
+  /*  2)  (inp1 := out0) =f/g=> out1    */
+  /*  3)  (inp2 := out1) =f/g=> out2    */
+  /*            ...                     */
+  /* m+1) (inp_m := out_m) =f/g=> out_m */
+  /* A distinguished point found at step `m+1` */
+  /* "We would like to preserve inp0 at the end of calculation." */
+  /* In order to save ourselves from copying in each step */
+
+  
+  C_t tmp_inp_C{}; 
+  C_t* pt_tmp_C = &tmp_inp_C; /* placeholder to save popped values from dict */
+  
+  /* ---------------- no idea about why do we need these variables -------------*/
 
   uint8_t c_serial[Domain_C::length];
 
-  C_t* pt_inp_C = &inp_C; /* input output */
+  
+  C_t inp2_C{}; /* input output */
   C_t* pt_inp2_C = &inp2_C; /* input output */
-  C_t* pt_out_C = &out_C; /* output input */
-  C_t* pt_tmp_C = &tmp_C; /* placeholder to save popped values from dict */
+  
 
+
+  /* -------------- END no idea about why do we need these variables ------------*/
 
   /* fill the input */
   Domain_C::randomize(inp_C); // todo how to add an optional PRG
 
 
-  /* Collisions related variables */
+  /* Collisions counters */
   bool found_collision = false;
   size_t n_collisions = 0;
   size_t n_needed_collisions = 1LL<<20;
+
+  /* We should have ration 1/3 real collisions and 2/3 false collisions */
+  size_t false_collisions = 0;
+  size_t real_collisions = 0;
+  size_t n_dist_points = 0;
+
+  /* Store the results of collisions here */
   /* a:A_t -f-> x <-g- b:B_t */
   std::vector< std::pair<A_t, B_t> >  collisions_container{};
 
+  
   /* Iteration Functions */
   Iterate_F<Problem> F{};
   Iterate_G<Problem> G{};
 
 
-  C_t* pt;
-
-  size_t false_collisions = 0;
-  size_t real_collisions = 0;
-  size_t n_dist_points = 0;
+  // C_t* pt; /* what does this do? no idea! */
 
   while (n_collisions < n_needed_collisions){
-    /* Get a distinguished point */
-    *pt_inp_C = read_urandom<C_t>();
-    //std::cout << "bf inp = " << (*pt_inp_C)[0] << ", " << (*pt_inp_C)[1] << "\n";
-    //std::cout << "bf out = " << (*pt_out_C)[0] << ", " << (*pt_out_C)[1] << "\n";
+    /* Get a fresh random value  */
+    /* using pointer since the next function might swap pt_inp & pt_out */
+    *pt_inp_C = read_urandom<C_t>(); 
 
 
-    generate_dist_point<Problem>(thetaFlipped,
-				 pt_inp_C, /* convert this to a pointer */
+
+    /* before pt_inp_C points to the input of the chain.  */
+    /* after pt_inp_C will point the input the */
+    /// todo fatal there is a logical error, where pt_inp_C will point to 
+    /// the input just before the distinguished point which is not desirable!
+    
+    generate_dist_point<Problem>(thetaFlipped, /* difficulty */
+				 &inp_C, /*   */
 				 pt_out_C, /* convert this to a pointer */
 				 c_serial,
 				 F,
@@ -831,12 +815,16 @@ auto collision()
       
      
       
-      std::cout << "found a collision " << n_collisions <<  " out of " << n_needed_collisions << "\n";
+      std::cout << "found a collision " << n_collisions
+		<<  " out of " << n_needed_collisions << "\n";
+      
       std::cout << "false collisions = " << false_collisions
 		<< " real collisions = " << real_collisions
 		<< " robinhoods = " << n_robinhood
 		<< "\n";
-      std::cout << "#dist points = " << n_dist_points <<  " = 2^" << std::log2(n_dist_points) << "\n";
+
+      std::cout << "#dist points = " << n_dist_points
+		<<  " = 2^" << std::log2(n_dist_points) << "\n";
       
       swap_pointers(pt_tmp_C, pt_inp2_C);
 
