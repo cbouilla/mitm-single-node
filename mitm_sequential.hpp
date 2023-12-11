@@ -22,7 +22,7 @@ size_t n_f_called{0};
 size_t n_g_called{0};
 size_t n_robinhood{0};
 /******************************************************************************/
-// independent code 
+// independent code
 #include <chrono>
 inline auto wtime() -> double /* with inline it doesn't violate one definition rule */
 {
@@ -31,9 +31,9 @@ inline auto wtime() -> double /* with inline it doesn't violate one definition r
   auto nanoseconds = std::chrono::duration_cast<std::chrono::nanoseconds>(clock.time_since_epoch()).count();
   double seconds = nanoseconds / (static_cast<double>(1000000000.0));
 
-  
+
   return seconds;
-  
+
 }
 
 
@@ -57,14 +57,14 @@ auto is_equal(std::array<uint8_t, n> arr1,
   }
   return true;
 }
-  
+
 
 template <typename Problem>
 auto test_serialize_unserialize() -> bool
 {
   /// Test that unserialize(serialize(r)) == r for a randomly chosen r
   using C_t = typename Problem::C::t;
-  const size_t length = Problem::C::length; 
+  const size_t length = Problem::C::length;
 
   C_t orig{};
   C_t copy{};
@@ -73,8 +73,8 @@ auto test_serialize_unserialize() -> bool
   size_t n_elements = Problem::C::n_elements;
 
   const size_t n_tests = std::min(n_elements, static_cast<size_t>(1024));
-				 
-  
+
+
   for(size_t i = 0; i < n_tests; ++i){
     /* */
     Problem::C::randomize(orig);
@@ -86,7 +86,7 @@ auto test_serialize_unserialize() -> bool
   }
 
   return true;
-  
+
 }
 
 
@@ -143,10 +143,10 @@ public:
   static void randomize(t &x, PRNG &p);           /* set x to a random value */
 
   static void randomize(t &x);  /* set x to a random value */
+  auto is_equal(t& x, t& y) const -> bool;
 
 
-
-  /* get the next element after x. What matters is getting a different element each time, not the order. */
+  /* get the next element after x. What matters is getting a different element eac time, not the order. */
   inline auto next(t& x) -> t;
   inline static void serialize(const t &x, const uint8_t *out);   /* write this to out */
   inline static void unserialize(const uint8_t *in, t &x);        /* read this from in */
@@ -200,10 +200,10 @@ public:
 /******************************************************************************/
 template <typename P>
 struct Iterate_F {
-  /* 
+  /*
    * A wrapper for calling f that uses
    */
-  
+
   using A_t = typename P::A::t;
   using C_t = typename P::C::t;
   inline static A_t inp_A; /* A placeholder for the input */
@@ -276,7 +276,7 @@ void iterate_once(typename Problem::C::t* inp_pt,
   }
 }
 
-		  
+
 
 
 template<typename Problem>
@@ -295,17 +295,17 @@ auto generate_dist_point(const int64_t thetaFlipped, /* #bits are zero at the be
    * Then return `true`. If the iterations limit is passed, returns `false`.
    */
 
-  
+
   static const uint64_t mask = (1LL<<thetaFlipped) - 1;
   using C = typename  Problem::C;
   chain_length = 0;
-  
+
   /* F: Domain_C -> Domain_C, instead of C_t -> A_t -f-> C_t */
 
   bool found_distinguished = false;
 
 
-  
+
   found_distinguished =
     (0 == (mask & C::extract_k_bits(*inp_C_pt, thetaFlipped))  );
 
@@ -327,7 +327,7 @@ auto generate_dist_point(const int64_t thetaFlipped, /* #bits are zero at the be
       C::serialize(*out_C_pt, out_C_pt_serialized);
       return true; /* exit the whole function */
     }
-    
+
     /* swap inp and out */
     swap_pointers(inp_C_pt, out_C_pt);
   }
@@ -340,7 +340,7 @@ auto generate_dist_point(const int64_t thetaFlipped, /* #bits are zero at the be
 
 /* Careful inp_i_pt and tmp_i_pt could be exchanged */
 template<typename Problem>
-auto walk(typename Problem::C::t*& inp1_pt,
+void walk(typename Problem::C::t*& inp1_pt,
 	  typename Problem::C::t*& tmp1_pt, /* inp1 calculation buffer */
 	  const uint64_t inp1_chain_len,
           typename Problem::C::t*& inp2_pt,
@@ -348,51 +348,79 @@ auto walk(typename Problem::C::t*& inp1_pt,
 	  const uint64_t inp2_chain_len,
           Iterate_F<Problem>& F,
           Iterate_G<Problem>& G)
-  -> std::pair<typename Problem::C::t, typename Problem::C::t>
 {
   /* Given two inputs that lead to the same distinguished point,
    * find the earliest collision in the sequence before the distinguished point
    * add a drawing to illustrate this.
-   */ 
+   */
+
 
   using C_t = typename Problem::C::t;
-  
-  
+
+
   size_t const diff_len = std::max(inp1_chain_len, inp2_chain_len)
                         - std::min(inp1_chain_len, inp2_chain_len);
 
-  /* walk the longest sequenc until they are equal */
+  /****************************************************************************+
+   *            walk the longest sequence until they are equal                 |
+   * Two chains that leads to the same distinguished point but not necessarily |
+   * have the same length. e.g.                                                |
+   *                                                                           |
+   * chain1: ----------------x-------o                                         |
+   *                        /                                                  |
+   *          chain2: ------                                                   |
+   *                                                                           |
+   * o: is a distinguished point                                               |
+   * x: the collision we're looking for                                        |
+   *                                                                           |   
+   ****************************************************************************/
+  
+ 
   if (inp1_chain_len > inp2_chain_len){
     for (size_t i = 0; i < diff_len; ++i){
       iterate_once(inp1_pt, tmp1_pt, F, G);
       swap_pointers(inp1_pt, tmp1_pt);
     }
-  }
+   }
+
+ 
   if (inp1_chain_len < inp2_chain_len){
     for (size_t i = 0; i < diff_len; ++i){
       iterate_once(inp2_pt, tmp2_pt, F, G);
       swap_pointers(inp1_pt, tmp1_pt);
     }
+ 
   }
-
+  /****************************************************************************/
+  
   /* now both inputs have equal amount of steps to reach a distinguished point */
   /* both sequences needs exactly `len` steps to reach dist point */
   size_t len = std::min(inp1_chain_len, inp2_chain_len);
 
   /* Check if the two inputs are equal then we have a robin hood */
+
+
+  if(Problem::C::is_equal( *inp1_pt, *inp1_pt ))
+    return; /* Robinhood */
+
   
   for (size_t i = 0; i < len; ++i){
     /* walk them together and check each time if their output are equal */
     /* return as soon equality is found */
+    iterate_once(inp1_pt, tmp1_pt, F, G);
+    iterate_once(inp2_pt, tmp2_pt, F, G);
     
+    if(Problem::C::is_equal( *tmp1_pt, *tmp2_pt ))
+      return; /* They are equal */
   }
 }
 
 
 
+/* todo start from here */
 template <typename Problem >
-auto treat_collision(typename Problem::C::t* inp1,
-                     typename Problem::C::t* inp2,
+auto treat_collision(typename Problem::C::t* inp1_pt,
+                     typename Problem::C::t* inp2_pt,
                      typename Problem::C::t* tmp,
                      const uint64_t thetaFlipped,
                      std::vector< std::pair<typename Problem::C::t, typename Problem::C::t> >& container,
@@ -406,13 +434,13 @@ auto treat_collision(typename Problem::C::t* inp1,
   using C_t = typename Problem::C::t;
 
   /* Warning Danger we use different types in collision_container!!!! */
-  std::pair<C_t, C_t> pair = walk<Problem>(inp1, /* address of value of inp1  */
-                                           inp2, /* inp1 -> * <- inp2, i.e. they lead to same value */
+  std::pair<C_t, C_t> pair = walk<Problem>(inp1_pt, 
+                                           inp2_pt, 
                                            tmp,
-                                           thetaFlipped, /* #zero bits at the beginning */
+                                           thetaFlipped,
                                            F, /* Iteration function */
                                            G); /* Iteration function */
-  
+
 
   std::cout << "before pushback\n";
   /* todo here we should add more tests */
@@ -427,10 +455,10 @@ template <typename T1, typename T2>
 auto count_unique_2nd_elm(std::vector<std::pair<T1, T2>> arr) -> size_t
 {
   if (arr.size() == 0) return 0;
-  
+
   size_t n_unique_elm = 1;
   T2 tmp{arr[0].second};
-  
+
   for (auto& elm_pair: arr ){
     if (tmp != elm_pair.second)
       ++n_unique_elm;
@@ -449,7 +477,7 @@ template <typename Problem, typename A_t, typename C_t,
 
 auto inp_out_ordered() /* return a list of all f inputs outputs */
   -> std::vector<std::pair<A_t, std::array<uint8_t, length> > >
-  
+
 {
   /* this vector will hold all (inp, out) pairs of F */
 
@@ -460,11 +488,11 @@ auto inp_out_ordered() /* return a list of all f inputs outputs */
   auto begin = wtime();
   std::vector< std::pair<A_t, C_serial> > inp_out(Problem::C::n_elements);
 
-  
+
   auto end = wtime();
   auto elapsed_sec = end - begin;
   std::cout << "Initializing the first vector took " <<  elapsed_sec <<"sec\n";
-  
+
 
 
   std::cout << "Starting to fill the A list "
@@ -500,7 +528,7 @@ auto inp_out_ordered() /* return a list of all f inputs outputs */
       next_A(inp);
 
 
-    }    
+    }
   }
 
   end = wtime();
@@ -513,7 +541,7 @@ auto inp_out_ordered() /* return a list of all f inputs outputs */
   /* free important memory */
 
 
-  
+
   begin = wtime();
   /* sort the input output according to the second element (the output ) */
   std::sort(std::execution::par,
@@ -533,15 +561,15 @@ auto inp_out_ordered() /* return a list of all f inputs outputs */
 	    << n_unique << " elements\n";
 
 
-  
+
   /* Hopefully, NRVO will save the unwanted copying */
-  return inp_out; 
-  
+  return inp_out;
+
 }
 
 
 
- 
+
 
 
 
@@ -553,7 +581,7 @@ auto all_collisions_by_list()
   -> std::vector< std::tuple<typename Problem::A::t,
 			     typename Problem::B::t,
 			     typename Problem::C::t>>
-  
+
 {
   /* this vector will hold all (inp, out) pairs of F */
   using A_t = typename Problem::A::t;
@@ -578,7 +606,7 @@ auto all_collisions_by_list()
 				    Problem::A::ith_elm>();
 
 
-  
+
   std::vector< std::pair<B_t, C_serial> >
     inp_out_g_B_C = inp_out_ordered<Problem,
 				    B_t,
@@ -613,7 +641,7 @@ auto all_collisions_by_list()
   C_t val{};
   size_t A_n_elements = inp_out_f_A_C.size();
   size_t B_n_elements = inp_out_g_B_C.size();
-  
+
   begin = wtime();
 
   size_t idx_A = 0;
@@ -623,7 +651,7 @@ auto all_collisions_by_list()
   C_serial arr{};
   std::cout << "length of c output = " << arr.max_size() << ", or size = " << arr.size()
 	    << "nbytes = " << nbytes << "\n" ;
-  
+
   auto start = wtime();
   while ((idx_A < A_n_elements) and (idx_B < B_n_elements)) {
     /* 1st case: we have a collision  */
@@ -634,7 +662,7 @@ auto all_collisions_by_list()
       print_array(inp_out_f_A_C[idx_A].second);
       print_array(inp_out_g_B_C[idx_B].second);
       std::cout << "============================\n";
-      
+
       Problem::C::unserialize(inp_out_f_A_C[idx_A].second, val);
       std::tuple col{inp_out_f_A_C[idx_A].first, inp_out_g_B_C[idx_B].first,  val };
       all_collisions_vec.push_back(col);
@@ -646,7 +674,7 @@ auto all_collisions_by_list()
     /* when */
     /* the list of inputs is sorted in increasing order */
     if( inp_out_f_A_C[idx_A].second <  inp_out_g_B_C[idx_A].second ){
-      ++idx_A; 
+      ++idx_A;
     } if( inp_out_f_A_C[idx_A].second >  inp_out_g_B_C[idx_A].second ){
       ++idx_B;
     }
@@ -659,7 +687,7 @@ auto all_collisions_by_list()
 
 
 
-  
+
   return all_collisions_vec;
 }
 
@@ -690,7 +718,7 @@ auto collision()
   // auto list_of_collisions = all_collisions_by_list<Problem>();
   // auto end = wtime();
   // auto elapsed = end - begin;
-  
+
   // std::cout << std::fixed
   // 	    << "The naive method tells us that there are "
   //           << list_of_collisions.size()
@@ -721,7 +749,7 @@ auto collision()
   C_t inp_C{}; /* container for input, it may contains the output! */
   // C_t* pt_inp_C = &inp_C; /* However, this always points to an input  */
 
-  
+
 
   C_t out_C{}; /* output input */
   C_t* pt_out_C = &out_C; /* output input */
@@ -736,18 +764,18 @@ auto collision()
   /* "We would like to preserve inp0 at the end of calculation." */
   /* In order to save ourselves from copying in each step */
 
-  
-  C_t tmp_inp_C{}; 
+
+  C_t tmp_inp_C{};
   C_t* pt_tmp_C = &tmp_inp_C; /* placeholder to save popped values from dict */
-  
+
   /* ---------------- no idea about why do we need these variables -------------*/
 
   uint8_t c_serial[Domain_C::length];
 
-  
+
   C_t inp2_C{}; /* input output */
   C_t* pt_inp2_C = &inp2_C; /* input output */
-  
+
 
 
   /* -------------- END no idea about why do we need these variables ------------*/
@@ -770,7 +798,7 @@ auto collision()
   /* a:A_t -f-> x <-g- b:B_t */
   std::vector< std::pair<A_t, B_t> >  collisions_container{};
 
-  
+
   /* Iteration Functions */
   Iterate_F<Problem> F{};
   Iterate_G<Problem> G{};
@@ -781,15 +809,15 @@ auto collision()
   while (n_collisions < n_needed_collisions){
     /* Get a fresh random value  */
     /* using pointer since the next function might swap pt_inp & pt_out */
-    *pt_inp_C = read_urandom<C_t>(); 
+    *pt_inp_C = read_urandom<C_t>();
 
 
 
     /* before pt_inp_C points to the input of the chain.  */
     /* after pt_inp_C will point the input the */
-    /// todo fatal there is a logical error, where pt_inp_C will point to 
+    /// todo fatal there is a logical error, where pt_inp_C will point to
     /// the input just before the distinguished point which is not desirable!
-    
+
     generate_dist_point<Problem>(thetaFlipped, /* difficulty */
 				 &inp_C, /*   */
 				 pt_out_C, /* convert this to a pointer */
@@ -808,16 +836,16 @@ auto collision()
                                       Domain_C::extract_k_bits);
 
 
-    
+
     if (found_collision) [[unlikely]]{
 
       bool is_false_collision = false;
-      
-     
-      
+
+
+
       std::cout << "found a collision " << n_collisions
 		<<  " out of " << n_needed_collisions << "\n";
-      
+
       std::cout << "false collisions = " << false_collisions
 		<< " real collisions = " << real_collisions
 		<< " robinhoods = " << n_robinhood
@@ -825,7 +853,7 @@ auto collision()
 
       std::cout << "#dist points = " << n_dist_points
 		<<  " = 2^" << std::log2(n_dist_points) << "\n";
-      
+
       swap_pointers(pt_tmp_C, pt_inp2_C);
 
       treat_collision<Problem>(pt_inp_C, /* inp1 */
@@ -846,7 +874,7 @@ auto collision()
 			     collisions_container.back().second)){
 	++false_collisions;
 	is_false_collision = true;
-	
+
         std::cout << "FALSE COLLISION \n";
         std::cout << "inp1 = "; Domain_C::print(collisions_container.back().first);
         std::cout << "\ninp2 = "; Domain_C::print(collisions_container.back().second);
@@ -855,7 +883,7 @@ auto collision()
 
 	C_t first_inp = collisions_container.back().first;
 	C_t second_inp = collisions_container.back().second;
-	
+
 	C_t dummy_out_inp1{};
 	C_t dummy_out_inp2{};
 	F(first_inp, dummy_out_inp1);
@@ -863,7 +891,7 @@ auto collision()
 	std::cout << "Gout1 = " << dummy_out_inp1[0] << dummy_out_inp1[1] << "\n";
 	std::cout << "Gout2 = " << dummy_out_inp2[0] << dummy_out_inp2[1] << "\n";
 
-	
+
 	G(first_inp, dummy_out_inp1);
 	G(second_inp, dummy_out_inp2);
 	std::cout << "Gout1 = " << dummy_out_inp1[0] << dummy_out_inp1[1] << "\n";
@@ -871,7 +899,7 @@ auto collision()
 
 
       }
-      
+
 
       if (!is_false_collision){
 	std::cout << "inp1 = "; Domain_C::print(collisions_container.back().first);
@@ -881,7 +909,7 @@ auto collision()
 
 	C_t first_inp = collisions_container.back().first;
 	C_t second_inp = collisions_container.back().second;
-	
+
 	C_t dummy_out_inp1{};
 	C_t dummy_out_inp2{};
 	F(first_inp, dummy_out_inp1);
@@ -889,7 +917,7 @@ auto collision()
 	std::cout << "Fout1 = " << dummy_out_inp1[0] << dummy_out_inp1[1] << "\n";
 	std::cout << "Fout2 = " << dummy_out_inp2[0] << dummy_out_inp2[1] << "\n";
 
-	
+
 	G(first_inp, dummy_out_inp1);
 	G(second_inp, dummy_out_inp2);
 	std::cout << "Gout1 = " << dummy_out_inp1[0] << dummy_out_inp1[1] << "\n";
@@ -900,8 +928,8 @@ auto collision()
 
 
       /**********************************************************************/
-      
-      
+
+
       ++n_collisions;
 
       /* restore the pointers locations for ease of debugging  */
@@ -915,7 +943,7 @@ auto collision()
     // std::cout << "sw inp = " << inp_C[0] << ", " << inp_C[1] << "\n";
     // std::cout << "sw out = " << out_C[0] << ", " << out_C[1] << "\n";
   }
-  
+
 
   return std::pair<C_t, C_t>(out_C, tmp_C); // todo wrong values
 }
