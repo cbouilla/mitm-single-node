@@ -7,6 +7,7 @@
 #include <ios>
 #include <cmath>
 #include <iostream>
+#include <iterator>
 #include <stdio.h>
 #include <assert.h>
 #include <pstl/glue_execution_defs.h>
@@ -417,34 +418,57 @@ void walk(typename Problem::C::t*& inp1_pt,
 
 
 
-/* todo start from here */
+
 template <typename Problem >
-auto treat_collision(typename Problem::C::t* inp1_pt,
-                     typename Problem::C::t* inp2_pt,
-                     typename Problem::C::t* tmp,
-                     const uint64_t thetaFlipped,
-                     std::vector< std::pair<typename Problem::C::t, typename Problem::C::t> >& container,
-                     Iterate_F<Problem>& F,
-                     Iterate_G<Problem>& G)
-  -> bool {
-  /* Convert the input types to A_t and B_t. */
-  /*  Either save it to disk then later */
+bool treat_collision(typename Problem::C::t*& inp1_pt,
+		     typename Problem::C::t*& tmp1_pt, /* inp1 calculation buffer */
+		     const uint64_t inp1_chain_len,
+		     typename Problem::C::t*& inp2_pt,
+		     typename Problem::C::t*& tmp2_pt, /* inp2 calculation buffer */
+		     const uint64_t inp2_chain_len,
+		     Iterate_F<Problem>& F,
+		     Iterate_G<Problem>& G,
+                     std::vector< std::pair<typename Problem::C::t,
+		                            typename Problem::C::t> >& container)
+{
   using A_t = typename Problem::A::t;
   using B_t = typename Problem::B::t;
   using C_t = typename Problem::C::t;
 
-  /* Warning Danger we use different types in collision_container!!!! */
-  std::pair<C_t, C_t> pair = walk<Problem>(inp1_pt, 
-                                           inp2_pt, 
-                                           tmp,
-                                           thetaFlipped,
-                                           F, /* Iteration function */
-                                           G); /* Iteration function */
 
+  /****************************************************************************+
+   *            walk the longest sequence until they are equal                 |
+   * Two chains that leads to the same distinguished point but not necessarily |
+   * have the same length. e.g.                                                |
+   *                                                                           |
+   * chain1: ----------------x-------o                                         |
+   *                        /                                                  |
+   *          chain2: ------                                                   |
+   *                                                                           |
+   * o: is a distinguished point                                               |
+   * x: the collision we're looking for                                        |
+   *                                                                           |   
+   ****************************************************************************/
+  /* walk inp1 and inp2 just before `x` */
+  /* i.e. iterate_once(inp1) = iterate_once(inp2) */
+  walk<Problem>(inp1_pt,
+		tmp1_pt,
+		inp1_chain_len,
+		inp2_pt,
+		tmp2_pt, /* inp2 calculation buffer */
+		inp2_chain_len,
+		F,
+		G);
+					   
 
   std::cout << "before pushback\n";
+
+
+  /* assume copying */
+  std::pair<C_t, C_t> p{*inp1_pt, *inp2_pt};
+  
   /* todo here we should add more tests */
-  container.push_back(pair);
+  container.push_back(std::move(p)); 
   return true;
 }
 
@@ -536,10 +560,6 @@ auto inp_out_ordered() /* return a list of all f inputs outputs */
 
   std::cout << std::fixed << "Done with the first list in time = " << elapsed_sec
             <<" sec\n";
-
-
-  /* free important memory */
-
 
 
   begin = wtime();
@@ -693,7 +713,7 @@ auto all_collisions_by_list()
 
 /* --------------------------- end of Naive method ---------------------------- */
 
-
+/* todo start from here */
 template<typename Problem>
 auto collision()
   -> std::pair<typename Problem::C::t, typename Problem::C::t>
