@@ -22,6 +22,19 @@
 size_t n_f_called{0};
 size_t n_g_called{0};
 size_t n_robinhood{0};
+
+using u8  = uint8_t ;
+using u16 = uint16_t;
+using u32 = uint32_t;
+using u64 = uint64_t;
+
+
+using i8  = int8_t ;
+using i16 = int16_t;
+using i32 = int32_t;
+using i64 = int64_t;
+
+
 /******************************************************************************/
 // independent code
 #include <chrono>
@@ -48,8 +61,8 @@ void print_array(T arr){
 }
 
 template <size_t n>
-auto is_equal(std::array<uint8_t, n> arr1,
-	      std::array<uint8_t, n> arr2)
+auto is_equal(std::array<u8, n> arr1,
+	      std::array<u8, n> arr2)
   -> bool
 {
   for (size_t i = 0; i<n; ++i){
@@ -61,7 +74,7 @@ auto is_equal(std::array<uint8_t, n> arr1,
 
 
 template <typename Problem>
-auto test_serialize_unserialize() -> bool
+auto is_serialize_inverse_of_unserialize() -> bool
 {
   /// Test that unserialize(serialize(r)) == r for a randomly chosen r
   using C_t = typename Problem::C::t;
@@ -69,7 +82,7 @@ auto test_serialize_unserialize() -> bool
 
   C_t orig{};
   C_t copy{};
-  std::array<uint8_t, length> serial;
+  std::array<u8, length> serial;
 
   size_t n_elements = Problem::C::n_elements;
 
@@ -120,8 +133,8 @@ T read_urandom()
  */
 class AbstractPRNG {
 public:
-  AbstractPRNG(uint64_t seed, uint64_t seq);
-  uint64_t rand();
+  AbstractPRNG(u64 seed, u64 seq);
+  u64 rand();
 };
 
 
@@ -129,7 +142,7 @@ public:
 /*
  * A "domain" extends some type to provide the extra functions we need.
  * An instance of the domain can contain extra information
- * E.g. for small integers mod p, "repr" could be uint64_t while the domain actually contains p
+ * E.g. for small integers mod p, "repr" could be u64 while the domain actually contains p
  * E.g. for points on an elliptic curve, "repr" could be a pair of integers mod p, while the
  *      domain would contain the equation of the curve, etc.
  */
@@ -149,14 +162,14 @@ public:
 
   /* get the next element after x. What matters is getting a different element eac time, not the order. */
   inline auto next(t& x) -> t;
-  inline static void serialize(const t &x, const uint8_t *out);   /* write this to out */
-  inline static void unserialize(const uint8_t *in, t &x);        /* read this from in */
+  inline static void serialize(const t &x, const u8 *out);   /* write this to out */
+  inline static void unserialize(const u8 *in, t &x);        /* read this from in */
   inline static void copy(const t& inp, t& out); /* deepcopy inp to out */
   inline static auto extract_1_bit(const t& inp) -> int;
-  inline static auto extract_k_bits(const t& inp, int k) -> uint64_t;
+  inline static auto extract_k_bits(const t& inp, int k) -> u64;
 
-  static auto hash(const t &x) -> uint64_t ;               /* return some bits from this */
-  static auto hash_extra(const t &x) -> uint64_t ;         /* return more bits from this */
+  static auto hash(const t &x) -> u64 ;               /* return some bits from this */
+  static auto hash_extra(const t &x) -> u64 ;         /* return more bits from this */
 };
 
 
@@ -281,23 +294,28 @@ void iterate_once(typename Problem::C::t* inp_pt,
 
 
 template<typename Problem>
-auto generate_dist_point(const int64_t thetaFlipped, /* #bits are zero at the beginning */
-                         typename Problem::C::t*& inp_C_pt,
-			 typename Problem::C::t*& out_C_pt,
-                         uint8_t* const out_C_pt_serialized,
-			 uint64_t& chain_length, /* write chain lenght here */
+auto generate_dist_point(typename Problem::C::t& inp0, /* don't change the pointer */
+			 typename Problem::C::t*& tmp_inp_pt,
+			 typename Problem::C::t*& out_pt,
+                         u8* const output_bytes, /* size Problem::C::length */
+			 u64& chain_length, /* write chain lenght here */
+			 const i64 difficulty, /* #bits are zero at the beginning */
                          Iterate_F<Problem>& F,
                          Iterate_G<Problem>& G)
                          -> bool
 {
   /*
    * Given an input, iterate functions either F or G until a distinguished point
-   * is found, save the distinguished point in out_C_pt and out_C_pt_serialized
+   * is found, save the distinguished point in out_pt and output_bytes
    * Then return `true`. If the iterations limit is passed, returns `false`.
    */
 
 
-  static const uint64_t mask = (1LL<<thetaFlipped) - 1;
+
+  /* copy the input to tmp, then never touch the inp again! */
+  Problem::C::copy(inp0, *tmp_inp_pt);
+
+  static const u64 mask = (1LL<<difficulty) - 1;
   using C = typename  Problem::C;
   chain_length = 0;
 
@@ -305,32 +323,30 @@ auto generate_dist_point(const int64_t thetaFlipped, /* #bits are zero at the be
 
   bool found_distinguished = false;
 
-
-
   found_distinguished =
-    (0 == (mask & C::extract_k_bits(*inp_C_pt, thetaFlipped))  );
+    (0 == (mask & C::extract_k_bits(*tmp_inp_pt, difficulty))  );
 
   /* 1 if the next function is f */
 
   /* The probability of not finding a distinguished point during this loop is*/
   /* 2^{-some big k} */
-  for (int64_t i = 0; i < 40*(1LL<<thetaFlipped); ++i){
-    iterate_once(inp_C_pt, out_C_pt, F, G);
+  for (i64 i = 0; i < 40*(1LL<<difficulty); ++i){
+    iterate_once(tmp_inp_pt, out_pt, F, G);
 
     ++chain_length;
 
     /* we may get a dist point here */
     found_distinguished
-      = (0 == (mask & C::extract_k_bits(*inp_C_pt, thetaFlipped))  );
+      = (0 == (mask & C::extract_k_bits(*tmp_inp_pt, difficulty))  );
 
-    /* unlikely with high values of thetaFlipped */
+    /* unlikely with high values of difficulty */
     if (found_distinguished) [[unlikely]]{
-      C::serialize(*out_C_pt, out_C_pt_serialized);
+      C::serialize(*out_pt, output_bytes);
       return true; /* exit the whole function */
     }
 
     /* swap inp and out */
-    swap_pointers(inp_C_pt, out_C_pt);
+    swap_pointers(tmp_inp_pt, out_pt);
   }
   return false; /* no distinguished point were found */
 }
@@ -339,14 +355,14 @@ auto generate_dist_point(const int64_t thetaFlipped, /* #bits are zero at the be
 
 
 
-/* Careful inp_i_pt and tmp_i_pt could be exchanged */
+
 template<typename Problem>
 void walk(typename Problem::C::t*& inp1_pt,
 	  typename Problem::C::t*& tmp1_pt, /* inp1 calculation buffer */
-	  const uint64_t inp1_chain_len,
+	  const u64 inp1_chain_len,
           typename Problem::C::t*& inp2_pt,
 	  typename Problem::C::t*& tmp2_pt, /* inp2 calculation buffer */
-	  const uint64_t inp2_chain_len,
+	  const u64 inp2_chain_len,
           Iterate_F<Problem>& F,
           Iterate_G<Problem>& G)
 {
@@ -422,10 +438,10 @@ void walk(typename Problem::C::t*& inp1_pt,
 template <typename Problem >
 bool treat_collision(typename Problem::C::t*& inp1_pt,
 		     typename Problem::C::t*& tmp1_pt, /* inp1 calculation buffer */
-		     const uint64_t inp1_chain_len,
+		     const u64 inp1_chain_len,
 		     typename Problem::C::t*& inp2_pt,
 		     typename Problem::C::t*& tmp2_pt, /* inp2 calculation buffer */
-		     const uint64_t inp2_chain_len,
+		     const u64 inp2_chain_len,
 		     Iterate_F<Problem>& F,
 		     Iterate_G<Problem>& G,
                      std::vector< std::pair<typename Problem::C::t,
@@ -500,14 +516,14 @@ template <typename Problem, typename A_t, typename C_t,
 	  auto ith_elm> /* next_A(A_t& inp), edit inp to the next input  */
 
 auto inp_out_ordered() /* return a list of all f inputs outputs */
-  -> std::vector<std::pair<A_t, std::array<uint8_t, length> > >
+  -> std::vector<std::pair<A_t, std::array<u8, length> > >
 
 {
   /* this vector will hold all (inp, out) pairs of F */
 
 
   /* number of bytes needed to code an element of C */
-  using C_serial = std::array<uint8_t, length>;
+  using C_serial = std::array<u8, length>;
 
   auto begin = wtime();
   std::vector< std::pair<A_t, C_serial> > inp_out(Problem::C::n_elements);
@@ -611,7 +627,7 @@ auto all_collisions_by_list()
 
   /* number of bytes needed to code an element of C */
   const int nbytes = Problem::C::length;
-  using C_serial = std::array<uint8_t, nbytes>;
+  using C_serial = std::array<u8, nbytes>;
 
   /* collision container */
 
@@ -713,26 +729,23 @@ auto all_collisions_by_list()
 
 /* --------------------------- end of Naive method ---------------------------- */
 
+
+
 /* todo start from here */
 template<typename Problem>
-auto collision()
-  -> std::pair<typename Problem::C::t, typename Problem::C::t>
+auto collision() -> std::pair<typename Problem::C::t, typename Problem::C::t>
 {
   using A_t = typename Problem::A::t;
-  using Domain_A = typename  Problem::A;
-  //A dom_A = pb.dom_A;
-
   using B_t = typename Problem::B::t;
-  using Domain_B = typename  Problem::B;
-  //A dom_B = pb.dom_B;
-
   using C_t = typename Problem::C::t;
-  using Domain_C = typename  Problem::C;
+  /* Sanity Test: */
+  std::cout << "unserial(serial(.)) =?= id(.) : "
+	    << is_serialize_inverse_of_unserialize<Problem>()
+	    << "\n";
 
+  
+  /************************* EXPERIMENT BY NAIVE METHOD ***********************/
 
-
-  /* EXPERIMENT BY NAIVE METHOD        */
-  // std::cout << "unserial(serial(.)) =?= id(.) : " << test_serialize_unserialize<Problem>() << "\n";
   // std::cout << "Starting with naive method ...\n";
   // auto begin = wtime();
   // auto list_of_collisions = all_collisions_by_list<Problem>();
@@ -747,65 +760,82 @@ auto collision()
   //           << "s\n";
 
   /* end of EXPERIMENT BY NAIVE METHOD */
+  /****************************************************************************/
 
 
 
 
-  // ------------------------------------------------------------------------/
-  // --------------------------------- INIT --------------------------------/
+  // --------------------------------- INIT -----------------------------------/
   // DICT
-  size_t n_slots = 1LL<<30; /* base this number on the available memory */
-  Dict<C_t, uint32_t> dict{n_slots}; /* create a dictionary */
+  /* todo get */
 
-  // Pseudo-Random Number Generator
+  // size_t n_slots = 1LL<<30; 
 
-  // todo use arrays method to compare the two outputs
+  size_t n_bytes = 1LL<<34; /* */
+  Dict<C_t, u32> dict{n_bytes}; /* create a dictionary */
+
+
 
   // -----------------------------------------------------------------------------/
   // VARIABLES FOR GENERATING RANDOM DISTINGUISHED POINTS
-  int thetaFlipped = 2; // difficulty;
+  int difficulty = 2; // difficulty;
   /* inp/out variables are used as input and output to save one 1 copy */
 
-  C_t inp_C{}; /* container for input, it may contains the output! */
-  // C_t* pt_inp_C = &inp_C; /* However, this always points to an input  */
 
-
-
-  C_t out_C{}; /* output input */
-  C_t* pt_out_C = &out_C; /* output input */
-
-  /* when generating a distinguished point we have: */
-  /*  1)   inp0           =f/g=> out0   */
-  /*  2)  (inp1 := out0) =f/g=> out1    */
-  /*  3)  (inp2 := out1) =f/g=> out2    */
-  /*            ...                     */
-  /* m+1) (inp_m := out_m) =f/g=> out_m */
-  /* A distinguished point found at step `m+1` */
+  /***************************************************************/
+  /* when generating a distinguished point we have:              */
+  /*  1)   inp0           =f/g=> out0                            */
+  /*  2)  (inp1 := out0)  =f/g=> out1                            */
+  /*  3)  (inp2 := out1)  =f/g=> out2                            */
+  /*            ...                                              */
+  /* m+1) (inp_m := out_m) =f/g=> out_m                          */
+  /* A distinguished point found at step `m+1`                   */
   /* "We would like to preserve inp0 at the end of calculation." */
-  /* In order to save ourselves from copying in each step */
+  /* In order to save ourselves from copying in each step.       */
+  /***************************************************************/
+
+  C_t inp0{}; /* We need to save this value, see above. */
+
+  /* 1st set of buffers: Related to input0 as a starting point */
+  /* either tmp0 or  output0 */
+  C_t inp0_or_out0_buffer0{};
+  C_t inp0_or_out0_buffer1{};
+
+  C_t* tmp0_pt    = &inp0_or_out0_buffer0;
+  /* Always points to the region that contains the output */
+  C_t* out0_pt = &inp0_or_out0_buffer1;
+  u64  out0_digest = 0; /* hashed value of the output0 */
+  /* Recall: Problem::C::length = #needed bytes to encode an element of C_t */
+  std::array<u8, Problem::C::length> out0_bytes{0};
 
 
-  C_t tmp_inp_C{};
-  C_t* pt_tmp_C = &tmp_inp_C; /* placeholder to save popped values from dict */
-
-  /* ---------------- no idea about why do we need these variables -------------*/
-
-  uint8_t c_serial[Domain_C::length];
-
-
-  C_t inp2_C{}; /* input output */
-  C_t* pt_inp2_C = &inp2_C; /* input output */
-
+  /* 2nd set of buffers: Related to input1 as a starting point */
+  /* When we potentially find a collision, we need 2 buffers for (inp1, out1) */
+  /* We will use the initial value of inp1 once, thus we don't need to gaurd  */
+  /* in an another variable untouched */
+  C_t inp1_or_out1_buffer0{};
+  C_t inp1_or_out1_buffer1{};
+  C_t* inp1_pt    = &inp1_or_out1_buffer0;
+  /* Always points to the region that contains the output */
+  C_t* out1_pt = &inp1_or_out1_buffer1;
 
 
-  /* -------------- END no idea about why do we need these variables ------------*/
 
-  /* fill the input */
-  Domain_C::randomize(inp_C); // todo how to add an optional PRG
+  /* Store the results of collisions here */
+  /* a:A_t -f-> x <-g- b:B_t */ 
+  std::vector< std::pair<A_t, B_t> >  collisions_container{};
+  // TODO FATAL if A_t =/= B_t we will have an error because treat collision uses std::pair<C_t, C_t
 
 
-  /* Collisions counters */
-  bool found_collision = false;
+
+
+
+  /**************************** Collisions counters ***************************/
+  /* How many steps does it take to get a distinguished point from  an input */
+  size_t chain_length0 = 0;
+  size_t chain_length1 = 0;
+  
+  bool is_collision_found = false;
   size_t n_collisions = 0;
   size_t n_needed_collisions = 1LL<<20;
 
@@ -814,34 +844,37 @@ auto collision()
   size_t real_collisions = 0;
   size_t n_dist_points = 0;
 
-  /* Store the results of collisions here */
-  /* a:A_t -f-> x <-g- b:B_t */
-  std::vector< std::pair<A_t, B_t> >  collisions_container{};
-
 
   /* Iteration Functions */
   Iterate_F<Problem> F{};
   Iterate_G<Problem> G{};
+  /*********************************************************
+   * surprise we're going actually use
+   * void iterate_once(typename Problem::C::t* inp_pt,
+   *		  typename Problem::C::t* out_pt,
+   *		  Iterate_F<Problem>& F,
+   *		  Iterate_G<Problem>& G)
+   *
+   *********************************************************/
 
 
-  // C_t* pt; /* what does this do? no idea! */
-
+  
+  /*------------------- Generate Distinguished Points ------------------------*/
   while (n_collisions < n_needed_collisions){
-    /* Get a fresh random value  */
-    /* using pointer since the next function might swap pt_inp & pt_out */
-    *pt_inp_C = read_urandom<C_t>();
+    /* fill the input with a fresh random value. */
+    // Problem::C::randomize(*inp_pt); 
+    /* or use `/dev/urandom` */
+    inp0 = read_urandom<C_t>();
 
 
 
-    /* before pt_inp_C points to the input of the chain.  */
-    /* after pt_inp_C will point the input the */
-    /// todo fatal there is a logical error, where pt_inp_C will point to
-    /// the input just before the distinguished point which is not desirable!
 
-    generate_dist_point<Problem>(thetaFlipped, /* difficulty */
-				 &inp_C, /*   */
-				 pt_out_C, /* convert this to a pointer */
-				 c_serial,
+    generate_dist_point<Problem>(difficulty,
+				 inp0,
+				 tmp0_pt,
+				 out0_pt,
+				 out0_bytes,
+				 chain_length0,
 				 F,
 				 G);
 
@@ -850,17 +883,32 @@ auto collision()
     //std::cout << "bf out = " << (*pt_out_C)[0] << ", " << (*pt_out_C)[1] << "\n";
     //return std::pair(pt_inp_C, pt_inp_C);
     /* send the result to dictionary, check if it has a collision  */
-    found_collision = dict.pop_insert(*pt_inp_C,
-                                      *pt_out_C,
-                                      *pt_tmp_C, /* popped value saved here */
-                                      Domain_C::extract_k_bits);
-
-
-
-    if (found_collision) [[unlikely]]{
-
+    
+    out0_digest = Problem::C::
+      extract_k_bits(*out0_pt, Problem::C::length);
+    
+    is_collision_found = dict.pop_insert(out0_digest, /* key */
+					 inp0, /* value  */
+					 *inp1_pt, /* save popped element here */
+					 chain_length1 /* of popped input */);
+      
+    /* todo work from here */
+    
+    if (is_collision_found) [[unlikely]]{
+      ++n_collisions; 
       bool is_false_collision = false;
 
+      /* respect the rule that inp0 doesn't have pointers dancing around it */
+      Problem::C::copy(inp0, *tmp0_pt); /* (*tmp0_pt) holds the input value  */
+
+      treat_collision<Problem>(tmp0_pt, /* inp0 */
+			       out0_pt, /* inp0 scratch buffer  */
+			       chain_length0,
+			       inp1_pt,
+			       out1_pt,
+			       F,
+			       G,
+			       collisions_container);
 
 
       std::cout << "found a collision " << n_collisions
@@ -874,123 +922,17 @@ auto collision()
       std::cout << "#dist points = " << n_dist_points
 		<<  " = 2^" << std::log2(n_dist_points) << "\n";
 
-      swap_pointers(pt_tmp_C, pt_inp2_C);
-
-      treat_collision<Problem>(pt_inp_C, /* inp1 */
-			       pt_inp2_C, /* inp2 */
-			       pt_tmp_C,  /* scratch buffer for calculation */
-			       thetaFlipped, /* difficulty */
-			       collisions_container, /* put the found collisions here */
-			       F,
-			       G);
-
-
-
-      /**********************************************************************/
-      // Check if it's actually a false collision
-
-      /* Warning this a buggy code */
-      if (Domain_C::is_equal(collisions_container.back().first,
-			     collisions_container.back().second)){
-	++false_collisions;
-	is_false_collision = true;
-
-        std::cout << "FALSE COLLISION \n";
-        std::cout << "inp1 = "; Domain_C::print(collisions_container.back().first);
-        std::cout << "\ninp2 = "; Domain_C::print(collisions_container.back().second);
-        std::cout << "\n";
-
-
-	C_t first_inp = collisions_container.back().first;
-	C_t second_inp = collisions_container.back().second;
-
-	C_t dummy_out_inp1{};
-	C_t dummy_out_inp2{};
-	F(first_inp, dummy_out_inp1);
-	F(second_inp, dummy_out_inp2);
-	std::cout << "Gout1 = " << dummy_out_inp1[0] << dummy_out_inp1[1] << "\n";
-	std::cout << "Gout2 = " << dummy_out_inp2[0] << dummy_out_inp2[1] << "\n";
-
-
-	G(first_inp, dummy_out_inp1);
-	G(second_inp, dummy_out_inp2);
-	std::cout << "Gout1 = " << dummy_out_inp1[0] << dummy_out_inp1[1] << "\n";
-	std::cout << "Gout2 = " << dummy_out_inp2[0] << dummy_out_inp2[1] << "\n";
-
-
-      }
-
-
-      if (!is_false_collision){
-	std::cout << "inp1 = "; Domain_C::print(collisions_container.back().first);
-        std::cout << "\ninp2 = "; Domain_C::print(collisions_container.back().second);
-        std::cout << "\n--------------------------\n";
-
-
-	C_t first_inp = collisions_container.back().first;
-	C_t second_inp = collisions_container.back().second;
-
-	C_t dummy_out_inp1{};
-	C_t dummy_out_inp2{};
-	F(first_inp, dummy_out_inp1);
-	F(second_inp, dummy_out_inp2);
-	std::cout << "Fout1 = " << dummy_out_inp1[0] << dummy_out_inp1[1] << "\n";
-	std::cout << "Fout2 = " << dummy_out_inp2[0] << dummy_out_inp2[1] << "\n";
-
-
-	G(first_inp, dummy_out_inp1);
-	G(second_inp, dummy_out_inp2);
-	std::cout << "Gout1 = " << dummy_out_inp1[0] << dummy_out_inp1[1] << "\n";
-	std::cout << "Gout2 = " << dummy_out_inp2[0] << dummy_out_inp2[1] << "\n";
-	++real_collisions;
-
-      }
-
-
-      /**********************************************************************/
-
-
-      ++n_collisions;
-
-      /* restore the pointers locations for ease of debugging  */
-      swap_pointers(pt_tmp_C, pt_inp2_C);
-      std::cout << "---------------------------\n";
     }
-    //swap_pointers(&pt_inp_C, &pt_out_C);
-    pt = pt_inp_C;
-    pt_inp_C = pt_out_C;
-    pt_out_C = pt;
-    // std::cout << "sw inp = " << inp_C[0] << ", " << inp_C[1] << "\n";
-    // std::cout << "sw out = " << out_C[0] << ", " << out_C[1] << "\n";
+
+
+
   }
 
 
-  return std::pair<C_t, C_t>(out_C, tmp_C); // todo wrong values
+  return std::pair<C_t, C_t>(*tmp0_pt, *inp1_pt); // todo wrong values
 }
 #endif
 
-/*
-For future check
-dict entry  1127 val = 1127 idx = 58832, sizeof(Val) = 4
-found a collision 48974 out of 4294967296
-FALSE COLLISION
-inp1 = 2864258832
-inp2 = 2864258832
-popped = 2864228642
-before walking ...
-inp1 = 2864228642
-inp2 = 5141451414
-inp1 = 2864228642
-inp2 = 5141451414
-Fout1 = 1924619246
-Fout2 = 6008560085
-Gout1 = 5141451414
-Gout2 = 5141451414
-Fout1 = 1924619246
-Gout2 = 5141451414
-Gout1 = 5141451414
-Fout2 = 1924619246
- */
 // to use parallel sort sort
 // install tbb lib
 // sudo apt install libtbb-dev
