@@ -155,15 +155,15 @@ public:
 
   /* get the next element after x.*/
   /* What matters is getting a different element each time, not the order. */
-  inline auto next(t& x) -> t;
-  inline static void serialize(const t &x, const u8 *out);   /* write this to out */
-  inline static void unserialize(const u8 *in, t &x);        /* read this from in */
-  inline static void copy(const t& inp, t& out); /* deepcopy inp to out */
-  inline static auto extract_1_bit(const t& inp) -> int;
-  inline static auto extract_k_bits(const t& inp, int k) -> u64;
+  inline t next(t& x)  const;
+  inline void serialize(const t &x, const u8 *out) const;   /* write this to out */
+  inline void unserialize(const u8 *in, t &x) const;        /* read this from in */
+  inline void copy(const t& inp, t& out) const; /* deepcopy inp to out */
+  inline int extract_1_bit(const t& inp) const;
+  inline u64 extract_k_bits(const t& inp, int k) const;
 
-  static auto hash(const t &x) -> u64 ;               /* return some bits from this */
-  static auto hash_extra(const t &x) -> u64 ;         /* return more bits from this */
+  u64 hash(const t &x) const;               /* return some bits from this */
+  u64 hash_extra(const t &x) const ;         /* return more bits from this */
 };
 
 
@@ -179,56 +179,62 @@ template<typename Domain_A, typename Domain_B, typename Domain_C>
 class AbstractProblem {
 public:
   /* these lines have to be retyped again */
-  using C =  Domain_C;
-  using C_t = typename C::t;
+  Domain_A A;
+  Domain_B B;
+  Domain_C C;
+  using C_t = typename Domain_C::t;
+  using A_t = typename Domain_A::t;
+  using B_t = typename Domain_B::t;
 
-  using A = Domain_A;
-  using A_t = typename A::t;
-
-
-  using B = Domain_B;
-  using B_t = typename B::t;
-
-  static void f(const A_t &x, C_t &y);                /* y <--- f(x) */
-  static void g(const B_t &x, C_t &y);                /* y <--- g(x) */
+  void f(const A_t &x, C_t &y) const;  /* y <--- f(x) */
+  void g(const B_t &x, C_t &y) const;  /* y <--- g(x) */
 
 
   AbstractProblem() {
     // enforce that A is a subclass of AbstractDomain
-    static_assert(std::is_base_of<AbstractDomain<typename A::t>, A>::value,
+    static_assert(std::is_base_of<AbstractDomain<typename Domain_A::t>, Domain_A>::value,
 		  "A not derived from AbstractDomain");
   }
 
-  static void send_C_to_A(C_t& inp_C, A_t& out_A);
-  static void send_C_to_B(C_t& inp_C, B_t& out_B);
+  void send_C_to_A(C_t& inp_C, A_t& out_A) const;
+  void send_C_to_B(C_t& inp_C, B_t& out_B) const;
+  /* changes the behavior of the two above functions */
+  void update_embedding(PRNG& rng); 
 };
 
 /******************************************************************************/
 /* a user does not need to look at the code below                             */
 /******************************************************************************/
-
+template<typename C_t>
+inline void swap_pointers(C_t*& pt1,
+                          C_t*& pt2){
+    /// pt1 will point to what pt2 was pointing at, and vice versa.
+    C_t* tmp_pt = pt1;
+    pt1 = pt2;
+    pt2 = tmp_pt;
+}
 
 template <typename Problem>
-auto is_serialize_inverse_of_unserialize(PRNG& prng) -> bool
+auto is_serialize_inverse_of_unserialize(Problem Pb, PRNG& prng) -> bool
 {
   /// Test that unserialize(serialize(r)) == r for a randomly chosen r
-  using C_t = typename Problem::C::t;
-  const size_t length = Problem::C::length;
+  using C_t = typename Problem::Dom_C::t;
+  const size_t length = Problem::Dom_C::length;
 
   C_t orig{};
   C_t copy{};
   std::array<u8, length> serial;
 
-  size_t n_elements = Problem::C::n_elements;
+  size_t n_elements = Pb.C.n_elements;
 
   const size_t n_tests = std::min(n_elements, static_cast<size_t>(1024));
 
 
   for(size_t i = 0; i < n_tests; ++i){
     /* */
-    Problem::C::randomize(orig, prng);
-    Problem::C::serialize(orig, serial);
-    Problem::C::unserialize(serial, copy);
+    Pb.C.randomize(orig, prng);
+    Pb.C.serialize(orig, serial);
+    Pb.C.unserialize(serial, copy);
 
     if (copy != orig)
       return false; /* there is a bug in the adaptationof the code  */
@@ -241,81 +247,49 @@ auto is_serialize_inverse_of_unserialize(PRNG& prng) -> bool
 
 
 
-template <typename P>
-struct Iterate_F {
+template <typename Problem>
+inline void Iterate_F(typename Problem::Dom_C::t& inp_C,
+		      typename Problem::Dom_C::t& out_C,
+		      Problem& Pb)
+
+
+{
   /*
    * A wrapper for calling f that uses
-   */
+   * convert inp:C_T -> inp:A_t 
+   * enhancement: in the future we can make this function depends on PRNG
+   * that is defined within this struct. So, we can change the function easily */
 
-  using A_t = typename P::A::t;
-  using C_t = typename P::C::t;
-  inline static A_t inp_A; /* A placeholder for the input */
-  Iterate_F() {}
-
-  /* Make this struct callable */
-  void operator()(C_t& inp_C, C_t& out_C){
-    /* convert inp:C_T -> inp:A_t */
-    /* enhancement: in the future we can make this function depends on PRNG */
-    /* that is defined within this struct. So, we can change the function easily */
-    P::send_C_to_A(inp_A, inp_C);
-    P::f(inp_A, out_C);
-    
-  }
+  static typename Problem::Dom_A::t inp_A{};
+  Pb.send_C_to_A(inp_A, inp_C);
+  Pb.f(inp_A, out_C);
 };
 
 
-template <typename Problem>
-struct Iterate_G : Problem{
-  /* accessing Problem::g will generate an error*/
-  // Problem::g; /* Original iteration function */
-  // using Problem::send_C_to_B;
-  using B_t = typename Problem::B::t;
-  using C_t = typename Problem::C::t;
 
-  // todo should not be local to each thread?
-  inline static B_t inp_B{}; /* A placeholder for the input */
-
-  Iterate_G() {}
-
-  /* Make this struct callable */
-  void operator()(C_t& inp_C, C_t& out_C){
-
-    /* convert inp:C_T -> inp:A_t */
-    /* enhancement: in the future we can make this function depends on PRNG */
-    /* that is defined within this struct. So, we can change the function easily */
-    Problem::send_C_to_B(inp_B, inp_C);
-    Problem::g(inp_B, out_C);
-  }
-};
-
-
-template<typename C_t>
-inline void swap_pointers(C_t*& pt1,
-                          C_t*& pt2){
-    /// pt1 will point to what pt2 was pointing at, and vice versa.
-    C_t* tmp_pt = pt1;
-    pt1 = pt2;
-    pt2 = tmp_pt;
-}
 
 /* todo pass the function number. e.g. first version of (f, g) second version */
 template <typename Problem>
-void iterate_once(typename Problem::C::t* inp_pt,
-		  typename Problem::C::t* out_pt,
-		  Iterate_F<Problem>& F,
-		  Iterate_G<Problem>& G)
+void iterate_once(typename Problem::Dom_C::t* inp_pt,
+		  typename Problem::Dom_C::t* out_pt,
+		  Problem& Pb)
 {
   /*
    * Do 1 iteration inp =(f/g)=> out, write the output in the address pointed
    * by out_pt.
    */
-  int f_or_g = Problem::C::extract_1_bit(*inp_pt);
+  static typename Problem::Dom_A::t inp_A{};
+  static typename Problem::Dom_A::t inp_B{};
+
+  int f_or_g = Pb.C.extract_1_bit(*inp_pt);
   if (f_or_g == 1){
-    F(*inp_pt, *out_pt);
+    Pb.send_C_to_A(inp_A, *inp_pt);
+    Pb.f(inp_A, *out_pt);
     ++n_f_called;
   }
   else { /* f_or_g == 0 */
-    G(*inp_pt, *out_pt);
+    Pb.send_C_to_B(inp_B, *inp_pt);
+    Pb.f(inp_B, *out_pt);
     ++n_g_called;
   }
 }
@@ -324,15 +298,13 @@ void iterate_once(typename Problem::C::t* inp_pt,
 
 
 template<typename Problem>
-auto generate_dist_point(typename Problem::C::t& inp0, /* don't change the pointer */
-			 typename Problem::C::t*& tmp_inp_pt,
-			 typename Problem::C::t*& out_pt,
-                         u8* const output_bytes, /* size Problem::C::length */
+bool generate_dist_point(typename Problem::Dom_C::t& inp0, /* don't change the pointer */
+			 typename Problem::Dom_C::t*& tmp_inp_pt,
+			 typename Problem::Dom_C::t*& out_pt,
+                         u8* const output_bytes, /* size Problem::Dom_C::length */
 			 u64& chain_length, /* write chain lenght here */
 			 const i64 difficulty, /* #bits are zero at the beginning */
-                         Iterate_F<Problem>& F,
-                         Iterate_G<Problem>& G)
-                         -> bool
+			 Problem& Pb)
 {
   /*
    * Given an input, iterate functions either F or G until a distinguished point
@@ -343,10 +315,9 @@ auto generate_dist_point(typename Problem::C::t& inp0, /* don't change the point
 
 
   /* copy the input to tmp, then never touch the inp again! */
-  Problem::C::copy(inp0, *tmp_inp_pt);
+  Pb.C.copy(inp0, *tmp_inp_pt);
 
   static const u64 mask = (1LL<<difficulty) - 1;
-  using C = typename  Problem::C;
   chain_length = 0;
 
   /* F: Domain_C -> Domain_C, instead of C_t -> A_t -f-> C_t */
@@ -354,24 +325,24 @@ auto generate_dist_point(typename Problem::C::t& inp0, /* don't change the point
   bool found_distinguished = false;
 
   found_distinguished =
-    (0 == (mask & C::extract_k_bits(*tmp_inp_pt, difficulty))  );
+    (0 == (mask & Pb.C.extract_k_bits(*tmp_inp_pt, difficulty))  );
 
   /* 1 if the next function is f */
 
   /* The probability of not finding a distinguished point during this loop is*/
   /* 2^{-some big k} */
   for (i64 i = 0; i < 40*(1LL<<difficulty); ++i){
-    iterate_once(tmp_inp_pt, out_pt, F, G);
+    iterate_once(tmp_inp_pt, out_pt, Pb);
 
     ++chain_length;
 
     /* we may get a dist point here */
     found_distinguished
-      = (0 == (mask & C::extract_k_bits(*tmp_inp_pt, difficulty))  );
+      = (0 == (mask & Pb.C.extract_k_bits(*tmp_inp_pt, difficulty))  );
 
     /* unlikely with high values of difficulty */
     if (found_distinguished) [[unlikely]]{
-      C::serialize(*out_pt, output_bytes);
+      Pb.C.serialize(*out_pt, output_bytes);
       return true; /* exit the whole function */
     }
 
@@ -387,14 +358,13 @@ auto generate_dist_point(typename Problem::C::t& inp0, /* don't change the point
 
 
 template<typename Problem>
-void walk(typename Problem::C::t*& inp1_pt,
-	  typename Problem::C::t*& tmp1_pt, /* inp1 calculation buffer */
+void walk(typename Problem::Dom_C::t*& inp1_pt,
+	  typename Problem::Dom_C::t*& tmp1_pt, /* inp1 calculation buffer */
 	  const u64 inp1_chain_len,
-          typename Problem::C::t*& inp2_pt,
-	  typename Problem::C::t*& tmp2_pt, /* inp2 calculation buffer */
+          typename Problem::Dom_C::t*& inp2_pt,
+	  typename Problem::Dom_C::t*& tmp2_pt, /* inp2 calculation buffer */
 	  const u64 inp2_chain_len,
-          Iterate_F<Problem>& F,
-          Iterate_G<Problem>& G)
+	  Problem& Pb)
 {
   /* Given two inputs that lead to the same distinguished point,
    * find the earliest collision in the sequence before the distinguished point
@@ -402,7 +372,7 @@ void walk(typename Problem::C::t*& inp1_pt,
    */
 
 
-  using C_t = typename Problem::C::t;
+  using C_t = typename Problem::Dom_C::t;
 
 
   size_t const diff_len = std::max(inp1_chain_len, inp2_chain_len)
@@ -425,7 +395,7 @@ void walk(typename Problem::C::t*& inp1_pt,
  
   if (inp1_chain_len > inp2_chain_len){
     for (size_t i = 0; i < diff_len; ++i){
-      iterate_once(inp1_pt, tmp1_pt, F, G);
+      iterate_once(inp1_pt, tmp1_pt, Pb);
       swap_pointers(inp1_pt, tmp1_pt);
     }
    }
@@ -433,7 +403,7 @@ void walk(typename Problem::C::t*& inp1_pt,
  
   if (inp1_chain_len < inp2_chain_len){
     for (size_t i = 0; i < diff_len; ++i){
-      iterate_once(inp2_pt, tmp2_pt, F, G);
+      iterate_once(inp2_pt, tmp2_pt, Pb);
       swap_pointers(inp1_pt, tmp1_pt);
     }
  
@@ -447,17 +417,17 @@ void walk(typename Problem::C::t*& inp1_pt,
   /* Check if the two inputs are equal then we have a robin hood */
 
 
-  if(Problem::C::is_equal( *inp1_pt, *inp1_pt ))
+  if(Pb.C.is_equal( *inp1_pt, *inp1_pt ))
     return; /* Robinhood */
 
   
   for (size_t i = 0; i < len; ++i){
     /* walk them together and check each time if their output are equal */
     /* return as soon equality is found */
-    iterate_once(inp1_pt, tmp1_pt, F, G);
-    iterate_once(inp2_pt, tmp2_pt, F, G);
+    iterate_once(inp1_pt, tmp1_pt, Pb);
+    iterate_once(inp2_pt, tmp2_pt, Pb);
     
-    if(Problem::C::is_equal( *tmp1_pt, *tmp2_pt ))
+    if(Pb.C.is_equal( *tmp1_pt, *tmp2_pt ))
       return; /* They are equal */
   }
 }
@@ -466,20 +436,19 @@ void walk(typename Problem::C::t*& inp1_pt,
 
 
 template <typename Problem >
-bool treat_collision(typename Problem::C::t*& inp1_pt,
-		     typename Problem::C::t*& tmp1_pt, /* inp1 calculation buffer */
+bool treat_collision(typename Problem::Dom_C::t*& inp1_pt,
+		     typename Problem::Dom_C::t*& tmp1_pt, /* inp1 calculation buffer */
 		     const u64 inp1_chain_len,
-		     typename Problem::C::t*& inp2_pt,
-		     typename Problem::C::t*& tmp2_pt, /* inp2 calculation buffer */
+		     typename Problem::Dom_C::t*& inp2_pt,
+		     typename Problem::Dom_C::t*& tmp2_pt, /* inp2 calculation buffer */
 		     const u64 inp2_chain_len,
-		     Iterate_F<Problem>& F,
-		     Iterate_G<Problem>& G,
-                     std::vector< std::pair<typename Problem::C::t,
-		                            typename Problem::C::t> >& container)
+                     std::vector< std::pair<typename Problem::Dom_C::t,
+		                            typename Problem::Dom_C::t> >& container,
+		     Problem& Pb)
 {
-  using A_t = typename Problem::A::t;
-  using B_t = typename Problem::B::t;
-  using C_t = typename Problem::C::t;
+  using A_t = typename Problem::Dom_A::t;
+  using B_t = typename Problem::Dom_B::t;
+  using C_t = typename Problem::Dom_C::t;
 
 
   /****************************************************************************+
@@ -503,12 +472,8 @@ bool treat_collision(typename Problem::C::t*& inp1_pt,
 		inp2_pt,
 		tmp2_pt, /* inp2 calculation buffer */
 		inp2_chain_len,
-		F,
-		G);
+	        Pb);
 					   
-
-  std::cout << "before pushback\n";
-
 
   /* assume copying */
   std::pair<C_t, C_t> p{*inp1_pt, *inp2_pt};
@@ -520,262 +485,20 @@ bool treat_collision(typename Problem::C::t*& inp1_pt,
 
 
 
-/* ----------------------------- Naive method ------------------------------ */
-template <typename T1, typename T2>
-auto count_unique_2nd_elm(std::vector<std::pair<T1, T2>> arr) -> size_t
-{
-  if (arr.size() == 0) return 0;
-
-  size_t n_unique_elm = 1;
-  T2 tmp{arr[0].second};
-
-  for (auto& elm_pair: arr ){
-    if (tmp != elm_pair.second)
-      ++n_unique_elm;
-    tmp = elm_pair.second;
-  }
-
-  return n_unique_elm;
-}
-
-template <typename Problem, typename A_t, typename C_t,
-          int length,               /* output length in bytes */
-          size_t A_n_elements,
-	  auto f, /* f: A_t -> C_t */
-          auto next_A,
-	  auto ith_elm> /* next_A(A_t& inp), edit inp to the next input  */
-
-auto inp_out_ordered() /* return a list of all f inputs outputs */
-  -> std::vector<std::pair<A_t, std::array<u8, length> > >
-
-{
-  /* this vector will hold all (inp, out) pairs of F */
-
-
-  /* number of bytes needed to code an element of C */
-  using C_serial = std::array<u8, length>;
-
-  auto begin = wtime();
-  std::vector< std::pair<A_t, C_serial> > inp_out(Problem::C::n_elements);
-
-
-  auto end = wtime();
-  auto elapsed_sec = end - begin;
-  std::cout << "Initializing the first vector took " <<  elapsed_sec <<"sec\n";
-
-
-
-  std::cout << "Starting to fill the A list "
-            << A_n_elements
-            << " elements\n";
-
-  omp_set_num_threads(omp_get_max_threads());
-  std::cout << "We are going to use " << omp_get_max_threads() << " threads\n";
-
-
-  const int nthds = omp_get_max_threads();
-  begin = wtime();
-  #pragma omp parallel for schedule(static)
-  for (int thd = 0; thd < nthds; ++thd){
-    size_t offset = thd * (A_n_elements/nthds);
-    size_t end_idx = (thd+1) * (A_n_elements/nthds);
-    if (thd == nthds - 1) end_idx = A_n_elements;
-
-    A_t inp{}; /* private variable for a thread */
-    C_t out{}; /* private variable for a thread */
-
-    ith_elm(inp, offset); /* set inp_A to the ith element */
-
-    for (size_t i = offset; i < end_idx; ++i){
-
-      Problem::f(inp, out);
-
-      inp_out[i].first = inp;
-      Problem::C::serialize(out, inp_out[i].second);
-
-
-      /* get ready for the next round */
-      next_A(inp);
-
-
-    }
-  }
-
-  end = wtime();
-  elapsed_sec  = end - begin;
-
-  std::cout << std::fixed << "Done with the first list in time = " << elapsed_sec
-            <<" sec\n";
-
-
-  begin = wtime();
-  /* sort the input output according to the second element (the output ) */
-  std::sort(std::execution::par,
-	    inp_out.begin(),
-	    inp_out.end(),
-	    [](std::pair<A_t, C_serial> io1, std::pair<A_t, C_serial> io2)
-	    {return io1.second < io2.second; });
-
-  end = wtime();
-  elapsed_sec  = end - begin;
-  std::cout << std::fixed << "Sorting took " << elapsed_sec << "sec\n";
-
-  begin = wtime();
-  size_t n_unique = count_unique_2nd_elm(inp_out);
-  elapsed_sec  = wtime() - begin;
-  std::cout << "counting #unique elements took " << elapsed_sec << "sec. it has "
-	    << n_unique << " elements\n";
-
-
-
-  /* Hopefully, NRVO will save the unwanted copying */
-  return inp_out;
-
-}
-
-
-
-
-
-
-
-
-
-/* get all collisions by naive algorithm */
-template <typename Problem>
-auto all_collisions_by_list()
-  -> std::vector< std::tuple<typename Problem::A::t,
-			     typename Problem::B::t,
-			     typename Problem::C::t>>
-
-{
-  /* this vector will hold all (inp, out) pairs of F */
-  using A_t = typename Problem::A::t;
-  using B_t = typename Problem::B::t;
-  using C_t = typename Problem::C::t;
-
-
-  /* number of bytes needed to code an element of C */
-  const int nbytes = Problem::C::length;
-  using C_serial = std::array<u8, nbytes>;
-
-  /* collision container */
-
-  std::vector< std::pair<A_t, C_serial> >
-    inp_out_f_A_C = inp_out_ordered<Problem,
-				    A_t,
-				    C_t,
-				    Problem::A::length,
-				    Problem::A::n_elements,
-				    Problem::f,
-				    Problem::A::next,
-				    Problem::A::ith_elm>();
-
-
-
-  std::vector< std::pair<B_t, C_serial> >
-    inp_out_g_B_C = inp_out_ordered<Problem,
-				    B_t,
-				    C_t,
-				    Problem::B::length,
-				    Problem::B::n_elements,
-				    Problem::g,
-				    Problem::B::next,
-				    Problem::B::ith_elm>();
-
-
-  std::cout << "Done createing the two lists!\n";
-  /* now let's test all inputs of g and register those gets a collision */
-
-  std::cout << "let's see the first 10 output sorted\n";
-  for (int i = 0; i < 10; ++i){
-    print_array(inp_out_f_A_C[i].second);
-    print_array(inp_out_g_B_C[i].second);
-    std::cout << "----------\n";
-  }
-
-
-
-  auto begin = wtime();
-  auto end = wtime();
-  auto elapsed_sec = end - begin;
-
-
-
-
-  std::vector< std::tuple<A_t, B_t, C_t>  > all_collisions_vec{};
-  C_t val{};
-  size_t A_n_elements = inp_out_f_A_C.size();
-  size_t B_n_elements = inp_out_g_B_C.size();
-
-  begin = wtime();
-
-  size_t idx_A = 0;
-  size_t idx_B = 0;
-
-
-  C_serial arr{};
-  std::cout << "length of c output = " << arr.max_size() << ", or size = " << arr.size()
-	    << "nbytes = " << nbytes << "\n" ;
-
-  auto start = wtime();
-  while ((idx_A < A_n_elements) and (idx_B < B_n_elements)) {
-    /* 1st case: we have a collision  */
-    if( inp_out_f_A_C[idx_A].second ==  inp_out_g_B_C[idx_B].second ) {
-      std::cout << "Found collision at idx_A=" << idx_A << ", idx_B=" << idx_B
-		<< " Do they collide? "<< (inp_out_f_A_C[idx_A].second ==  inp_out_g_B_C[idx_B].second)
-		<<"\n";
-      print_array(inp_out_f_A_C[idx_A].second);
-      print_array(inp_out_g_B_C[idx_B].second);
-      std::cout << "============================\n";
-
-      Problem::C::unserialize(inp_out_f_A_C[idx_A].second, val);
-      std::tuple col{inp_out_f_A_C[idx_A].first, inp_out_g_B_C[idx_B].first,  val };
-      all_collisions_vec.push_back(col);
-
-      ++idx_A;
-      ++idx_B;
-    }
-    std::cout << "idx_A = " << idx_A << ", idx_B = " << idx_B << "\n";
-    /* when */
-    /* the list of inputs is sorted in increasing order */
-    if( inp_out_f_A_C[idx_A].second <  inp_out_g_B_C[idx_A].second ){
-      ++idx_A;
-    } if( inp_out_f_A_C[idx_A].second >  inp_out_g_B_C[idx_A].second ){
-      ++idx_B;
-    }
-  }
-
-  elapsed_sec = wtime() - start;
-  std::cout << std::fixed  << "it took " << elapsed_sec << " sec to find all collisions\n";
-  std::cout << std::fixed <<"total " << all_collisions_vec.size() << " collisions\n";
-
-
-
-
-
-  return all_collisions_vec;
-}
-
-/* --------------------------- end of Naive method ---------------------------- */
-
-
-
-
 
 /* todo start from here */
 template<typename Problem>
-auto collision() -> std::pair<typename Problem::C::t, typename Problem::C::t>
+auto collision(Problem& Pb) -> std::pair<typename Problem::Dom_C::t, typename Problem::Dom_C::t>
 {
-  using A_t = typename Problem::A::t;
-  using B_t = typename Problem::B::t;
-  using C_t = typename Problem::C::t;
+  using A_t = typename Problem::Dom_A::t;
+  using B_t = typename Problem::Dom_B::t;
+  using C_t = typename Problem::Dom_C::t;
   PRNG rng_urandom;
 
   
   /* Sanity Test: */
   std::cout << "unserial(serial(.)) =?= id(.) : "
-	    << is_serialize_inverse_of_unserialize<Problem>(rng_urandom)
+	    << is_serialize_inverse_of_unserialize<Problem>(Pb, rng_urandom)
 	    << "\n";
 
   
@@ -839,8 +562,8 @@ auto collision() -> std::pair<typename Problem::C::t, typename Problem::C::t>
   /* Always points to the region that contains the output */
   C_t* out0_pt = &inp0_or_out0_buffer1;
   u64  out0_digest = 0; /* hashed value of the output0 */
-  /* Recall: Problem::C::length = #needed bytes to encode an element of C_t */
-  u8 out0_bytes[Problem::C::length];
+  /* Recall: Problem::Dom_C::length = #needed bytes to encode an element of C_t */
+  u8 out0_bytes[Pb.C.length];
 
 
   /* 2nd set of buffers: Related to input1 as a starting point */
@@ -879,14 +602,11 @@ auto collision() -> std::pair<typename Problem::C::t, typename Problem::C::t>
   size_t n_dist_points = 0;
 
 
-  /* Iteration Functions */
-  Iterate_F<Problem> F{};
-  Iterate_G<Problem> G{};
 
   /*********************************************************
    * surprise we're going actually use
-   * void iterate_once(typename Problem::C::t* inp_pt,
-   *		  typename Problem::C::t* out_pt,
+   * void iterate_once(typename Problem::Dom_C::t* inp_pt,
+   *		  typename Problem::Dom_C::t* out_pt,
    *		  Iterate_F<Problem>& F,
    *		  Iterate_G<Problem>& G)
    *
@@ -903,13 +623,13 @@ auto collision() -> std::pair<typename Problem::C::t, typename Problem::C::t>
      * for each version of the function, and theta = 2.25sqrt(w/n) then ...
      */
     /* update F and G by changing `send_C_to_A` and `send_C_to_B` */    
-    Problem::update_embedding(rng_urandom);
+    Pb.update_embedding(rng_urandom);
     
     /* After generating xy distinguished point change the iteration function */
     for (size_t n_dist_points = 0; n_dist_points < 100; ++n_dist_points){
           
       /* fill the input with a fresh random value. */
-      // Problem::C::randomize(*inp_pt); 
+      // Problem::Dom_C::randomize(*inp_pt); 
       /* or use `/dev/urandom` */
       // inp0 = read_urandom<C_t>();
       
@@ -919,10 +639,9 @@ auto collision() -> std::pair<typename Problem::C::t, typename Problem::C::t>
 				   out0_bytes,
 				   chain_length0,
 				   difficulty,
-				   F,
-				   G);
+				   Pb);
       ++n_dist_points;
-      out0_digest = Problem::C::extract_k_bits(*out0_pt, Problem::C::length);
+      out0_digest = Pb.C.extract_k_bits(*out0_pt, Problem::Dom_C::length);
 
       is_collision_found = dict.pop_insert(out0_digest, /* key */
 					   inp0, /* value  */
@@ -934,7 +653,7 @@ auto collision() -> std::pair<typename Problem::C::t, typename Problem::C::t>
 	bool is_false_collision = false;
 
 	/* respect the rule that inp0 doesn't have pointers dancing around it */
-	Problem::C::copy(inp0, *tmp0_pt); /* (*tmp0_pt) holds the input value  */
+	Pb.C.copy(inp0, *tmp0_pt); /* (*tmp0_pt) holds the input value  */
 
 	treat_collision<Problem>(tmp0_pt, /* inp0 */
 				 out0_pt, /* inp0 scratch buffer  */
@@ -942,10 +661,8 @@ auto collision() -> std::pair<typename Problem::C::t, typename Problem::C::t>
 				 inp1_pt,
 				 out1_pt,
 				 chain_length1,
-				 F,
-				 G,
-				 collisions_container);
-
+				 collisions_container,
+				 Pb);
       }
     }
   }
