@@ -37,6 +37,28 @@ using i64 = int64_t;
 
 /******************************************************************************/
 // independent code
+/******************************************************************************/
+/* Setting up the problem                                                     */
+/******************************************************************************/
+/* source : https://gist.github.com/mortenpi/9745042 */
+#include <fstream>
+template<class T>
+T read_urandom()
+{
+    union {
+        T value;
+        char cs[sizeof(T)];
+    } u;
+
+    std::ifstream rfin("/dev/urandom");
+    rfin.read(u.cs, sizeof(u.cs));
+    rfin.close();
+
+    return u.value;
+}
+
+
+
 #include <chrono>
 inline auto wtime() -> double /* with inline it doesn't violate one definition rule */
 {
@@ -73,35 +95,6 @@ auto is_equal(std::array<u8, n> arr1,
 }
 
 
-template <typename Problem>
-auto is_serialize_inverse_of_unserialize() -> bool
-{
-  /// Test that unserialize(serialize(r)) == r for a randomly chosen r
-  using C_t = typename Problem::C::t;
-  const size_t length = Problem::C::length;
-
-  C_t orig{};
-  C_t copy{};
-  std::array<u8, length> serial;
-
-  size_t n_elements = Problem::C::n_elements;
-
-  const size_t n_tests = std::min(n_elements, static_cast<size_t>(1024));
-
-
-  for(size_t i = 0; i < n_tests; ++i){
-    /* */
-    Problem::C::randomize(orig);
-    Problem::C::serialize(orig, serial);
-    Problem::C::unserialize(serial, copy);
-
-    if (copy != orig)
-      return false; /* there is a bug in the adaptationof the code  */
-  }
-
-  return true;
-
-}
 
 
 /******************************************************************************/
@@ -111,32 +104,32 @@ auto is_serialize_inverse_of_unserialize() -> bool
 /******************************************************************************/
 
 
-/* source : https://gist.github.com/mortenpi/9745042 */
-#include <fstream>
-template<class T>
-T read_urandom()
-{
-    union {
-        T value;
-        char cs[sizeof(T)];
-    } u;
+/*
+ * Generic interface for a PRNG. The sequence of pseudo-random numbers
+ * depends on both seed and seq
+ */
 
+class PRNG {
+  
+  /* source : https://gist.github.com/mortenpi/9745042 */
+  union {
+    u64 value;
+    char cs[sizeof(u64)];
+  } u;
+  
+public:
+
+  PRNG() { };
+  
+  u64 rand(){
     std::ifstream rfin("/dev/urandom");
     rfin.read(u.cs, sizeof(u.cs));
     rfin.close();
 
     return u.value;
-}
-/*
- * Generic interface for a PRNG. The sequence of pseudo-random numbers
- * depends on both seed and seq
- */
-class AbstractPRNG {
-public:
-  AbstractPRNG(u64 seed, u64 seq);
-  u64 rand();
+  };
+  
 };
-
 
 
 /*
@@ -153,14 +146,15 @@ public:
   static size_t n_elements; /* how many elements in the domain */
   using t = repr;            /* t is the machine representation of elements of the domain */
 
-  template<class PRNG>
+  template<typename PRNG>
   static void randomize(t &x, PRNG &p);           /* set x to a random value */
 
   static void randomize(t &x);  /* set x to a random value */
   auto is_equal(t& x, t& y) const -> bool;
 
 
-  /* get the next element after x. What matters is getting a different element eac time, not the order. */
+  /* get the next element after x.*/
+  /* What matters is getting a different element each time, not the order. */
   inline auto next(t& x) -> t;
   inline static void serialize(const t &x, const u8 *out);   /* write this to out */
   inline static void unserialize(const u8 *in, t &x);        /* read this from in */
@@ -212,6 +206,41 @@ public:
 /******************************************************************************/
 /* a user does not need to look at the code below                             */
 /******************************************************************************/
+
+
+template <typename Problem>
+auto is_serialize_inverse_of_unserialize(PRNG& prng) -> bool
+{
+  /// Test that unserialize(serialize(r)) == r for a randomly chosen r
+  using C_t = typename Problem::C::t;
+  const size_t length = Problem::C::length;
+
+  C_t orig{};
+  C_t copy{};
+  std::array<u8, length> serial;
+
+  size_t n_elements = Problem::C::n_elements;
+
+  const size_t n_tests = std::min(n_elements, static_cast<size_t>(1024));
+
+
+  for(size_t i = 0; i < n_tests; ++i){
+    /* */
+    Problem::C::randomize(orig, prng);
+    Problem::C::serialize(orig, serial);
+    Problem::C::unserialize(serial, copy);
+
+    if (copy != orig)
+      return false; /* there is a bug in the adaptationof the code  */
+  }
+
+  return true;
+
+}
+
+
+
+
 template <typename P>
 struct Iterate_F {
   /*
@@ -230,6 +259,7 @@ struct Iterate_F {
     /* that is defined within this struct. So, we can change the function easily */
     P::send_C_to_A(inp_A, inp_C);
     P::f(inp_A, out_C);
+    
   }
 };
 
@@ -731,6 +761,8 @@ auto all_collisions_by_list()
 
 
 
+
+
 /* todo start from here */
 template<typename Problem>
 auto collision() -> std::pair<typename Problem::C::t, typename Problem::C::t>
@@ -738,9 +770,12 @@ auto collision() -> std::pair<typename Problem::C::t, typename Problem::C::t>
   using A_t = typename Problem::A::t;
   using B_t = typename Problem::B::t;
   using C_t = typename Problem::C::t;
+  PRNG rng_urandom;
+
+  
   /* Sanity Test: */
   std::cout << "unserial(serial(.)) =?= id(.) : "
-	    << is_serialize_inverse_of_unserialize<Problem>()
+	    << is_serialize_inverse_of_unserialize<Problem>(rng_urandom)
 	    << "\n";
 
   
@@ -751,7 +786,6 @@ auto collision() -> std::pair<typename Problem::C::t, typename Problem::C::t>
   // auto list_of_collisions = all_collisions_by_list<Problem>();
   // auto end = wtime();
   // auto elapsed = end - begin;
-
   // std::cout << std::fixed
   // 	    << "The naive method tells us that there are "
   //           << list_of_collisions.size()
@@ -848,6 +882,7 @@ auto collision() -> std::pair<typename Problem::C::t, typename Problem::C::t>
   /* Iteration Functions */
   Iterate_F<Problem> F{};
   Iterate_G<Problem> G{};
+
   /*********************************************************
    * surprise we're going actually use
    * void iterate_once(typename Problem::C::t* inp_pt,
@@ -861,75 +896,60 @@ auto collision() -> std::pair<typename Problem::C::t, typename Problem::C::t>
   
   /*------------------- Generate Distinguished Points ------------------------*/
   while (n_collisions < n_needed_collisions){
-    /* fill the input with a fresh random value. */
-    // Problem::C::randomize(*inp_pt); 
-    /* or use `/dev/urandom` */
-    inp0 = read_urandom<C_t>();
 
 
 
-
-    generate_dist_point<Problem>(inp0,
-				 tmp0_pt,
-				 out0_pt,
-				 out0_bytes,
-				 chain_length0,
-				 difficulty,
-				 F,
-				 G);
-
-    ++n_dist_points;
-    //std::cout << "af inp = " << (*pt_inp_C)[0] << ", " << (*pt_inp_C)[1] << "\n";
-    //std::cout << "bf out = " << (*pt_out_C)[0] << ", " << (*pt_out_C)[1] << "\n";
-    //return std::pair(pt_inp_C, pt_inp_C);
-    /* send the result to dictionary, check if it has a collision  */
+    /* These simulations show that if 10w distinguished points are generated
+     * for each version of the function, and theta = 2.25sqrt(w/n) then ...
+     */
+    /* update F and G by changing `send_C_to_A` and `send_C_to_B` */    
+    Problem::update_embedding(rng_urandom);
     
-    out0_digest = Problem::C::
-      extract_k_bits(*out0_pt, Problem::C::length);
-    
-    is_collision_found = dict.pop_insert(out0_digest, /* key */
-					 inp0, /* value  */
-					 *inp1_pt, /* save popped element here */
-					 chain_length1 /* of popped input */);
+    /* After generating xy distinguished point change the iteration function */
+    for (size_t n_dist_points = 0; n_dist_points < 100; ++n_dist_points){
+          
+      /* fill the input with a fresh random value. */
+      // Problem::C::randomize(*inp_pt); 
+      /* or use `/dev/urandom` */
+      // inp0 = read_urandom<C_t>();
       
-    /* todo work from here */
-    
-    if (is_collision_found) [[unlikely]]{
-      ++n_collisions; 
-      bool is_false_collision = false;
+      generate_dist_point<Problem>(inp0,
+				   tmp0_pt,
+				   out0_pt,
+				   out0_bytes,
+				   chain_length0,
+				   difficulty,
+				   F,
+				   G);
+      ++n_dist_points;
+      out0_digest = Problem::C::extract_k_bits(*out0_pt, Problem::C::length);
 
-      /* respect the rule that inp0 doesn't have pointers dancing around it */
-      Problem::C::copy(inp0, *tmp0_pt); /* (*tmp0_pt) holds the input value  */
+      is_collision_found = dict.pop_insert(out0_digest, /* key */
+					   inp0, /* value  */
+					   *inp1_pt, /* save popped element here */
+					   chain_length1 /* of popped input */);
+      
+      if (is_collision_found) [[unlikely]]{
+	++n_collisions; 
+	bool is_false_collision = false;
 
-      treat_collision<Problem>(tmp0_pt, /* inp0 */
-			       out0_pt, /* inp0 scratch buffer  */
-			       chain_length0,
-			       inp1_pt,
-			       out1_pt,
-			       chain_length1,
-			       F,
-			       G,
-			       collisions_container);
+	/* respect the rule that inp0 doesn't have pointers dancing around it */
+	Problem::C::copy(inp0, *tmp0_pt); /* (*tmp0_pt) holds the input value  */
 
+	treat_collision<Problem>(tmp0_pt, /* inp0 */
+				 out0_pt, /* inp0 scratch buffer  */
+				 chain_length0,
+				 inp1_pt,
+				 out1_pt,
+				 chain_length1,
+				 F,
+				 G,
+				 collisions_container);
 
-      std::cout << "found a collision " << n_collisions
-		<<  " out of " << n_needed_collisions << "\n";
-
-      std::cout << "false collisions = " << false_collisions
-		<< " real collisions = " << real_collisions
-		<< " robinhoods = " << n_robinhood
-		<< "\n";
-
-      std::cout << "#dist points = " << n_dist_points
-		<<  " = 2^" << std::log2(n_dist_points) << "\n";
-
+      }
     }
-
-
-
   }
-
-
+  /* end of work */
   return std::pair<C_t, C_t>(*tmp0_pt, *inp1_pt); // todo wrong values
 }
 #endif

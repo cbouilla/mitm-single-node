@@ -13,26 +13,29 @@
 
 
 
-/******************************************************************************/
-/* Setting up the problem                                                     */
-/******************************************************************************/
+
+
 using Speck32_t = typename std::array<uint16_t , 2>;
 
-class SPECK_DOMAIN : AbstractDomain< Speck32_t >{
 
+
+class SPECK_DOMAIN : AbstractDomain< Speck32_t >{
+  
 public:
   using t = Speck32_t;
   static const int length = 4;
   static const size_t n_elements = (1LL<<32);
-
+  
   static inline bool is_equal(const t& x, const t& y){
     return x == y;
   }
 
-  static void randomize(t& x) {
-    x[0] = rand();
-    x[1] = rand();
+  static void randomize(t& x, PRNG& prng) {
+    x[0] ^= prng.rand();
+    x[1] ^= (prng.rand())>>16;
   }
+
+  
 
   static void serialize(const t& x, uint8_t * out){
     out[0] = x[0];
@@ -68,7 +71,7 @@ public:
       std::cout << x[0] << x[1];
   }
   inline static auto extract_k_bits(const t& inp, int k) -> uint64_t {
-      return ((uint64_t ) inp[1]) ; //| ((uint64_t)  inp[1]) << 16;
+      // return ((uint64_t ) inp[1]) ; //| ((uint64_t)  inp[1]) << 16;
     /////////////// old code before dubgging //////////
     /* k = 16j + r, we would like to get the values of r and j  */
     k = k+1; /* Read bits after the first bit */
@@ -106,6 +109,10 @@ public:
 };
 
 class Problem : AbstractProblem<SPECK_DOMAIN, SPECK_DOMAIN, SPECK_DOMAIN >{
+private:
+  static u64 version_send_C_to_A;
+  static u64 version_send_C_to_B;
+
 public:
 
   /* Having the exact lines in the parent class doesn't help :( */
@@ -128,8 +135,25 @@ public:
     decrypt(inp_ciphertext, y, x);
   }
 
-  static void send_C_to_A(A_t& out_A, C_t& inp_C){ out_A = inp_C; }
-  static void send_C_to_B(B_t& out_B, C_t& inp_C){ out_B = inp_C; }
+  static void send_C_to_A(C_t& inp_C, A_t& out_A){
+    out_A = inp_C;
+    out_A[0] ^= version_send_C_to_A;
+    out_A[0] ^= (version_send_C_to_A>>16);
+  }
+  static void send_C_to_B(C_t& inp_C, B_t& out_B){
+    out_B = inp_C;
+    out_B[0] ^= version_send_C_to_B;
+    out_B[0] ^= (version_send_C_to_B>>16);
+  }
+
+  static void update_embedding(PRNG& rng){
+    /*
+     * Change `send_C_to_A` and `send_C_to_B` functions
+     */
+    version_send_C_to_A = rng.rand();
+    version_send_C_to_B = rng.rand();
+  }
+  
 };
 
 
