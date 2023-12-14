@@ -772,7 +772,7 @@ auto collision() -> std::pair<typename Problem::C::t, typename Problem::C::t>
   // size_t n_slots = 1LL<<30; 
 
   size_t n_bytes = 1LL<<34; /* */
-  Dict<C_t, u32> dict{n_bytes}; /* create a dictionary */
+  Dict<u64, C_t> dict{n_bytes}; /* create a dictionary */
 
 
 
@@ -806,7 +806,7 @@ auto collision() -> std::pair<typename Problem::C::t, typename Problem::C::t>
   C_t* out0_pt = &inp0_or_out0_buffer1;
   u64  out0_digest = 0; /* hashed value of the output0 */
   /* Recall: Problem::C::length = #needed bytes to encode an element of C_t */
-  std::array<u8, Problem::C::length> out0_bytes{0};
+  u8 out0_bytes[Problem::C::length];
 
 
   /* 2nd set of buffers: Related to input1 as a starting point */
@@ -869,12 +869,12 @@ auto collision() -> std::pair<typename Problem::C::t, typename Problem::C::t>
 
 
 
-    generate_dist_point<Problem>(difficulty,
-				 inp0,
+    generate_dist_point<Problem>(inp0,
 				 tmp0_pt,
 				 out0_pt,
 				 out0_bytes,
 				 chain_length0,
+				 difficulty,
 				 F,
 				 G);
 
@@ -906,6 +906,7 @@ auto collision() -> std::pair<typename Problem::C::t, typename Problem::C::t>
 			       chain_length0,
 			       inp1_pt,
 			       out1_pt,
+			       chain_length1,
 			       F,
 			       G,
 			       collisions_container);
