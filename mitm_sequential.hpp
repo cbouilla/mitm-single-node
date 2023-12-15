@@ -18,7 +18,7 @@
 #include <omp.h>
 #include <execution>
 #include "include/dict.hpp"
-#include <set>
+
 size_t n_f_called{0};
 size_t n_g_called{0};
 size_t n_robinhood{0};
@@ -246,28 +246,6 @@ auto is_serialize_inverse_of_unserialize(Problem Pb, PRNG& prng) -> bool
 
 
 
-
-template <typename Problem>
-inline void Iterate_F(typename Problem::Dom_C::t& inp_C,
-		      typename Problem::Dom_C::t& out_C,
-		      Problem& Pb)
-
-
-{
-  /*
-   * A wrapper for calling f that uses
-   * convert inp:C_T -> inp:A_t 
-   * enhancement: in the future we can make this function depends on PRNG
-   * that is defined within this struct. So, we can change the function easily */
-
-  static typename Problem::Dom_A::t inp_A{};
-  Pb.send_C_to_A(inp_A, inp_C);
-  Pb.f(inp_A, out_C);
-};
-
-
-
-
 /* todo pass the function number. e.g. first version of (f, g) second version */
 template <typename Problem>
 void iterate_once(typename Problem::Dom_C::t* inp_pt,
@@ -370,10 +348,7 @@ void walk(typename Problem::Dom_C::t*& inp1_pt,
    * find the earliest collision in the sequence before the distinguished point
    * add a drawing to illustrate this.
    */
-
-
   using C_t = typename Problem::Dom_C::t;
-
 
   size_t const diff_len = std::max(inp1_chain_len, inp2_chain_len)
                         - std::min(inp1_chain_len, inp2_chain_len);
@@ -399,17 +374,15 @@ void walk(typename Problem::Dom_C::t*& inp1_pt,
       swap_pointers(inp1_pt, tmp1_pt);
     }
    }
-
  
   if (inp1_chain_len < inp2_chain_len){
     for (size_t i = 0; i < diff_len; ++i){
       iterate_once(inp2_pt, tmp2_pt, Pb);
       swap_pointers(inp1_pt, tmp1_pt);
     }
- 
   }
+
   /****************************************************************************/
-  
   /* now both inputs have equal amount of steps to reach a distinguished point */
   /* both sequences needs exactly `len` steps to reach dist point */
   size_t len = std::min(inp1_chain_len, inp2_chain_len);
@@ -502,35 +475,12 @@ auto collision(Problem& Pb) -> std::pair<typename Problem::Dom_C::t, typename Pr
 	    << "\n";
 
   
-  /************************* EXPERIMENT BY NAIVE METHOD ***********************/
-
-  // std::cout << "Starting with naive method ...\n";
-  // auto begin = wtime();
-  // auto list_of_collisions = all_collisions_by_list<Problem>();
-  // auto end = wtime();
-  // auto elapsed = end - begin;
-  // std::cout << std::fixed
-  // 	    << "The naive method tells us that there are "
-  //           << list_of_collisions.size()
-  //           << " collisions. Took: "
-  //           << elapsed
-  //           << "s\n";
-
-  /* end of EXPERIMENT BY NAIVE METHOD */
-  /****************************************************************************/
-
-
 
 
   // --------------------------------- INIT -----------------------------------/
-  // DICT
-  /* todo get */
-
-  // size_t n_slots = 1LL<<30; 
-
   size_t n_bytes = 1LL<<34; /* */
   Dict<u64, C_t> dict{n_bytes}; /* create a dictionary */
-
+  std::cout << "Initialized a dict with " << dict.n_slots << " slots\n";
 
 
   // -----------------------------------------------------------------------------/
