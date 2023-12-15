@@ -1,7 +1,3 @@
-//
-// Created by ahmed on 07/11/23.
-//
-
 #ifndef SPECK32_MODIFIED_HPP
 #define SPECK32_MODIFIED_HPP
 #include <stdint.h>

@@ -18,6 +18,7 @@
 #include <omp.h>
 #include <execution>
 #include "include/dict.hpp"
+#include <string>
 
 size_t n_f_called{0};
 size_t n_g_called{0};
@@ -108,9 +109,8 @@ auto is_equal(std::array<u8, n> arr1,
  * Generic interface for a PRNG. The sequence of pseudo-random numbers
  * depends on both seed and seq
  */
-
 class PRNG {
-  
+  /* todo make it support length */
   /* source : https://gist.github.com/mortenpi/9745042 */
   union {
     u64 value;
@@ -256,18 +256,18 @@ void iterate_once(typename Problem::Dom_C::t* inp_pt,
    * Do 1 iteration inp =(f/g)=> out, write the output in the address pointed
    * by out_pt.
    */
-  static typename Problem::Dom_A::t inp_A{};
-  static typename Problem::Dom_A::t inp_B{};
+  typename Problem::Dom_A::t inp_A{};
+  typename Problem::Dom_A::t inp_B{};
 
   int f_or_g = Pb.C.extract_1_bit(*inp_pt);
   if (f_or_g == 1){
-    Pb.send_C_to_A(inp_A, *inp_pt);
+    Pb.send_C_to_A(*inp_pt, inp_A);
     Pb.f(inp_A, *out_pt);
     ++n_f_called;
   }
   else { /* f_or_g == 0 */
     Pb.send_C_to_B(inp_B, *inp_pt);
-    Pb.f(inp_B, *out_pt);
+    Pb.f(*out_pt, inp_B);
     ++n_g_called;
   }
 }
@@ -293,8 +293,11 @@ bool generate_dist_point(typename Problem::Dom_C::t& inp0, /* don't change the p
 
 
   /* copy the input to tmp, then never touch the inp again! */
+
+
   Pb.C.copy(inp0, *tmp_inp_pt);
 
+  
   static const u64 mask = (1LL<<difficulty) - 1;
   chain_length = 0;
 
@@ -311,7 +314,6 @@ bool generate_dist_point(typename Problem::Dom_C::t& inp0, /* don't change the p
   /* 2^{-some big k} */
   for (i64 i = 0; i < 40*(1LL<<difficulty); ++i){
     iterate_once(tmp_inp_pt, out_pt, Pb);
-
     ++chain_length;
 
     /* we may get a dist point here */
@@ -458,6 +460,35 @@ bool treat_collision(typename Problem::Dom_C::t*& inp1_pt,
 
 
 
+template <typename Problem, typename C_t>
+void print_collision_info(C_t &inp0, C_t &out0, C_t &inp1, C_t &out1,
+                          Problem Pb,
+			  std::string str = "",
+			  u64 extraced = 0)
+{
+  std::cout << str << "\n";
+  bool equal_outputs = out0 == out1;
+  bool equal_inputs = inp0 == inp1;
+  std::cout << "are outputs equal? " << equal_outputs << "\n";
+  std::cout << "are inputs  equal? " << equal_inputs << "\n";
+  std::cout << "----\n";
+  std::cout << "inp0 = ";
+  Pb.C.print(inp0);
+  std::cout << "\nout0 = ";
+  Pb.C.print(out0);
+  std::cout << "----\n";
+  std::cout << "inp1 = ";
+  Pb.C.print(inp1);
+  std::cout << "\nout1 = ";
+  Pb.C.print(out1);
+  if (extraced)
+    std::cout << "extracted = " << extraced << "\n";
+  std::cout << "=========================\n";
+
+    
+
+}
+
 
 /* todo start from here */
 template<typename Problem>
@@ -577,11 +608,15 @@ auto collision(Problem& Pb) -> std::pair<typename Problem::Dom_C::t, typename Pr
     
     /* After generating xy distinguished point change the iteration function */
     for (size_t n_dist_points = 0; n_dist_points < 100; ++n_dist_points){
-          
+      is_collision_found = false;
       /* fill the input with a fresh random value. */
       // Problem::Dom_C::randomize(*inp_pt); 
       /* or use `/dev/urandom` */
       // inp0 = read_urandom<C_t>();
+
+      Pb.C.randomize(inp0, rng_urandom);
+      std::cout << "before generating distinuished point\ninp0=";
+      Pb.C.print(inp0);
       
       generate_dist_point<Problem>(inp0,
 				   tmp0_pt,
@@ -593,18 +628,37 @@ auto collision(Problem& Pb) -> std::pair<typename Problem::Dom_C::t, typename Pr
       ++n_dist_points;
       out0_digest = Pb.C.extract_k_bits(*out0_pt, Problem::Dom_C::length);
 
+      print_collision_info(*tmp0_pt, /* inp0 */
+			   *out0_pt, /* inp0 scratch buffer  */
+			   *inp1_pt,
+			   *out1_pt,
+			   Pb,
+			   "after generating distinguished point",
+			   out0_digest);
+
+      
       is_collision_found = dict.pop_insert(out0_digest, /* key */
 					   inp0, /* value  */
 					   *inp1_pt, /* save popped element here */
 					   chain_length1 /* of popped input */);
       
       if (is_collision_found) [[unlikely]]{
+	/* todo show the results of collisions */
 	++n_collisions; 
 	bool is_false_collision = false;
 
 	/* respect the rule that inp0 doesn't have pointers dancing around it */
 	Pb.C.copy(inp0, *tmp0_pt); /* (*tmp0_pt) holds the input value  */
 
+
+	print_collision_info(*tmp0_pt, /* inp0 */
+			     *out0_pt, /* inp0 scratch buffer  */
+			     *inp1_pt,
+			     *out1_pt,
+			     Pb,
+			     "Before a collision treatment");
+
+	
 	treat_collision<Problem>(tmp0_pt, /* inp0 */
 				 out0_pt, /* inp0 scratch buffer  */
 				 chain_length0,
@@ -613,6 +667,14 @@ auto collision(Problem& Pb) -> std::pair<typename Problem::Dom_C::t, typename Pr
 				 chain_length1,
 				 collisions_container,
 				 Pb);
+
+	print_collision_info(*tmp0_pt, /* inp0 */
+			     *out0_pt, /* inp0 scratch buffer  */
+			     *inp1_pt,
+			     *out1_pt,
+			     Pb);
+
+
       }
     }
   }

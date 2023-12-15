@@ -109,6 +109,10 @@ public:
     inp_out[0] = i;
     inp_out[1] = i>>16;
   }
+
+  inline void print(t& a) const{
+    printf("(0x%04x,0x%04x)\n", a[0], a[1]);
+  }
 };
 
 class Problem : AbstractProblem<SPECK_DOMAIN, SPECK_DOMAIN, SPECK_DOMAIN >{
