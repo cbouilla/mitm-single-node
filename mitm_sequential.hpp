@@ -245,7 +245,7 @@ auto is_serialize_inverse_of_unserialize(Problem Pb, PRNG& prng) -> bool
 }
 
 
-
+   
 /* todo pass the function number. e.g. first version of (f, g) second version */
 template <typename Problem>
 void iterate_once(typename Problem::Dom_C::t* inp_pt,
@@ -266,7 +266,7 @@ void iterate_once(typename Problem::Dom_C::t* inp_pt,
     ++n_f_called;
   }
   else { /* f_or_g == 0 */
-    Pb.send_C_to_B(inp_B, *inp_pt);
+    Pb.send_C_to_B(*inp_pt, inp_B);
     Pb.f(*out_pt, inp_B);
     ++n_g_called;
   }
@@ -617,6 +617,8 @@ auto collision(Problem& Pb) -> std::pair<typename Problem::Dom_C::t, typename Pr
       Pb.C.randomize(inp0, rng_urandom);
       std::cout << "before generating distinuished point\ninp0=";
       Pb.C.print(inp0);
+      std::cout << "tmp0 = ";
+      Pb.C.print(*tmp0_pt);
       
       generate_dist_point<Problem>(inp0,
 				   tmp0_pt,
