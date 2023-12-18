@@ -461,7 +461,8 @@ bool treat_collision(typename Problem::Dom_C::t*& inp1_pt,
 
 
 template <typename Problem, typename C_t>
-void print_collision_info(C_t &inp0, C_t &out0, C_t &inp1, C_t &out1,
+void print_collision_info(C_t &inp0, C_t &out0, size_t chain_length0,
+			  C_t &inp1, C_t &out1, size_t chain_length1,
                           Problem Pb,
 			  std::string str = "",
 			  u64 extraced = 0)
@@ -476,11 +477,13 @@ void print_collision_info(C_t &inp0, C_t &out0, C_t &inp1, C_t &out1,
   Pb.C.print(inp0);
   std::cout << "\nout0 = ";
   Pb.C.print(out0);
+  std::cout << "chain_length0 = " << chain_length0 << "\n";
   std::cout << "----\n";
   std::cout << "inp1 = ";
   Pb.C.print(inp1);
   std::cout << "\nout1 = ";
   Pb.C.print(out1);
+  std::cout << "chain_length1 = " << chain_length1 << "\n";
   if (extraced)
     std::cout << "extracted = " << extraced << "\n";
   std::cout << "=========================\n";
@@ -614,12 +617,9 @@ auto collision(Problem& Pb) -> std::pair<typename Problem::Dom_C::t, typename Pr
       /* or use `/dev/urandom` */
       // inp0 = read_urandom<C_t>();
 
+
       Pb.C.randomize(inp0, rng_urandom);
-      std::cout << "before generating distinuished point\ninp0=";
-      Pb.C.print(inp0);
-      std::cout << "tmp0 = ";
-      Pb.C.print(*tmp0_pt);
-      
+
       generate_dist_point<Problem>(inp0,
 				   tmp0_pt,
 				   out0_pt,
@@ -628,14 +628,16 @@ auto collision(Problem& Pb) -> std::pair<typename Problem::Dom_C::t, typename Pr
 				   difficulty,
 				   Pb);
       ++n_dist_points;
-      out0_digest = Pb.C.extract_k_bits(*out0_pt, Problem::Dom_C::length);
+      out0_digest = Pb.C.extract_k_bits(*out0_pt, 8*Problem::Dom_C::length);
 
-      print_collision_info(*tmp0_pt, /* inp0 */
+      print_collision_info(inp0, /* inp0 */
 			   *out0_pt, /* inp0 scratch buffer  */
+			   chain_length0,
 			   *inp1_pt,
 			   *out1_pt,
+			   chain_length1,
 			   Pb,
-			   "after generating distinguished point",
+			   "After generating distinguished point",
 			   out0_digest);
 
       
@@ -655,8 +657,10 @@ auto collision(Problem& Pb) -> std::pair<typename Problem::Dom_C::t, typename Pr
 
 	print_collision_info(*tmp0_pt, /* inp0 */
 			     *out0_pt, /* inp0 scratch buffer  */
+			     chain_length0,
 			     *inp1_pt,
 			     *out1_pt,
+			     chain_length1,
 			     Pb,
 			     "Before a collision treatment");
 
@@ -672,8 +676,10 @@ auto collision(Problem& Pb) -> std::pair<typename Problem::Dom_C::t, typename Pr
 
 	print_collision_info(*tmp0_pt, /* inp0 */
 			     *out0_pt, /* inp0 scratch buffer  */
+			     chain_length0,
 			     *inp1_pt,
 			     *out1_pt,
+			     chain_length1,
 			     Pb);
 
 

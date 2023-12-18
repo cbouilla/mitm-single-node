@@ -72,22 +72,22 @@ public:
   void print(const t& x) const
   { std::cout << x[0] << x[1]; }
   
-  inline uint64_t extract_k_bits(const t& inp, int k) const
+  inline uint32_t extract_k_bits(const t& inp, int k) const
   {
-      // return ((uint64_t ) inp[1]) ; //| ((uint64_t)  inp[1]) << 16;
-    /////////////// old code before dubgging //////////
-    /* k = 16j + r, we would like to get the values of r and j  */
-    k = k+1; /* Read bits after the first bit */
-    uint16_t nbits_first_word = k&(16 - 1); /* read it mod 16 */
-    /* first remove r and 16 at once by division, then make sure number < 16 */
-    uint16_t nbits_second_word = (k>>4)&(16 - 1);
+    /*
+     * Get the first k bits from inp (it has type  std::array<uint16, 2>)
+     */
 
-    /* What bits should we consider */
-    uint16_t mask1 = (1<<nbits_first_word) - 1;
-    uint16_t mask2 = (1<<nbits_second_word) - 1;
+    /* How many bits we get from the first pair */
+    uint16_t b0 = std::min(16, k);
+    /* How many bits we get from the second pair */
+    uint16_t b1 = std::max(0, k-16);
+
+    uint16_t mask0 = (1<<b0) - 1;
+    uint16_t mask1 = (1<<b1) - 1;
 
     /* maximally extrat 32 bits */
-    return ((inp[0]>>1)&mask1) | (((uint64_t) inp[1])&mask2)<<16;
+    return (inp[0]&mask0) | ((inp[1]&mask1))<<16;
   }
 
   inline void copy(const t& inp, t& out) const
