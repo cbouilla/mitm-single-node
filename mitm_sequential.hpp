@@ -323,12 +323,12 @@ bool generate_dist_point(typename Problem::Dom_C::t& inp0, /* don't change the p
 
 
 template<typename Problem>
-void walk(typename Problem::Dom_C::t*& inp1_pt,
+void walk(typename Problem::Dom_C::t*& inp0_pt,
+	  typename Problem::Dom_C::t*& tmp0_pt, /* inp0 calculation buffer */
+	  const u64 inp0_chain_len,
+          typename Problem::Dom_C::t*& inp1_pt,
 	  typename Problem::Dom_C::t*& tmp1_pt, /* inp1 calculation buffer */
 	  const u64 inp1_chain_len,
-          typename Problem::Dom_C::t*& inp2_pt,
-	  typename Problem::Dom_C::t*& tmp2_pt, /* inp2 calculation buffer */
-	  const u64 inp2_chain_len,
 	  Problem& Pb)
 {
   /* Given two inputs that lead to the same distinguished point,
@@ -337,8 +337,8 @@ void walk(typename Problem::Dom_C::t*& inp1_pt,
    */
   using C_t = typename Problem::Dom_C::t;
 
-  size_t const diff_len = std::max(inp1_chain_len, inp2_chain_len)
-                        - std::min(inp1_chain_len, inp2_chain_len);
+  size_t const diff_len = std::max(inp0_chain_len, inp1_chain_len)
+                        - std::min(inp0_chain_len, inp1_chain_len);
 
   /****************************************************************************+
    *            walk the longest sequence until they are equal                 |
@@ -355,39 +355,39 @@ void walk(typename Problem::Dom_C::t*& inp1_pt,
    ****************************************************************************/
   
  
-  if (inp1_chain_len > inp2_chain_len){
+  if (inp0_chain_len > inp1_chain_len){
     for (size_t i = 0; i < diff_len; ++i){
-      iterate_once(*inp1_pt, *tmp1_pt, Pb);
-      swap_pointers(inp1_pt, tmp1_pt);
+      iterate_once(*inp0_pt, *tmp0_pt, Pb);
+      swap_pointers(inp0_pt, tmp0_pt);
     }
    }
  
-  if (inp1_chain_len < inp2_chain_len){
+  if (inp0_chain_len < inp1_chain_len){
     for (size_t i = 0; i < diff_len; ++i){
-      iterate_once(*inp2_pt, *tmp2_pt, Pb);
-      swap_pointers(inp1_pt, tmp1_pt);
+      iterate_once(*inp1_pt, *tmp1_pt, Pb);
+      swap_pointers(inp0_pt, tmp0_pt);
     }
   }
 
   /****************************************************************************/
   /* now both inputs have equal amount of steps to reach a distinguished point */
   /* both sequences needs exactly `len` steps to reach dist point */
-  size_t len = std::min(inp1_chain_len, inp2_chain_len);
+  size_t len = std::min(inp0_chain_len, inp1_chain_len);
 
   /* Check if the two inputs are equal then we have a robin hood */
 
 
-  if(Pb.C.is_equal( *inp1_pt, *inp1_pt ))
+  if(Pb.C.is_equal( *inp0_pt, *inp0_pt ))
     return; /* Robinhood */
 
   
   for (size_t i = 0; i < len; ++i){
     /* walk them together and check each time if their output are equal */
     /* return as soon equality is found */
+    iterate_once(*inp0_pt, *tmp0_pt, Pb);
     iterate_once(*inp1_pt, *tmp1_pt, Pb);
-    iterate_once(*inp2_pt, *tmp2_pt, Pb);
     
-    if(Pb.C.is_equal( *tmp1_pt, *tmp2_pt ))
+    if(Pb.C.is_equal( *tmp0_pt, *tmp1_pt ))
       return; /* They are equal */
   }
 }
@@ -396,12 +396,12 @@ void walk(typename Problem::Dom_C::t*& inp1_pt,
 
 
 template <typename Problem >
-bool treat_collision(typename Problem::Dom_C::t*& inp1_pt,
+bool treat_collision(typename Problem::Dom_C::t*& inp0_pt,
+		     typename Problem::Dom_C::t*& tmp0_pt, /* inp0 calculation buffer */
+		     const u64 inp0_chain_len,
+		     typename Problem::Dom_C::t*& inp1_pt,
 		     typename Problem::Dom_C::t*& tmp1_pt, /* inp1 calculation buffer */
 		     const u64 inp1_chain_len,
-		     typename Problem::Dom_C::t*& inp2_pt,
-		     typename Problem::Dom_C::t*& tmp2_pt, /* inp2 calculation buffer */
-		     const u64 inp2_chain_len,
                      std::vector< std::pair<typename Problem::Dom_C::t,
 		                            typename Problem::Dom_C::t> >& container,
 		     Problem& Pb)
@@ -424,19 +424,19 @@ bool treat_collision(typename Problem::Dom_C::t*& inp1_pt,
    * x: the collision we're looking for                                        |
    *                                                                           |   
    ****************************************************************************/
-  /* walk inp1 and inp2 just before `x` */
-  /* i.e. iterate_once(inp1) = iterate_once(inp2) */
-  walk<Problem>(inp1_pt,
-		tmp1_pt,
+  /* walk inp0 and inp1 just before `x` */
+  /* i.e. iterate_once(inp0) = iterate_once(inp1) */
+  walk<Problem>(inp0_pt,
+		tmp0_pt,
+		inp0_chain_len,
+		inp1_pt,
+		tmp1_pt, /* inp1 calculation buffer */
 		inp1_chain_len,
-		inp2_pt,
-		tmp2_pt, /* inp2 calculation buffer */
-		inp2_chain_len,
 	        Pb);
 					   
 
   /* assume copying */
-  std::pair<C_t, C_t> p{*inp1_pt, *inp2_pt};
+  std::pair<C_t, C_t> p{*inp0_pt, *inp1_pt};
   
   /* todo here we should add more tests */
   container.push_back(std::move(p)); 
@@ -635,6 +635,7 @@ auto collision(Problem& Pb) -> std::pair<typename Problem::Dom_C::t, typename Pr
 		  << "digest0 = " << out0_digest << "\n"
 		  << "chain length0 = " << chain_length0 << "\n"
 		  << "inp1    = " << *inp1_pt << "\n"
+	  	  << "chain length1 = " << chain_length1 << "\n"
 		  << "-------\n";
 
 	
@@ -677,4 +678,4 @@ auto collision(Problem& Pb) -> std::pair<typename Problem::Dom_C::t, typename Pr
 // g++ -flto -O3 -std=c++17  -fopenmp demos/speck32_demo.cpp -o speck32_demo -ltbb
 
 // thd0 has out = 9ace,f6f8 and inp_out[i] = ce9a,f8f6 and inp = 1,0 and inp_out[i].first = 1,0
-//AFTER unserialize thd0           has out = 9ace,f6f8 and inp_out[i] = ce9a,f8f6 and inp = 1,0 and inp_out[i].first = 1,0
+//AFTER unserialize thd0           has out = 9ace,f6f8 and inp_out[i] = ce9a,f8f6 and inp = 1,0 and inp_out[i].first = 1,
