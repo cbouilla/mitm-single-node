@@ -614,13 +614,14 @@ auto collision(Problem& Pb) -> std::pair<typename Problem::Dom_C::t, typename Pr
 		<< "tmp0   = " << *tmp0_pt << "\n"
 		<< "out0   = " << *out0_pt << "\n"
 		<< "digest = 0x" << std::hex <<  out0_digest << "\n"
-		<< "chain length = " << chain_length0 << "\n"
+		<< "chain length = " << std::dec << chain_length0 << "\n"
 		<< "-------\n";
       
 
       
       is_collision_found = dict.pop_insert(out0_digest, /* key */
 					   inp0, /* value  */
+					   chain_length0,
 					   *inp1_pt, /* save popped element here */
 					   chain_length1 /* of popped input */);
       
@@ -635,7 +636,7 @@ auto collision(Problem& Pb) -> std::pair<typename Problem::Dom_C::t, typename Pr
 		  << "digest0 = " << out0_digest << "\n"
 		  << "chain length0 = " << chain_length0 << "\n"
 		  << "inp1    = " << *inp1_pt << "\n"
-	  	  << "chain length1 = " << chain_length1 << "\n"
+	  	  << "chain length1 = " << std::dec << chain_length1 << "\n"
 		  << "-------\n";
 
 	

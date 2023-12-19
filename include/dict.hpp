@@ -47,8 +47,9 @@ struct Dict {
 
   bool pop_insert(const K& key, /* output of f or g */
 		  const V& value, /* input */
+		  uint64_t const chain_length0,
 		  V& out, /* popped input element */
-		  uint64_t& chain_length)
+		  uint64_t& chain_length1)
   {
     
 
@@ -68,10 +69,14 @@ struct Dict {
 
     /* RECALL: */
     /* <value:=input, key:=output>  in this order since value is usually larger */
+    /* popped elements */
     out = values[idx];
+    chain_length1 = chain_lengths[idx];
+    /* write the new entries */
     values[idx] = value;
     keys[idx] = key;
-    chain_lengths[idx] = chain_length;
+
+    chain_lengths[idx] = chain_length0;
 
     return flag; /* flag  == 1, if we pop a pair and its value match with the key value */
   }
