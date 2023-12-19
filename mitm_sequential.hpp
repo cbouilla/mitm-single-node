@@ -74,14 +74,6 @@ inline auto wtime() -> double /* with inline it doesn't violate one definition r
 }
 
 
-template <typename T>
-void print_array(T arr){
-  /* Would not be a better choice if we just to overload << for std::array? */
-  printf("0x");
-  for (auto& item: arr)
-    printf("%x", item);
-  printf("\n");
-}
 
 template <size_t n>
 auto is_equal(std::array<u8, n> arr1,
@@ -160,7 +152,6 @@ public:
   inline void unserialize(const u8 *in, t &x) const;        /* read this from in */
   inline void copy(const t& inp, t& out) const; /* deepcopy inp to out */
   inline int extract_1_bit(const t& inp) const;
-  inline u64 extract_k_bits(const t& inp, int k) const;
 
   u64 hash(const t &x) const;               /* return some bits from this */
   u64 hash_extra(const t &x) const ;         /* return more bits from this */
@@ -248,8 +239,8 @@ auto is_serialize_inverse_of_unserialize(Problem Pb, PRNG& prng) -> bool
    
 /* todo pass the function number. e.g. first version of (f, g) second version */
 template <typename Problem>
-void iterate_once(typename Problem::Dom_C::t* inp_pt,
-		  typename Problem::Dom_C::t* out_pt,
+void iterate_once(typename Problem::Dom_C::t& inp,
+		  typename Problem::Dom_C::t& out,
 		  Problem& Pb)
 {
   /*
@@ -259,21 +250,24 @@ void iterate_once(typename Problem::Dom_C::t* inp_pt,
   typename Problem::Dom_A::t inp_A{};
   typename Problem::Dom_A::t inp_B{};
 
-  int f_or_g = Pb.C.extract_1_bit(*inp_pt);
+  int f_or_g = Pb.C.extract_1_bit(inp);
   if (f_or_g == 1){
-    Pb.send_C_to_A(*inp_pt, inp_A);
-    Pb.f(inp_A, *out_pt);
+    Pb.send_C_to_A(inp, inp_A);
+    Pb.f(inp, out);
     ++n_f_called;
   }
   else { /* f_or_g == 0 */
-    Pb.send_C_to_B(*inp_pt, inp_B);
-    Pb.f(*out_pt, inp_B);
+    Pb.send_C_to_B(inp, inp_B);
+    Pb.f(inp_B, out);
     ++n_g_called;
   }
 }
 
 
 
+
+inline bool is_distinguished_point(u64 digest, u64 mask)
+{  return (0 == (mask & digest) ); }
 
 template<typename Problem>
 bool generate_dist_point(typename Problem::Dom_C::t& inp0, /* don't change the pointer */
@@ -291,37 +285,28 @@ bool generate_dist_point(typename Problem::Dom_C::t& inp0, /* don't change the p
    */
 
 
-
   /* copy the input to tmp, then never touch the inp again! */
-
-
   Pb.C.copy(inp0, *tmp_inp_pt);
 
-  
-  static const u64 mask = (1LL<<difficulty) - 1;
-  chain_length = 0;
-
-  /* F: Domain_C -> Domain_C, instead of C_t -> A_t -f-> C_t */
-
+  const u64 mask = (1LL<<difficulty) - 1;
+  u64 digest = 0;
   bool found_distinguished = false;
-
-  found_distinguished =
-    (0 == (mask & Pb.C.extract_k_bits(*tmp_inp_pt, difficulty))  );
-
-  /* 1 if the next function is f */
+  
 
   /* The probability of not finding a distinguished point during this loop is*/
   /* 2^{-some big k} */
   for (i64 i = 0; i < 40*(1LL<<difficulty); ++i){
-    iterate_once(tmp_inp_pt, out_pt, Pb);
+    iterate_once(*tmp_inp_pt, *out_pt, Pb);
     ++chain_length;
 
     /* we may get a dist point here */
-    found_distinguished
-      = (0 == (mask & Pb.C.extract_k_bits(*tmp_inp_pt, difficulty))  );
+    digest = Pb.C.hash(*out_pt);
+    found_distinguished = is_distinguished_point(digest, mask);
+      
 
     /* unlikely with high values of difficulty */
     if (found_distinguished) [[unlikely]]{
+      std::cout << "Found dist, digest = 0x" << std::hex << digest << "\n";
       Pb.C.serialize(*out_pt, output_bytes);
       return true; /* exit the whole function */
     }
@@ -372,14 +357,14 @@ void walk(typename Problem::Dom_C::t*& inp1_pt,
  
   if (inp1_chain_len > inp2_chain_len){
     for (size_t i = 0; i < diff_len; ++i){
-      iterate_once(inp1_pt, tmp1_pt, Pb);
+      iterate_once(*inp1_pt, *tmp1_pt, Pb);
       swap_pointers(inp1_pt, tmp1_pt);
     }
    }
  
   if (inp1_chain_len < inp2_chain_len){
     for (size_t i = 0; i < diff_len; ++i){
-      iterate_once(inp2_pt, tmp2_pt, Pb);
+      iterate_once(*inp2_pt, *tmp2_pt, Pb);
       swap_pointers(inp1_pt, tmp1_pt);
     }
   }
@@ -399,8 +384,8 @@ void walk(typename Problem::Dom_C::t*& inp1_pt,
   for (size_t i = 0; i < len; ++i){
     /* walk them together and check each time if their output are equal */
     /* return as soon equality is found */
-    iterate_once(inp1_pt, tmp1_pt, Pb);
-    iterate_once(inp2_pt, tmp2_pt, Pb);
+    iterate_once(*inp1_pt, *tmp1_pt, Pb);
+    iterate_once(*inp2_pt, *tmp2_pt, Pb);
     
     if(Pb.C.is_equal( *tmp1_pt, *tmp2_pt ))
       return; /* They are equal */
@@ -459,38 +444,22 @@ bool treat_collision(typename Problem::Dom_C::t*& inp1_pt,
 }
 
 
+template <typename Problem, typename C_t>
+void apply_f(C_t& inp, Problem& Pb){
+  C_t out{};
+
+  Pb.f(inp, out);
+  std::cout << "f(inp) = " << out << "\n";
+}
 
 template <typename Problem, typename C_t>
-void print_collision_info(C_t &inp0, C_t &out0, size_t chain_length0,
-			  C_t &inp1, C_t &out1, size_t chain_length1,
-                          Problem Pb,
-			  std::string str = "",
-			  u64 extraced = 0)
-{
-  std::cout << str << "\n";
-  bool equal_outputs = out0 == out1;
-  bool equal_inputs = inp0 == inp1;
-  std::cout << "are outputs equal? " << equal_outputs << "\n";
-  std::cout << "are inputs  equal? " << equal_inputs << "\n";
-  std::cout << "----\n";
-  std::cout << "inp0 = ";
-  Pb.C.print(inp0);
-  std::cout << "\nout0 = ";
-  Pb.C.print(out0);
-  std::cout << "chain_length0 = " << chain_length0 << "\n";
-  std::cout << "----\n";
-  std::cout << "inp1 = ";
-  Pb.C.print(inp1);
-  std::cout << "\nout1 = ";
-  Pb.C.print(out1);
-  std::cout << "chain_length1 = " << chain_length1 << "\n";
-  if (extraced)
-    std::cout << "extracted = " << extraced << "\n";
-  std::cout << "=========================\n";
+void apply_g(C_t& inp, Problem& Pb){
+  C_t out{};
 
-    
-
+  Pb.g(inp, out);
+  std::cout << "g(inp) = " << out << "\n";
 }
+
 
 
 /* todo start from here */
@@ -519,7 +488,7 @@ auto collision(Problem& Pb) -> std::pair<typename Problem::Dom_C::t, typename Pr
 
   // -----------------------------------------------------------------------------/
   // VARIABLES FOR GENERATING RANDOM DISTINGUISHED POINTS
-  int difficulty = 2; // difficulty;
+  int difficulty = 4; // difficulty;
   /* inp/out variables are used as input and output to save one 1 copy */
 
 
@@ -596,7 +565,7 @@ auto collision(Problem& Pb) -> std::pair<typename Problem::Dom_C::t, typename Pr
    *
    *********************************************************/
 
-
+  bool found_dist = false;
   
   /*------------------- Generate Distinguished Points ------------------------*/
   while (n_collisions < n_needed_collisions){
@@ -608,37 +577,46 @@ auto collision(Problem& Pb) -> std::pair<typename Problem::Dom_C::t, typename Pr
      */
     /* update F and G by changing `send_C_to_A` and `send_C_to_B` */    
     Pb.update_embedding(rng_urandom);
-    
+    /* todo reset dictionary since all values will be useless */
+
+    /* to do change the number of distinguished points before updates */
     /* After generating xy distinguished point change the iteration function */
-    for (size_t n_dist_points = 0; n_dist_points < 100; ++n_dist_points){
+    for (size_t n_dist_points = 0; n_dist_points < (1LL<<30); ++n_dist_points){
       is_collision_found = false;
       /* fill the input with a fresh random value. */
-      // Problem::Dom_C::randomize(*inp_pt); 
-      /* or use `/dev/urandom` */
-      // inp0 = read_urandom<C_t>();
-
-
       Pb.C.randomize(inp0, rng_urandom);
 
-      generate_dist_point<Problem>(inp0,
-				   tmp0_pt,
-				   out0_pt,
-				   out0_bytes,
-				   chain_length0,
-				   difficulty,
-				   Pb);
-      ++n_dist_points;
-      out0_digest = Pb.C.extract_k_bits(*out0_pt, 8*Problem::Dom_C::length);
+      chain_length0 = 0; /* DO we need to reset it? */
+      std::cout << "==================\n"
+		<< "At the beginning\n"
+		<< "inp = " << inp0 << "\n"
+		<< "out = " << *out0_pt << "(garbage from previous calculations!)\n"
+		<< "chain length = " << chain_length0 << "\n"
+		<< "-------\n";
 
-      print_collision_info(inp0, /* inp0 */
-			   *out0_pt, /* inp0 scratch buffer  */
-			   chain_length0,
-			   *inp1_pt,
-			   *out1_pt,
-			   chain_length1,
-			   Pb,
-			   "After generating distinguished point",
-			   out0_digest);
+      found_dist = generate_dist_point<Problem>(inp0,
+						tmp0_pt,
+						out0_pt,
+						out0_bytes,
+						chain_length0,
+						difficulty,
+						Pb);
+
+      if (not found_dist) [[unlikely]]
+	continue; /* skip all calculation below and try again  */
+      
+      ++n_dist_points;
+      out0_digest = Pb.C.hash(*out0_pt);
+      
+      std::cout << "After generatign dist point\n"
+		<< "Found distinguished point? " << found_dist << "\n"
+		<< "inp    = " << inp0 << "\n"
+		<< "tmp0   = " << *tmp0_pt << "\n"
+		<< "out0   = " << *out0_pt << "\n"
+		<< "digest = 0x" << std::hex <<  out0_digest << "\n"
+		<< "chain length = " << chain_length0 << "\n"
+		<< "-------\n";
+      
 
       
       is_collision_found = dict.pop_insert(out0_digest, /* key */
@@ -651,18 +629,19 @@ auto collision(Problem& Pb) -> std::pair<typename Problem::Dom_C::t, typename Pr
 	++n_collisions; 
 	bool is_false_collision = false;
 
+
+	std::cout << "A collision is found\n"
+		  << "inp0    = " << inp0 << "\n"
+		  << "digest0 = " << out0_digest << "\n"
+		  << "chain length0 = " << chain_length0 << "\n"
+		  << "inp1    = " << *inp1_pt << "\n"
+		  << "-------\n";
+
+	
 	/* respect the rule that inp0 doesn't have pointers dancing around it */
 	Pb.C.copy(inp0, *tmp0_pt); /* (*tmp0_pt) holds the input value  */
 
-
-	print_collision_info(*tmp0_pt, /* inp0 */
-			     *out0_pt, /* inp0 scratch buffer  */
-			     chain_length0,
-			     *inp1_pt,
-			     *out1_pt,
-			     chain_length1,
-			     Pb,
-			     "Before a collision treatment");
+	
 
 	
 	treat_collision<Problem>(tmp0_pt, /* inp0 */
@@ -674,14 +653,14 @@ auto collision(Problem& Pb) -> std::pair<typename Problem::Dom_C::t, typename Pr
 				 collisions_container,
 				 Pb);
 
-	print_collision_info(*tmp0_pt, /* inp0 */
-			     *out0_pt, /* inp0 scratch buffer  */
-			     chain_length0,
-			     *inp1_pt,
-			     *out1_pt,
-			     chain_length1,
-			     Pb);
 
+
+	std::cout << "After treating collision\n"
+		  << "inp0 = " << *tmp0_pt << "\n"
+		  << "out0 = " << *out0_pt << "\n"
+		  << "inp1 = " << *inp1_pt << "\n"
+		  << "out1 = " << *out1_pt << "\n"
+		  << "_______\n";
 
       }
     }

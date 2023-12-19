@@ -58,18 +58,19 @@ struct Dict {
 
     uint64_t idx = key % n_slots;
     bool flag = false;
-    ++n_elmenents; /* since we are going to add an element */
+
+    /* Found an empty slot, thus we're adding a new element  */
+    if (keys[idx] == 0)
+      ++n_elmenents; 
+    
+    if (keys[idx] == key) [[unlikely]]
+      flag = true; /* found a collision */
 
     /* RECALL: */
     /* <value:=input, key:=output>  in this order since value is usually larger */
-
-    if (keys[idx] != 0){ /* not an empyt slot */
-      flag = true;
-      out = values[idx];
-      --n_elmenents; /* we're kicking an element from the dictionary */
-    }
-    keys[idx] = key;
+    out = values[idx];
     values[idx] = value;
+    keys[idx] = key;
     chain_lengths[idx] = chain_length;
 
     return flag; /* flag  == 1, if we pop a pair and its value match with the key value */

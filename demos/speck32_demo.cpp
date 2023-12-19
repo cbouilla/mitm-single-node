@@ -5,12 +5,13 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <ostream>
 #include <stdint.h>
 #include <iostream>
 #include <array>
 #include "../mitm_sequential.hpp"
 #include "speck32.hpp"
-
+#include <iomanip>
 
 
 
@@ -18,6 +19,14 @@
 using Speck32_t = typename std::array<uint16_t , 2>;
 
 
+std::ostream& operator<<(std::ostream& os, const Speck32_t& inp )
+{
+  os << "[0x"
+     << std::hex << std::setfill('0') << std::setw(4) << inp[0]
+     << ", 0x"
+     << std::hex << std::setfill('0') << std::setw(4) << inp[1] << "]";
+  return os;
+}
 
 class SPECK_DOMAIN : AbstractDomain< Speck32_t >{
   
@@ -65,30 +74,14 @@ public:
     out[1] = in[2] | ((uint16_t ) in[3])<<8;
   }
 
-
+  
   inline auto extract_1_bit(const t& inp) const
   { return inp[0]&1;  }
+
+
+  inline uint32_t hash(const t& inp) const
+  { return inp[0] | ((uint32_t) inp[1])<<16; }
   
-  void print(const t& x) const
-  { std::cout << x[0] << x[1]; }
-  
-  inline uint32_t extract_k_bits(const t& inp, int k) const
-  {
-    /*
-     * Get the first k bits from inp (it has type  std::array<uint16, 2>)
-     */
-
-    /* How many bits we get from the first pair */
-    uint16_t b0 = std::min(16, k);
-    /* How many bits we get from the second pair */
-    uint16_t b1 = std::max(0, k-16);
-
-    uint16_t mask0 = (1<<b0) - 1;
-    uint16_t mask1 = (1<<b1) - 1;
-
-    /* maximally extrat 32 bits */
-    return (inp[0]&mask0) | ((inp[1]&mask1))<<16;
-  }
 
   inline void copy(const t& inp, t& out) const
   {
@@ -110,9 +103,6 @@ public:
     inp_out[1] = i>>16;
   }
 
-  inline void print(t& a) const{
-    printf("(0x%04x,0x%04x)\n", a[0], a[1]);
-  }
 };
 
 class Problem : AbstractProblem<SPECK_DOMAIN, SPECK_DOMAIN, SPECK_DOMAIN >{
