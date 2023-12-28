@@ -324,11 +324,11 @@ bool generate_dist_point(typename Problem::Dom_C::t& inp0, /* don't change the p
 
 template<typename Problem>
 void walk(typename Problem::Dom_C::t*& inp0_pt,
-	  typename Problem::Dom_C::t*& tmp0_pt, /* inp0 calculation buffer */
-	  const u64 inp0_chain_len,
+	  typename Problem::Dom_C::t*& out0_pt, /* inp0 calculation buffer */
+	  u64 inp0_chain_len,
           typename Problem::Dom_C::t*& inp1_pt,
-	  typename Problem::Dom_C::t*& tmp1_pt, /* inp1 calculation buffer */
-	  const u64 inp1_chain_len,
+	  typename Problem::Dom_C::t*& out1_pt, /* inp1 calculation buffer */
+	  u64 inp1_chain_len,
 	  Problem& Pb)
 {
   /* Given two inputs that lead to the same distinguished point,
@@ -339,6 +339,9 @@ void walk(typename Problem::Dom_C::t*& inp0_pt,
 
   size_t const diff_len = std::max(inp0_chain_len, inp1_chain_len)
                         - std::min(inp0_chain_len, inp1_chain_len);
+  /* After walking the longest sequences diff_len steps, both sequences need */
+  /* to walk len steps at most before finding a collision. */
+  size_t const len = std::min(inp0_chain_len, inp1_chain_len);
 
   /****************************************************************************+
    *            walk the longest sequence until they are equal                 |
@@ -355,40 +358,42 @@ void walk(typename Problem::Dom_C::t*& inp0_pt,
    ****************************************************************************/
   
  
-  if (inp0_chain_len > inp1_chain_len){
-    for (size_t i = 0; i < diff_len; ++i){
-      iterate_once(*inp0_pt, *tmp0_pt, Pb);
-      swap_pointers(inp0_pt, tmp0_pt);
-    }
-   }
- 
-  if (inp0_chain_len < inp1_chain_len){
-    for (size_t i = 0; i < diff_len; ++i){
-      iterate_once(*inp1_pt, *tmp1_pt, Pb);
-      swap_pointers(inp0_pt, tmp0_pt);
-    }
+  /* move the longest sequence until the remaining number of steps is equal */
+  /* to the shortest sequence. */
+  for (; inp0_chain_len > inp1_chain_len; --inp0_chain_len){
+    iterate_once(*inp0_pt, *out0_pt, Pb);
+    swap_pointers(inp0_pt, out0_pt);
   }
+
+  for (; inp0_chain_len < inp1_chain_len; --inp1_chain_len){
+    iterate_once(*inp1_pt, *out1_pt, Pb);
+    swap_pointers(inp1_pt, out1_pt);
+  }
+
 
   /****************************************************************************/
   /* now both inputs have equal amount of steps to reach a distinguished point */
   /* both sequences needs exactly `len` steps to reach dist point */
-  size_t len = std::min(inp0_chain_len, inp1_chain_len);
+
 
   /* Check if the two inputs are equal then we have a robin hood */
 
 
-  if(Pb.C.is_equal( *inp0_pt, *inp0_pt ))
+  if(Pb.C.is_equal( *inp0_pt, *inp1_pt ))
     return; /* Robinhood */
 
   
   for (size_t i = 0; i < len; ++i){
     /* walk them together and check each time if their output are equal */
     /* return as soon equality is found */
-    iterate_once(*inp0_pt, *tmp0_pt, Pb);
-    iterate_once(*inp1_pt, *tmp1_pt, Pb);
+    iterate_once(*inp0_pt, *out0_pt, Pb);
+    iterate_once(*inp1_pt, *out1_pt, Pb);
     
-    if(Pb.C.is_equal( *tmp0_pt, *tmp1_pt ))
+    if(Pb.C.is_equal( *out0_pt, *out1_pt ))
       return; /* They are equal */
+
+    swap_pointers(inp0_pt, out0_pt);
+    swap_pointers(inp1_pt, out1_pt);
   }
 }
 
@@ -397,10 +402,10 @@ void walk(typename Problem::Dom_C::t*& inp0_pt,
 
 template <typename Problem >
 bool treat_collision(typename Problem::Dom_C::t*& inp0_pt,
-		     typename Problem::Dom_C::t*& tmp0_pt, /* inp0 calculation buffer */
+		     typename Problem::Dom_C::t*& out0_pt, /* inp0 calculation buffer */
 		     const u64 inp0_chain_len,
 		     typename Problem::Dom_C::t*& inp1_pt,
-		     typename Problem::Dom_C::t*& tmp1_pt, /* inp1 calculation buffer */
+		     typename Problem::Dom_C::t*& out1_pt, /* inp1 calculation buffer */
 		     const u64 inp1_chain_len,
                      std::vector< std::pair<typename Problem::Dom_C::t,
 		                            typename Problem::Dom_C::t> >& container,
@@ -427,10 +432,10 @@ bool treat_collision(typename Problem::Dom_C::t*& inp0_pt,
   /* walk inp0 and inp1 just before `x` */
   /* i.e. iterate_once(inp0) = iterate_once(inp1) */
   walk<Problem>(inp0_pt,
-		tmp0_pt,
+		out0_pt,
 		inp0_chain_len,
 		inp1_pt,
-		tmp1_pt, /* inp1 calculation buffer */
+		out1_pt, /* inp1 calculation buffer */
 		inp1_chain_len,
 	        Pb);
 					   
@@ -633,7 +638,7 @@ auto collision(Problem& Pb) -> std::pair<typename Problem::Dom_C::t, typename Pr
 
 	std::cout << "A collision is found\n"
 		  << "inp0    = " << inp0 << "\n"
-		  << "digest0 = " << out0_digest << "\n"
+		  << "digest0 = 0x" << out0_digest << "\n"
 		  << "chain length0 = " << chain_length0 << "\n"
 		  << "inp1    = " << *inp1_pt << "\n"
 	  	  << "chain length1 = " << std::dec << chain_length1 << "\n"
@@ -642,7 +647,9 @@ auto collision(Problem& Pb) -> std::pair<typename Problem::Dom_C::t, typename Pr
 	
 	/* respect the rule that inp0 doesn't have pointers dancing around it */
 	Pb.C.copy(inp0, *tmp0_pt); /* (*tmp0_pt) holds the input value  */
-
+	std::cout << "saninty's check\n"
+		  << "tmp0 = " << *tmp0_pt
+		  << "\n";
 	
 
 	
@@ -657,11 +664,13 @@ auto collision(Problem& Pb) -> std::pair<typename Problem::Dom_C::t, typename Pr
 
 
 
+	bool real_collision = (*out0_pt == *out1_pt);
 	std::cout << "After treating collision\n"
 		  << "inp0 = " << *tmp0_pt << "\n"
 		  << "out0 = " << *out0_pt << "\n"
 		  << "inp1 = " << *inp1_pt << "\n"
 		  << "out1 = " << *out1_pt << "\n"
+		  << "out0 == out1? " << real_collision  << "\n"
 		  << "_______\n";
 
       }
@@ -680,3 +689,35 @@ auto collision(Problem& Pb) -> std::pair<typename Problem::Dom_C::t, typename Pr
 
 // thd0 has out = 9ace,f6f8 and inp_out[i] = ce9a,f8f6 and inp = 1,0 and inp_out[i].first = 1,0
 //AFTER unserialize thd0           has out = 9ace,f6f8 and inp_out[i] = ce9a,f8f6 and inp = 1,0 and inp_out[i].first = 1,
+
+// Robinhood issue
+// ==================
+// At the beginning
+// inp = [0xe7b5, 0x3459]
+// out = [0x64c0, 0xa5fe](garbage from previous calculations!)
+// chain length = 0
+// -------
+// Found dist, digest = 0xfda7c410
+// After generatign dist point
+// Found distinguished point? 1
+// inp    = [0xe7b5, 0x3459]
+// tmp0   = [0x8e2d, 0x245a]
+// out0   = [0xc410, 0xfda7]
+// digest = 0xfda7c410
+// chain length = 45
+// -------
+// A collision is found
+// inp0    = [0xe7b5, 0x3459]
+// digest0 = 0xfda7c410
+// chain length0 = 2d
+// inp1    = [0x8eb6, 0x7e2a]
+// chain length1 = 37
+// -------
+// saninty's check
+// tmp0 = [0xe7b5, 0x3459]
+// After treating collision
+// inp0 = [0x8eb6, 0x7e2a]
+// out0 = [0xf952, 0x0c01]
+// inp1 = [0x8eb6, 0x7e2a]
+// out1 = [0x6a0b, 0x4bf4]
+// out0 == out1? 0
