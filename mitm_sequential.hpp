@@ -490,14 +490,14 @@ auto collision(Problem& Pb) -> std::pair<typename Problem::Dom_C::t, typename Pr
   /* In order to save ourselves from copying in each step.       */
   /***************************************************************/
 
-  C_t inp0{}; /* We need to save this value, see above. */
+  C_t pre_inp0{}; /* We need to save this value, see above. */
 
   /* 1st set of buffers: Related to input0 as a starting point */
   /* either tmp0 or  output0 */
   C_t inp0_or_out0_buffer0{};
   C_t inp0_or_out0_buffer1{};
 
-  C_t* tmp0_pt    = &inp0_or_out0_buffer0;
+  C_t* inp0_pt    = &inp0_or_out0_buffer0;
   /* Always points to the region that contains the output */
   C_t* out0_pt = &inp0_or_out0_buffer1;
   u64  out0_digest = 0; /* hashed value of the output0 */
@@ -565,12 +565,12 @@ auto collision(Problem& Pb) -> std::pair<typename Problem::Dom_C::t, typename Pr
     for (size_t n_dist_points = 0; n_dist_points < (1LL<<30); ++n_dist_points){
       is_collision_found = false;
       /* fill the input with a fresh random value. */
-      Pb.C.randomize(inp0, rng_urandom);
+      Pb.C.randomize(pre_inp0, rng_urandom);
 
       chain_length0 = 0; /* DO we need to reset it? */
 
-      found_dist = generate_dist_point<Problem>(inp0,
-						tmp0_pt,
+      found_dist = generate_dist_point<Problem>(pre_inp0,
+						inp0_pt,
 						out0_pt,
 						out0_bytes,
 						chain_length0,
@@ -585,7 +585,7 @@ auto collision(Problem& Pb) -> std::pair<typename Problem::Dom_C::t, typename Pr
       
       
       is_collision_found = dict.pop_insert(out0_digest, /* key */
-					   inp0, /* value  */
+					   pre_inp0, /* value  */
 					   chain_length0,
 					   *inp1_pt, /* save popped element here */
 					   chain_length1 /* of popped input */);
@@ -595,23 +595,19 @@ auto collision(Problem& Pb) -> std::pair<typename Problem::Dom_C::t, typename Pr
 	++n_collisions;
 
         std::cout << "A collision is found\n"
-		  << "inp0    = " << inp0 << "\n"
+		  << "inp0 (starting point) = " << pre_inp0 << "\n"
 		  << "digest0 = 0x" << out0_digest << "\n"
 		  << "chain length0 = " << chain_length0 << "\n"
-		  << "inp1    = " << *inp1_pt << "\n"
+		  << "inp1 (starting point) = " << *inp1_pt << "\n"
 	  	  << "chain length1 = " << std::dec << chain_length1 << "\n"
 		  << "-------\n";
 
 	
 	/* respect the rule that inp0 doesn't have pointers dancing around it */
-	Pb.C.copy(inp0, *tmp0_pt); /* (*tmp0_pt) holds the input value  */
-	std::cout << "saninty's check\n"
-		  << "tmp0 = " << *tmp0_pt
-		  << "\n";
-	
+	Pb.C.copy(pre_inp0, *inp0_pt); /* (*tmp0_pt) holds the input value  */
 
 	
-	treat_collision<Problem>(tmp0_pt, /* inp0 */
+	treat_collision<Problem>(inp0_pt, /* inp0 */
 				 out0_pt, /* inp0 scratch buffer  */
 				 chain_length0,
 				 inp1_pt,
@@ -623,12 +619,12 @@ auto collision(Problem& Pb) -> std::pair<typename Problem::Dom_C::t, typename Pr
 
 
 	bool real_collision = (*out0_pt == *out1_pt);
-	bool is_robinhood = (*tmp0_pt == *inp1_pt);
+	bool is_robinhood = (*inp0_pt == *inp1_pt);
 
 	n_robinhoods += is_robinhood;
 	
 	std::cout << "After treating collision\n"
-		  << "inp0 = " << *tmp0_pt << "\n"
+		  << "inp0 = " << *inp0_pt << "\n"
 		  << "out0 = " << *out0_pt << "\n"
 		  << "inp1 = " << *inp1_pt << "\n"
 		  << "out1 = " << *out1_pt << "\n"
@@ -642,7 +638,7 @@ auto collision(Problem& Pb) -> std::pair<typename Problem::Dom_C::t, typename Pr
     }
   }
   /* end of work */
-  return std::pair<C_t, C_t>(*tmp0_pt, *inp1_pt); // todo wrong values
+  return std::pair<C_t, C_t>(*inp0_pt, *inp1_pt); // todo wrong values
 }
 #endif
 
