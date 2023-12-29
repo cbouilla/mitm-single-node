@@ -20,9 +20,9 @@
 #include "include/dict.hpp"
 #include <string>
 
-size_t n_f_called{0};
-size_t n_g_called{0};
-size_t n_robinhood{0};
+
+
+
 
 using u8  = uint8_t ;
 using u16 = uint16_t;
@@ -254,12 +254,10 @@ void iterate_once(typename Problem::Dom_C::t& inp,
   if (f_or_g == 1){
     Pb.send_C_to_A(inp, inp_A);
     Pb.f(inp, out);
-    ++n_f_called;
   }
   else { /* f_or_g == 0 */
     Pb.send_C_to_B(inp, inp_B);
     Pb.f(inp_B, out);
-    ++n_g_called;
   }
 }
 
@@ -306,7 +304,6 @@ bool generate_dist_point(typename Problem::Dom_C::t& inp0, /* don't change the p
 
     /* unlikely with high values of difficulty */
     if (found_distinguished) [[unlikely]]{
-      std::cout << "Found dist, digest = 0x" << std::hex << digest << "\n";
       Pb.C.serialize(*out_pt, output_bytes);
       return true; /* exit the whole function */
     }
@@ -321,7 +318,10 @@ bool generate_dist_point(typename Problem::Dom_C::t& inp0, /* don't change the p
 
 
 
-
+/* Given two inputs that lead to the same distinguished point,
+ * find the earliest collision in the sequence before the distinguished point
+ * add a drawing to illustrate this.
+ */
 template<typename Problem>
 void walk(typename Problem::Dom_C::t*& inp0_pt,
 	  typename Problem::Dom_C::t*& out0_pt, /* inp0 calculation buffer */
@@ -331,18 +331,6 @@ void walk(typename Problem::Dom_C::t*& inp0_pt,
 	  u64 inp1_chain_len,
 	  Problem& Pb)
 {
-  /* Given two inputs that lead to the same distinguished point,
-   * find the earliest collision in the sequence before the distinguished point
-   * add a drawing to illustrate this.
-   */
-  using C_t = typename Problem::Dom_C::t;
-
-  size_t const diff_len = std::max(inp0_chain_len, inp1_chain_len)
-                        - std::min(inp0_chain_len, inp1_chain_len);
-  /* After walking the longest sequences diff_len steps, both sequences need */
-  /* to walk len steps at most before finding a collision. */
-  size_t const len = std::min(inp0_chain_len, inp1_chain_len);
-
   /****************************************************************************+
    *            walk the longest sequence until they are equal                 |
    * Two chains that leads to the same distinguished point but not necessarily |
@@ -356,36 +344,29 @@ void walk(typename Problem::Dom_C::t*& inp0_pt,
    * x: the collision we're looking for                                        |
    *                                                                           |   
    ****************************************************************************/
-  
- 
+
+  /* Both sequences need at least `len` steps to reach disitinguish point. */
+  size_t const len = std::min(inp0_chain_len, inp1_chain_len);
+
   /* move the longest sequence until the remaining number of steps is equal */
   /* to the shortest sequence. */
   for (; inp0_chain_len > inp1_chain_len; --inp0_chain_len){
     iterate_once(*inp0_pt, *out0_pt, Pb);
     swap_pointers(inp0_pt, out0_pt);
   }
-
+  
   for (; inp0_chain_len < inp1_chain_len; --inp1_chain_len){
     iterate_once(*inp1_pt, *out1_pt, Pb);
     swap_pointers(inp1_pt, out1_pt);
   }
 
 
-  /****************************************************************************/
+  /*****************************************************************************/
   /* now both inputs have equal amount of steps to reach a distinguished point */
-  /* both sequences needs exactly `len` steps to reach dist point */
-
-
-  /* Check if the two inputs are equal then we have a robin hood */
-
-
-  if(Pb.C.is_equal( *inp0_pt, *inp1_pt ))
-    return; /* Robinhood */
-
-  
+  /* both sequences needs exactly `len` steps to reach distinguished point.    */
   for (size_t i = 0; i < len; ++i){
-    /* walk them together and check each time if their output are equal */
-    /* return as soon equality is found */
+    /* walk them together and check each time if their output are equal     */
+    /* return as soon equality is found. The equality could be a robinhood. */
     iterate_once(*inp0_pt, *out0_pt, Pb);
     iterate_once(*inp1_pt, *out1_pt, Pb);
     
@@ -553,13 +534,10 @@ auto collision(Problem& Pb) -> std::pair<typename Problem::Dom_C::t, typename Pr
   bool is_collision_found = false;
   size_t n_collisions = 0;
   size_t n_needed_collisions = 1LL<<20;
-
+  
   /* We should have ration 1/3 real collisions and 2/3 false collisions */
-  size_t false_collisions = 0;
-  size_t real_collisions = 0;
-  size_t n_dist_points = 0;
-
-
+  size_t n_robinhoods = 0;
+  
 
   /*********************************************************
    * surprise we're going actually use
@@ -574,8 +552,6 @@ auto collision(Problem& Pb) -> std::pair<typename Problem::Dom_C::t, typename Pr
   
   /*------------------- Generate Distinguished Points ------------------------*/
   while (n_collisions < n_needed_collisions){
-
-
 
     /* These simulations show that if 10w distinguished points are generated
      * for each version of the function, and theta = 2.25sqrt(w/n) then ...
@@ -592,12 +568,6 @@ auto collision(Problem& Pb) -> std::pair<typename Problem::Dom_C::t, typename Pr
       Pb.C.randomize(inp0, rng_urandom);
 
       chain_length0 = 0; /* DO we need to reset it? */
-      std::cout << "==================\n"
-		<< "At the beginning\n"
-		<< "inp = " << inp0 << "\n"
-		<< "out = " << *out0_pt << "(garbage from previous calculations!)\n"
-		<< "chain length = " << chain_length0 << "\n"
-		<< "-------\n";
 
       found_dist = generate_dist_point<Problem>(inp0,
 						tmp0_pt,
@@ -613,16 +583,6 @@ auto collision(Problem& Pb) -> std::pair<typename Problem::Dom_C::t, typename Pr
       ++n_dist_points;
       out0_digest = Pb.C.hash(*out0_pt);
       
-      std::cout << "After generatign dist point\n"
-		<< "Found distinguished point? " << found_dist << "\n"
-		<< "inp    = " << inp0 << "\n"
-		<< "tmp0   = " << *tmp0_pt << "\n"
-		<< "out0   = " << *out0_pt << "\n"
-		<< "digest = 0x" << std::hex <<  out0_digest << "\n"
-		<< "chain length = " << std::dec << chain_length0 << "\n"
-		<< "-------\n";
-      
-
       
       is_collision_found = dict.pop_insert(out0_digest, /* key */
 					   inp0, /* value  */
@@ -632,11 +592,9 @@ auto collision(Problem& Pb) -> std::pair<typename Problem::Dom_C::t, typename Pr
       
       if (is_collision_found) [[unlikely]]{
 	/* todo show the results of collisions */
-	++n_collisions; 
-	bool is_false_collision = false;
+	++n_collisions;
 
-
-	std::cout << "A collision is found\n"
+        std::cout << "A collision is found\n"
 		  << "inp0    = " << inp0 << "\n"
 		  << "digest0 = 0x" << out0_digest << "\n"
 		  << "chain length0 = " << chain_length0 << "\n"
@@ -665,12 +623,19 @@ auto collision(Problem& Pb) -> std::pair<typename Problem::Dom_C::t, typename Pr
 
 
 	bool real_collision = (*out0_pt == *out1_pt);
+	bool is_robinhood = (*tmp0_pt == *inp1_pt);
+
+	n_robinhoods += is_robinhood;
+	
 	std::cout << "After treating collision\n"
 		  << "inp0 = " << *tmp0_pt << "\n"
 		  << "out0 = " << *out0_pt << "\n"
 		  << "inp1 = " << *inp1_pt << "\n"
 		  << "out1 = " << *out1_pt << "\n"
 		  << "out0 == out1? " << real_collision  << "\n"
+		  << "robinhood? " << is_robinhood  << "\n"
+		  << "#collisions = " << std::dec << n_collisions << "\n"
+		  << "#robinhood = "  << std::dec << n_robinhoods << "\n"
 		  << "_______\n";
 
       }
@@ -687,37 +652,3 @@ auto collision(Problem& Pb) -> std::pair<typename Problem::Dom_C::t, typename Pr
 // compiling
 // g++ -flto -O3 -std=c++17  -fopenmp demos/speck32_demo.cpp -o speck32_demo -ltbb
 
-// thd0 has out = 9ace,f6f8 and inp_out[i] = ce9a,f8f6 and inp = 1,0 and inp_out[i].first = 1,0
-//AFTER unserialize thd0           has out = 9ace,f6f8 and inp_out[i] = ce9a,f8f6 and inp = 1,0 and inp_out[i].first = 1,
-
-// Robinhood issue
-// ==================
-// At the beginning
-// inp = [0xe7b5, 0x3459]
-// out = [0x64c0, 0xa5fe](garbage from previous calculations!)
-// chain length = 0
-// -------
-// Found dist, digest = 0xfda7c410
-// After generatign dist point
-// Found distinguished point? 1
-// inp    = [0xe7b5, 0x3459]
-// tmp0   = [0x8e2d, 0x245a]
-// out0   = [0xc410, 0xfda7]
-// digest = 0xfda7c410
-// chain length = 45
-// -------
-// A collision is found
-// inp0    = [0xe7b5, 0x3459]
-// digest0 = 0xfda7c410
-// chain length0 = 2d
-// inp1    = [0x8eb6, 0x7e2a]
-// chain length1 = 37
-// -------
-// saninty's check
-// tmp0 = [0xe7b5, 0x3459]
-// After treating collision
-// inp0 = [0x8eb6, 0x7e2a]
-// out0 = [0xf952, 0x0c01]
-// inp1 = [0x8eb6, 0x7e2a]
-// out1 = [0x6a0b, 0x4bf4]
-// out0 == out1? 0
