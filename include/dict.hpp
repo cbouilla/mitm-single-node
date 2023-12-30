@@ -10,9 +10,8 @@
 #include <vector>
 
 
-    
+namespace mitm {
 template <typename K, typename V> 
-
 struct Dict {
 
 
@@ -81,5 +80,7 @@ struct Dict {
     return flag; /* flag  == 1, if we pop a pair and its value match with the key value */
   }
 };
+  
+}    
 
 #endif //MITM_SEQUENTIAL_DICT_HPP

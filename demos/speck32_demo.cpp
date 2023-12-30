@@ -13,6 +13,14 @@
 #include "speck32.hpp"
 #include <iomanip>
 
+using u8  = uint8_t ;
+using u16 = uint16_t;
+using u32 = uint32_t;
+using u64 = uint64_t;
+using i8  = int8_t ;
+using i16 = int16_t;
+using i32 = int32_t;
+using i64 = int64_t;
 
 
 
@@ -28,7 +36,7 @@ std::ostream& operator<<(std::ostream& os, const Speck32_t& inp )
   return os;
 }
 
-class SPECK_DOMAIN : AbstractDomain< Speck32_t >{
+class SPECK_DOMAIN : mitm::AbstractDomain< Speck32_t >{
   
 public:
   using t = Speck32_t;
@@ -38,7 +46,7 @@ public:
   inline bool is_equal(const t& x, const t& y) const
   { return x == y;  }
 
-  void randomize(t& x, PRNG& prng) const
+  void randomize(t& x, mitm::PRNG& prng) const
   {
     x[0] ^= prng.rand();
     x[1] ^= (prng.rand())>>16;
@@ -105,7 +113,7 @@ public:
 
 };
 
-class Problem : AbstractProblem<SPECK_DOMAIN, SPECK_DOMAIN, SPECK_DOMAIN >{
+class Problem : mitm::AbstractProblem<SPECK_DOMAIN, SPECK_DOMAIN, SPECK_DOMAIN >{
 private:
   u64 version_send_C_to_A = 0;
   u64 version_send_C_to_B = 0;
@@ -146,7 +154,7 @@ public:
     out_B[0] ^= (version_send_C_to_B>>16);
   }
 
-  void update_embedding(PRNG& rng) {
+  void update_embedding(mitm::PRNG& rng) {
     /*
      * Change `send_C_to_A` and `send_C_to_B` functions
      */
@@ -161,6 +169,6 @@ public:
 int main(int argc, char* argv[])
 {
   Problem Pb;
-  collision<Problem>(Pb);
+  mitm::collision<Problem>(Pb);
 }
 

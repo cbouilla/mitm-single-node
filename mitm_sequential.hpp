@@ -20,10 +20,11 @@
 #include "include/dict.hpp"
 #include <string>
 
+#include <fstream>
+#include <chrono>
 
-
-
-
+namespace mitm
+{
 using u8  = uint8_t ;
 using u16 = uint16_t;
 using u32 = uint32_t;
@@ -42,7 +43,7 @@ using i64 = int64_t;
 /* Setting up the problem                                                     */
 /******************************************************************************/
 /* source : https://gist.github.com/mortenpi/9745042 */
-#include <fstream>
+
 template<class T>
 T read_urandom()
 {
@@ -60,7 +61,7 @@ T read_urandom()
 
 
 
-#include <chrono>
+
 inline auto wtime() -> double /* with inline it doesn't violate one definition rule */
 {
 
@@ -640,11 +641,16 @@ auto collision(Problem& Pb) -> std::pair<typename Problem::Dom_C::t, typename Pr
   /* end of work */
   return std::pair<C_t, C_t>(*inp0_pt, *inp1_pt); // todo wrong values
 }
-#endif
+
 
 // to use parallel sort sort
 // install tbb lib
 // sudo apt install libtbb-dev
 // compiling
+// g++ -ggdb -O0 -std=c++17 demos/speck32_demo.cpp -o speck32_demo -ltbb
 // g++ -flto -O3 -std=c++17  -fopenmp demos/speck32_demo.cpp -o speck32_demo -ltbb
 
+  
+}
+
+#endif
