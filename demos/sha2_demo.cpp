@@ -105,46 +105,62 @@ class SHA2_OUT_DOMAIN : mitm::AbstractDomain<SHA2_out_repr>
   
 };
 
+
+/*
+ *
+ */
+
 class SHA2_INP_DOMAIN : mitm::AbstractDomain<SHA2_inp_repr>
 {
   const static int length = 64;
+  const static size_t n_elements = -1;
+
+  // todo add randomize function
+  inline
+  bool is_equal(SHA2_inp_repr& x, SHA2_inp_repr& y) const
+  {
+    return (0 == std::memcmp(x.data, y.data, 64));
+  }
+
+  inline
+  void serialize(const SHA2_inp_repr& in, u8* out) const
+  {
+    std::memcpy(out, in.data, 64);
+  }
+
+  inline
+  void unserialize(const u8* in, SHA2_inp_repr& out) const
+  {
+    std::memcpy(out.data, in, 64);
+  }
+
+
+  inline
+  void copy(const SHA2_inp_repr& in, SHA2_inp_repr& out)
+  {
+    std::memcpy(out.data, in.data, 64);
+  }
+
+  inline
+  int extract_1_bit(const SHA2_inp_repr& inp) const
+  {
+    return (1&inp.data[0]);
+  }
+  
+  inline
+  u64 hash(const SHA2_inp_repr& x) const
+  {
+    /* in case we are only extracting one word digest */
+    return (static_cast<u64>(x.data[0]) << 0 * 8) |
+           (static_cast<u64>(x.data[1]) << 1 * 8) |    
+           (static_cast<u64>(x.data[2]) << 2 * 8) |    
+           (static_cast<u64>(x.data[3]) << 3 * 8) |
+           (static_cast<u64>(x.data[4]) << 4 * 8) |
+           (static_cast<u64>(x.data[5]) << 5 * 8) |
+           (static_cast<u64>(x.data[6]) << 6 * 8) |
+           (static_cast<u64>(x.data[7]) << 7 * 8) ;
+  }
+
 };
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
