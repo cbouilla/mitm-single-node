@@ -169,9 +169,6 @@ template<typename Domain_A, typename Domain_B, typename Domain_C>
 class AbstractProblem {
 public:
   /* these lines have to be retyped again */
-  Domain_A A;
-  Domain_B B;
-  Domain_C C;
   using C_t = typename Domain_C::t;
   using A_t = typename Domain_A::t;
   using B_t = typename Domain_B::t;
