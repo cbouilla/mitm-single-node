@@ -5,6 +5,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
+#include <iomanip>
 #include <array>
 
 /* We would like to call C function defined in `sha256.c` */
@@ -48,6 +49,8 @@ struct SHA2_out_repr {
   }
 };
 
+
+
 struct SHA2_inp_repr {
   u8* data; /* output */
 
@@ -61,6 +64,29 @@ struct SHA2_inp_repr {
     delete[] data;
   }
 };
+
+
+/* Implement << operator for SHA2_inp_repr and SHA2_out_repr */
+std::ostream& operator<<(std::ostream& os, const SHA2_inp_repr& x)
+{
+  
+  for (size_t i = 0; i < 64;++i) {
+    os << std::setfill('0') << std::setw(2) <<  std::hex << x.data[i] << ", ";
+  }
+  return os;
+}
+
+
+
+std::ostream& operator<<(std::ostream& os, const SHA2_out_repr& x)
+{
+  
+  for (size_t i = 0; i < NBYTES_DIGEST; ++i) {
+    os << std::setfill('0') << std::setw(8) <<  std::hex << x.state[i] << ", ";
+  }
+  return os;
+}
+
 
 
 
@@ -216,11 +242,18 @@ class SHA2_Problem
     : mitm::AbstractProblem<SHA2_INP_DOMAIN, SHA2_INP_DOMAIN, SHA2_OUT_DOMAIN>
 {
 public:
+
+  
+  SHA2_INP_DOMAIN A; /* Input related functions */
+  SHA2_INP_DOMAIN B; /* Input related functions */
+  SHA2_OUT_DOMAIN C; /* Output related functions */
+  
   using C_t = SHA2_out_repr;
-  /* It's a special case that B_t = A_t */
   using B_t = SHA2_inp_repr;
   using A_t = SHA2_inp_repr;
-
+  
+  static const int f_eq_g = 1;
+  
   inline
   void f(const A_t& x, C_t& y) const
   {
@@ -257,6 +290,9 @@ private:
 
 int main(int argc, char* argv[])
 {
+  SHA2_inp_repr inp;
+  std::cout << "inp = " << inp << "\n";
   SHA2_Problem Pb;
-  mitm::collision<SHA2_Problem>(Pb);
+  mitm::collision(Pb);
 }
+

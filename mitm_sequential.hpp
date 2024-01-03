@@ -173,18 +173,17 @@ public:
   using A_t = typename Domain_A::t;
   using B_t = typename Domain_B::t;
 
-  void f(const A_t &x, C_t &y) const;  /* y <--- f(x) */
-  void g(const B_t &x, C_t &y) const;  /* y <--- g(x) */
-
-
   AbstractProblem() {
     // enforce that A is a subclass of AbstractDomain
     static_assert(std::is_base_of<AbstractDomain<typename Domain_A::t>, Domain_A>::value,
 		  "A not derived from AbstractDomain");
   }
+  
+  inline void f(const A_t &x, C_t &y) const;  /* y <--- f(x) */
+  inline void g(const B_t &x, C_t &y) const;  /* y <--- g(x) */
+  inline void send_C_to_A(C_t& inp_C, A_t& out_A) const;
+  inline void send_C_to_B(C_t& inp_C, B_t& out_B) const;
 
-  void send_C_to_A(C_t& inp_C, A_t& out_A) const;
-  void send_C_to_B(C_t& inp_C, B_t& out_B) const;
   /* changes the behavior of the two above functions */
   void update_embedding(PRNG& rng); 
 };
@@ -205,7 +204,7 @@ template <typename Problem>
 auto is_serialize_inverse_of_unserialize(Problem Pb, PRNG& prng) -> bool
 {
   /// Test that unserialize(serialize(r)) == r for a randomly chosen r
-  using C_t = typename Problem::Dom_C::t;
+  using C_t = typename Problem::C_t;
   const size_t length = Problem::Dom_C::length;
 
   C_t orig{};
@@ -235,16 +234,16 @@ auto is_serialize_inverse_of_unserialize(Problem Pb, PRNG& prng) -> bool
    
 /* todo pass the function number. e.g. first version of (f, g) second version */
 template <typename Problem>
-void iterate_once(typename Problem::Dom_C::t& inp,
-		  typename Problem::Dom_C::t& out,
+void iterate_once(typename Problem::C_t& inp,
+		  typename Problem::C_t& out,
 		  Problem& Pb)
 {
   /*
    * Do 1 iteration inp =(f/g)=> out, write the output in the address pointed
    * by out_pt.
    */
-  typename Problem::Dom_A::t inp_A{};
-  typename Problem::Dom_A::t inp_B{};
+  typename Problem::A_t inp_A{};
+  typename Problem::A_t inp_B{};
 
   int f_or_g = Pb.C.extract_1_bit(inp);
   if (f_or_g == 1){
@@ -264,9 +263,9 @@ inline bool is_distinguished_point(u64 digest, u64 mask)
 {  return (0 == (mask & digest) ); }
 
 template<typename Problem>
-bool generate_dist_point(typename Problem::Dom_C::t& inp0, /* don't change the pointer */
-			 typename Problem::Dom_C::t*& tmp_inp_pt,
-			 typename Problem::Dom_C::t*& out_pt,
+bool generate_dist_point(typename Problem::C_t& inp0, /* don't change the pointer */
+			 typename Problem::C_t*& tmp_inp_pt,
+			 typename Problem::C_t*& out_pt,
                          u8* const output_bytes, /* size Problem::Dom_C::length */
 			 u64& chain_length, /* write chain lenght here */
 			 const i64 difficulty, /* #bits are zero at the beginning */
@@ -319,11 +318,11 @@ bool generate_dist_point(typename Problem::Dom_C::t& inp0, /* don't change the p
  * add a drawing to illustrate this.
  */
 template<typename Problem>
-void walk(typename Problem::Dom_C::t*& inp0_pt,
-	  typename Problem::Dom_C::t*& out0_pt, /* inp0 calculation buffer */
+void walk(typename Problem::C_t*& inp0_pt,
+	  typename Problem::C_t*& out0_pt, /* inp0 calculation buffer */
 	  u64 inp0_chain_len,
-          typename Problem::Dom_C::t*& inp1_pt,
-	  typename Problem::Dom_C::t*& out1_pt, /* inp1 calculation buffer */
+          typename Problem::C_t*& inp1_pt,
+	  typename Problem::C_t*& out1_pt, /* inp1 calculation buffer */
 	  u64 inp1_chain_len,
 	  Problem& Pb)
 {
@@ -377,20 +376,59 @@ void walk(typename Problem::Dom_C::t*& inp0_pt,
 
 
 
+/*
+ * Inputs normall live in A or B, however, the collision only uses C.
+ * This function sends the two input to A AND B, if it's not possible, e.g. we can only return 
+ */
+template <typename Problem>
+bool send_2_A_and_B(typename Problem::C_t& inp0_C,
+		    typename Problem::C_t& inp1_C,
+		    typename Problem::A_t& inp_A,
+		    typename Problem::B_t& inp_B,
+		    Problem& Pb)
+{
+  /* when f is same as g, then there is no point in distinguishingg between */
+  /* the two functions. */
+  if constexpr(Pb.f_eq_g == 1){
+    Pb.send_C_to_A(inp0_C, inp_A);
+    Pb.send_C_to_B(inp1_C, inp_B);
+    return true;
+  }
+  
+  /* otherwise, the collision has to be between f and g */
+  int f_or_g = Pb.C.extract_1_bit(inp0_C);
+  if (f_or_g == 1){ 
+    if (Pb.C.extract_1_bit(inp1_C) == 0){ /* a sensible case*/
+      Pb.send_C_to_A(inp0_C, inp_A);
+      Pb.send_C_to_B(inp1_C, inp_B);
+    }
+  } else { /* Pb.C.extract_1_bit(inp0_C) == 0*/
+    if (Pb.C.extract_1_bit(inp1_C) == 1){ /* a sensible case*/
+      // good case
+      Pb.send_C_to_A(inp1_C, inp_A);
+      Pb.send_C_to_B(inp0_C, inp_B);
+      return true;
+    }
+  }
+  return false;
+}
+
+
+
 template <typename Problem >
-bool treat_collision(typename Problem::Dom_C::t*& inp0_pt,
-		     typename Problem::Dom_C::t*& out0_pt, /* inp0 calculation buffer */
+bool treat_collision(typename Problem::C_t*& inp0_pt,
+		     typename Problem::C_t*& out0_pt, /* inp0 calculation buffer */
 		     const u64 inp0_chain_len,
-		     typename Problem::Dom_C::t*& inp1_pt,
-		     typename Problem::Dom_C::t*& out1_pt, /* inp1 calculation buffer */
+		     typename Problem::C_t*& inp1_pt,
+		     typename Problem::C_t*& out1_pt, /* inp1 calculation buffer */
 		     const u64 inp1_chain_len,
-                     std::vector< std::pair<typename Problem::Dom_C::t,
-		                            typename Problem::Dom_C::t> >& container,
+                     std::vector< std::pair<typename Problem::A_t,
+		                            typename Problem::B_t> >& container,
 		     Problem& Pb)
 {
-  using A_t = typename Problem::Dom_A::t;
-  using B_t = typename Problem::Dom_B::t;
-  using C_t = typename Problem::Dom_C::t;
+  using A_t = typename Problem::A_t;
+  using B_t = typename Problem::B_t;
+  using C_t = typename Problem::C_t;
 
 
   /****************************************************************************+
@@ -417,10 +455,19 @@ bool treat_collision(typename Problem::Dom_C::t*& inp0_pt,
 	        Pb);
 					   
 
-  /* assume copying */
-  std::pair<C_t, C_t> p{*inp0_pt, *inp1_pt};
+
+
+  /* send inp{0,1} to inp_A and inp_B. If it is not possible, return false.*/
+  A_t inp_A{};
+  B_t inp_B{};
+  bool is_potential_collision = send_2_A_and_B(*inp0_pt, *inp1_pt,
+					       inp_A,     inp_B,
+					       Pb);
+
+  if (not is_potential_collision)
+    return false; /* don't add this pair */
   
-  /* todo here we should add more tests */
+  std::pair<A_t, B_t> p{inp_A, inp_B};
   container.push_back(std::move(p)); 
   return true;
 }
@@ -446,11 +493,11 @@ void apply_g(C_t& inp, Problem& Pb){
 
 /* todo start from here */
 template<typename Problem>
-auto collision(Problem& Pb) -> std::pair<typename Problem::Dom_C::t, typename Problem::Dom_C::t>
+auto collision(Problem& Pb) -> std::pair<typename Problem::C_t, typename Problem::C_t>
 {
-  using A_t = typename Problem::Dom_A::t;
-  using B_t = typename Problem::Dom_B::t;
-  using C_t = typename Problem::Dom_C::t;
+  using A_t = typename Problem::A_t;
+  using B_t = typename Problem::B_t;
+  using C_t = typename Problem::C_t;
   PRNG rng_urandom;
 
   
@@ -537,8 +584,8 @@ auto collision(Problem& Pb) -> std::pair<typename Problem::Dom_C::t, typename Pr
 
   /*********************************************************
    * surprise we're going actually use
-   * void iterate_once(typename Problem::Dom_C::t* inp_pt,
-   *		  typename Problem::Dom_C::t* out_pt,
+   * void iterate_once(typename Problem::C_t* inp_pt,
+   *		  typename Problem::C_t* out_pt,
    *		  Iterate_F<Problem>& F,
    *		  Iterate_G<Problem>& G)
    *
@@ -600,7 +647,7 @@ auto collision(Problem& Pb) -> std::pair<typename Problem::Dom_C::t, typename Pr
 
 	
 	/* respect the rule that inp0 doesn't have pointers dancing around it */
-	Pb.C.copy(pre_inp0, *inp0_pt); /* (*tmp0_pt) holds the input value  */
+	Pb.C.copy(pre_inp0, *inp0_pt); /* (*tmp0_ptO) holds the input value  */
 
 	
 	treat_collision<Problem>(inp0_pt, /* inp0 */
@@ -614,8 +661,8 @@ auto collision(Problem& Pb) -> std::pair<typename Problem::Dom_C::t, typename Pr
 
 
 
-	bool real_collision = (*out0_pt == *out1_pt);
-	bool is_robinhood = (*inp0_pt == *inp1_pt);
+	bool real_collision = Pb.C.is_equal(*out0_pt, *out1_pt);
+	bool is_robinhood = Pb.A.is_equal(*inp0_pt, *inp1_pt);
 
 	n_robinhoods += is_robinhood;
 	
