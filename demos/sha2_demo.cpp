@@ -247,6 +247,7 @@ public:
   SHA2_INP_DOMAIN A; /* Input related functions */
   SHA2_INP_DOMAIN B; /* Input related functions */
   SHA2_OUT_DOMAIN C; /* Output related functions */
+
   
   using C_t = SHA2_out_repr;
   using B_t = SHA2_inp_repr;

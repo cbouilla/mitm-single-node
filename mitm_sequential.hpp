@@ -205,11 +205,11 @@ auto is_serialize_inverse_of_unserialize(Problem Pb, PRNG& prng) -> bool
 {
   /// Test that unserialize(serialize(r)) == r for a randomly chosen r
   using C_t = typename Problem::C_t;
-  const size_t length = Problem::Dom_C::length;
+  const size_t length = Pb.C.length;
 
   C_t orig{};
   C_t copy{};
-  std::array<u8, length> serial;
+  u8 serial[length];
 
   size_t n_elements = Pb.C.n_elements;
 
@@ -222,7 +222,7 @@ auto is_serialize_inverse_of_unserialize(Problem Pb, PRNG& prng) -> bool
     Pb.C.serialize(orig, serial);
     Pb.C.unserialize(serial, copy);
 
-    if (copy != orig)
+    if (Pb.C.is_equal(copy, orig))
       return false; /* there is a bug in the adaptationof the code  */
   }
 
@@ -243,16 +243,16 @@ void iterate_once(typename Problem::C_t& inp,
    * by out_pt.
    */
   typename Problem::A_t inp_A{};
-  typename Problem::A_t inp_B{};
+  typename Problem::B_t inp_B{};
 
   int f_or_g = Pb.C.extract_1_bit(inp);
   if (f_or_g == 1){
     Pb.send_C_to_A(inp, inp_A);
-    Pb.f(inp, out);
+    Pb.f(inp_A, out);
   }
   else { /* f_or_g == 0 */
     Pb.send_C_to_B(inp, inp_B);
-    Pb.f(inp_B, out);
+    Pb.g(inp_B, out);
   }
 }
 
@@ -566,9 +566,6 @@ auto collision(Problem& Pb) -> std::pair<typename Problem::C_t, typename Problem
   // TODO FATAL if A_t =/= B_t we will have an error because treat collision uses std::pair<C_t, C_t
 
 
-
-
-
   /**************************** Collisions counters ***************************/
   /* How many steps does it take to get a distinguished point from  an input */
   size_t chain_length0 = 0;
@@ -662,7 +659,7 @@ auto collision(Problem& Pb) -> std::pair<typename Problem::C_t, typename Problem
 
 
 	bool real_collision = Pb.C.is_equal(*out0_pt, *out1_pt);
-	bool is_robinhood = Pb.A.is_equal(*inp0_pt, *inp1_pt);
+	bool is_robinhood = Pb.C.is_equal(*inp0_pt, *inp1_pt);
 
 	n_robinhoods += is_robinhood;
 	
