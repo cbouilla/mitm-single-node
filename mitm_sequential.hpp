@@ -3,7 +3,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
-#include <cstring>
+#include<cstring>
 #include <ios>
 #include <cmath>
 #include <iostream>
@@ -16,10 +16,14 @@
 #include <algorithm>
 #include <omp.h>
 #include "include/dict.hpp"
+#include "include/memory.hpp"
 #include <string>
 
 #include <fstream>
 #include <chrono>
+
+
+
 
 namespace mitm
 {
@@ -516,7 +520,11 @@ auto collision(Problem& Pb) -> std::pair<typename Problem::C_t, typename Problem
 
 
   // --------------------------------- INIT -----------------------------------/
-  size_t n_bytes = 1LL<<34; /* */
+  size_t n_bytes = 0.4*get_available_memory(); /* */
+  std::cout << "Going to use "
+	    << std::dec << n_bytes
+	    << "bytes for dictionary!\n";
+  
   Dict<u64, C_t> dict{n_bytes}; /* create a dictionary */
   std::cout << "Initialized a dict with " << dict.n_slots << " slots\n";
 
