@@ -26,16 +26,16 @@ set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -fsanitize=address")
 cmake_print_variables(CMAKE_CXX_COMPILER_ID)
 
 # it's a bit ugly, since it won't generate agnostic Makefile
-if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
-    # GCC specific options
-    add_compile_options( -fanalyzer)
-elseif (CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-    # Clang specific options
-    add_compile_options(-Rpass=.*)
-endif()
+# if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+#     # GCC specific options
+#     add_compile_options( -fanalyzer)
+# elseif (CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+#     # Clang specific options
+#     add_compile_options(-Rpass=.*)
+# endif()
 
 # Find the TBB package
-find_package(TBB REQUIRED)
+# find_package(TBB REQUIRED)
 
 include_directories(include)
 
@@ -46,10 +46,17 @@ add_executable(speck32_demo
         include/dict.hpp
         demos/speck32.hpp)
 
-# Link TBB to your executable
-target_link_libraries(speck32_demo PRIVATE TBB::tbb)
-#[[
-add_executable(test demos/basic_demo.cpp mitm_sequential.hpp
-        include/dict.hpp
-        include/dict.hpp
-        demos/basic_demo.cpp)]]
+add_executable(sha2_demo
+        demos/sha2_demo.cpp
+	demos/sha256.c
+        mitm_sequential.hpp
+        include/dict.hpp)
+
+
+# # Link TBB to your executable
+# target_link_libraries(speck32_demo PRIVATE TBB::tbb)
+# #[[
+# add_executable(test demos/basic_demo.cpp mitm_sequential.hpp
+#         include/dict.hpp
+#         include/dict.hpp
+#         demos/basic_demo.cpp)]]

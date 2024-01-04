@@ -10,13 +10,11 @@
 #include <iterator>
 #include <stdio.h>
 #include <assert.h>
-#include <pstl/glue_execution_defs.h>
 #include <tuple>
 #include <utility>
 #include <vector>
 #include <algorithm>
 #include <omp.h>
-#include <execution>
 #include "include/dict.hpp"
 #include <string>
 
@@ -173,6 +171,8 @@ public:
   using A_t = typename Domain_A::t;
   using B_t = typename Domain_B::t;
 
+  static const int f_eq_g;
+  
   AbstractProblem() {
     // enforce that A is a subclass of AbstractDomain
     static_assert(std::is_base_of<AbstractDomain<typename Domain_A::t>, Domain_A>::value,

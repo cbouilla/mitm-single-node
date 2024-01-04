@@ -119,16 +119,17 @@ private:
   u64 version_send_C_to_B = 0;
 
 public:
-  using Dom_A = SPECK_DOMAIN;
-  using Dom_B = SPECK_DOMAIN;
-  using Dom_C = SPECK_DOMAIN;
+  // using Dom_A = SPECK_DOMAIN;
+  // using Dom_B = SPECK_DOMAIN;
+  // using Dom_C = SPECK_DOMAIN;
   SPECK_DOMAIN A;
   SPECK_DOMAIN B;
   SPECK_DOMAIN C;
   using A_t = typename SPECK_DOMAIN::t;
   using B_t = typename SPECK_DOMAIN::t;
   using C_t = typename SPECK_DOMAIN::t;
-
+  static const int f_eq_g = 0;
+  
   void f(const A_t &x, C_t &y) const
   {
     static std::array<uint16_t, 2> inpt_text{0, 0};
