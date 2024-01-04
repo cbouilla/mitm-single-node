@@ -222,8 +222,14 @@ auto is_serialize_inverse_of_unserialize(Problem Pb, PRNG& prng) -> bool
     Pb.C.serialize(orig, serial);
     Pb.C.unserialize(serial, copy);
 
-    if (Pb.C.is_equal(copy, orig))
+    if (not Pb.C.is_equal(copy, orig)){
+      /* todo throw exception */
+      std::cout << "Error at testing serialization:\n"
+		<< "orig = " << orig << "\n"
+		<< "copy = " << copy << "\n";
       return false; /* there is a bug in the adaptationof the code  */
+    }
+      
   }
 
   return true;
@@ -602,7 +608,7 @@ auto collision(Problem& Pb) -> std::pair<typename Problem::C_t, typename Problem
 
     /* to do change the number of distinguished points before updates */
     /* After generating xy distinguished point change the iteration function */
-    for (size_t n_dist_points = 0; n_dist_points < (1LL<<30); ++n_dist_points){
+    for (size_t n_dist_points = 0; n_dist_points < (1LL<<31); ++n_dist_points){
       is_collision_found = false;
       /* fill the input with a fresh random value. */
       Pb.C.randomize(pre_inp0, rng_urandom);

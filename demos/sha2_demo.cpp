@@ -26,7 +26,7 @@ using i16 = int16_t;
 using i32 = int32_t;
 using i64 = int64_t;
 
-#define NWORDS_DIGEST 8
+#define NWORDS_DIGEST 1
 #define WORD_SIZE 4 // bytes
 #define NBYTES_DIGEST (NWORDS_DIGEST * WORD_SIZE)
 /*
@@ -81,7 +81,7 @@ std::ostream& operator<<(std::ostream& os, const SHA2_inp_repr& x)
 std::ostream& operator<<(std::ostream& os, const SHA2_out_repr& x)
 {
   
-  for (size_t i = 0; i < NBYTES_DIGEST; ++i) {
+  for (size_t i = 0; i < NWORDS_DIGEST; ++i) {
     os << std::setfill('0') << std::setw(8) <<  std::hex << x.state[i] << ", ";
   }
   return os;
@@ -100,29 +100,27 @@ public:
   // In template: 't' is a private member of 'mitm::AbstractDomain<SHA2_out_repr>'
   using t = SHA2_out_repr;
   
-  const static int length = NWORDS_DIGEST;
-  const static size_t n_elements = (1LL<<32)<<length;
+  const static int length = NBYTES_DIGEST;
+  int a[NBYTES_DIGEST];
+  
+  const static size_t n_elements = (1LL<<length)*8;
   /* todo: randomize */
   void randomize(t& x, mitm::PRNG& prng) const
   {
-    u32 data[8]; /* store 256 bits of random data  */
-    data[0] = prng.rand();
-    data[1] = prng.rand();
-    data[2] = prng.rand();
-    data[3] = prng.rand();
-    data[4] = prng.rand();
-    data[5] = prng.rand();
-    data[6] = prng.rand();
-    data[7] = prng.rand();
+    u32 data[NWORDS_DIGEST];
+    for(int i = 0; i<NWORDS_DIGEST; ++i )
+      data[i] = prng.rand();      
 
-    std::memcpy(x.state, data, 32);
+    std::memcpy(x.state, data, NBYTES_DIGEST);
   }
 
   
   inline
   bool is_equal(t& x, t& y) const
   {
-    return (0 == std::memcmp(x.state, y.state, NBYTES_DIGEST));
+   
+    
+    return ( std::memcmp(x.state, y.state, NBYTES_DIGEST) == 0);
   }
 
   inline
@@ -292,7 +290,12 @@ private:
 int main(int argc, char* argv[])
 {
   SHA2_inp_repr inp;
-  std::cout << "inp = " << inp << "\n";
+  std::cout << "dummy inp (only allocation is used) = " << inp << "\n";
+
+  SHA2_out_repr out;
+  std::cout << "dummy out (only allocation is used) = " << out << "\n";
+
+  
   SHA2_Problem Pb;
   mitm::collision(Pb);
 }
