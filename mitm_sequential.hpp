@@ -21,7 +21,12 @@
 
 #include <fstream>
 #include <chrono>
+#include <source_location>
+#include <string_view>
 
+
+
+ 
 
 
 
@@ -520,11 +525,10 @@ auto collision(Problem& Pb) -> std::pair<typename Problem::C_t, typename Problem
 
 
   // --------------------------------- INIT -----------------------------------/
-  size_t n_bytes = 0.4*get_available_memory(); /* */
+  size_t n_bytes =  0.8 * get_available_memory(); /* */
   std::cout << "Going to use "
 	    << std::dec << n_bytes
 	    << "bytes for dictionary!\n";
-  
   Dict<u64, C_t> dict{n_bytes}; /* create a dictionary */
   std::cout << "Initialized a dict with " << dict.n_slots << " slots\n";
 
@@ -534,7 +538,7 @@ auto collision(Problem& Pb) -> std::pair<typename Problem::C_t, typename Problem
   int difficulty = 4; // difficulty;
   /* inp/out variables are used as input and output to save one 1 copy */
 
-
+  std::cout << "before while loop\n";  
   /***************************************************************/
   /* when generating a distinguished point we have:              */
   /*  1)   inp0           =f/g=> out0                            */
@@ -603,20 +607,20 @@ auto collision(Problem& Pb) -> std::pair<typename Problem::C_t, typename Problem
    *********************************************************/
 
   bool found_dist = false;
-  
+
   /*------------------- Generate Distinguished Points ------------------------*/
   while (n_collisions < n_needed_collisions){
-
     /* These simulations show that if 10w distinguished points are generated
      * for each version of the function, and theta = 2.25sqrt(w/n) then ...
      */
     /* update F and G by changing `send_C_to_A` and `send_C_to_B` */    
     Pb.update_embedding(rng_urandom);
+
     /* todo reset dictionary since all values will be useless */
 
     /* to do change the number of distinguished points before updates */
     /* After generating xy distinguished point change the iteration function */
-    for (size_t n_dist_points = 0; n_dist_points < (1LL<<31); ++n_dist_points){
+    for (size_t n_dist_points = 0; n_dist_points < (1LL<<28); ++n_dist_points){
       is_collision_found = false;
       /* fill the input with a fresh random value. */
       Pb.C.randomize(pre_inp0, rng_urandom);

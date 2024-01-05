@@ -36,33 +36,28 @@ using i64 = int64_t;
  * II: Destructor
  */
 struct SHA2_out_repr {
-  u32* state; /* output */
+  u32 state[NWORDS_DIGEST]; /* output */
 
   /* Constructor */
-  SHA2_out_repr() : state{new u32[NWORDS_DIGEST]} { }
-  /* It could've been written as:
-   * SHA2_out_repr(){ state = new u32[NBYTEST_DIGEST]; }
-   */
-  ~SHA2_out_repr()
-  {
-    delete[] state; 
+  SHA2_out_repr()  {
+    for (size_t i = 0; i < NWORDS_DIGEST; ++i)
+      state[i] = 0;
   }
+
+
 };
 
 
 
 struct SHA2_inp_repr {
-  u8* data; /* output */
+  u8 data[64]; /* output */
 
   /* Constructor */
-  SHA2_inp_repr() : data{new u8[64]} {}
-  /* It could've been written as:
-   * SHA2_inp_repr(){ state = new u8[64]; }
-   */
-  ~SHA2_inp_repr()
-  {
-    delete[] data;
+  SHA2_inp_repr()  {
+    for (size_t i = 0; i < 64; ++i)
+      data[i] = 0;
   }
+
 };
 
 
@@ -71,7 +66,7 @@ std::ostream& operator<<(std::ostream& os, const SHA2_inp_repr& x)
 {
   
   for (size_t i = 0; i < 64;++i) {
-    os << std::setfill('0') << std::setw(2) <<  std::hex << x.data[i] << ", ";
+    os << "0x" << std::setfill('0') << std::setw(2) <<  std::hex << x.data[i] << ", ";
   }
   return os;
 }
@@ -82,7 +77,7 @@ std::ostream& operator<<(std::ostream& os, const SHA2_out_repr& x)
 {
   
   for (size_t i = 0; i < NWORDS_DIGEST; ++i) {
-    os << std::setfill('0') << std::setw(8) <<  std::hex << x.state[i] << ", ";
+    os << "0x" << std::setfill('0') << std::setw(8) <<  std::hex << x.state[i] << ", ";
   }
   return os;
 }
@@ -152,9 +147,10 @@ public:
   u64 hash(const t& x) const
   {
     /* in case we are only extracting one word digest */
-    constexpr size_t _2nd_idx = std::min(NWORDS_DIGEST, 1);
-
-    return (static_cast<u64>(x.state[_2nd_idx]) << WORD_SIZE) | x.state[0];
+    constexpr size_t _2nd_idx = std::min(NWORDS_DIGEST - 1, 1);
+    constexpr  size_t cond_shift = std::min(NWORDS_DIGEST - 1, 1);
+    return (static_cast<u64>(x.state[_2nd_idx]) << WORD_SIZE*cond_shift)
+            | x.state[0];
   }
 
   

@@ -36,9 +36,12 @@ struct Dict {
 
 
     keys.resize(n_slots);
-    values.resize(n_slots);
-    chain_lengths.resize(n_slots);
+    std::cout << "Done resizing keys\n";
     
+    values.resize(n_slots);
+    std::cout << "Done resizing values\n";
+    chain_lengths.resize(n_slots);
+    std::cout << "Done resizing chain\n";
     /* fill values with zeros */
     std::fill(keys.begin(), keys.end(), 0);
     std::fill(chain_lengths.begin(), chain_lengths.end(), 0);
