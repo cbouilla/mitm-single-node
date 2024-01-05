@@ -564,6 +564,8 @@ auto collision(Problem& Pb) -> std::pair<typename Problem::C_t, typename Problem
   u64  out0_digest = 0; /* hashed value of the output0 */
   /* Recall: Problem::Dom_C::length = #needed bytes to encode an element of C_t */
   u8 out0_bytes[Pb.C.length];
+  A_t inp_A;
+  B_t inp_B;
 
 
   /* 2nd set of buffers: Related to input1 as a starting point */
@@ -664,7 +666,6 @@ auto collision(Problem& Pb) -> std::pair<typename Problem::C_t, typename Problem
 	/* respect the rule that inp0 doesn't have pointers dancing around it */
 	Pb.C.copy(pre_inp0, *inp0_pt); /* (*tmp0_ptO) holds the input value  */
 
-	
 	treat_collision<Problem>(inp0_pt, /* inp0 */
 				 out0_pt, /* inp0 scratch buffer  */
 				 chain_length0,
@@ -680,17 +681,32 @@ auto collision(Problem& Pb) -> std::pair<typename Problem::C_t, typename Problem
 	bool is_robinhood = Pb.C.is_equal(*inp0_pt, *inp1_pt);
 
 	n_robinhoods += is_robinhood;
+
 	
+	Pb.send_C_to_A(*inp0_pt,  inp_A);
+	Pb.send_C_to_B(*inp1_pt,  inp_B);
 	std::cout << "After treating collision\n"
-		  << "inp0 = " << *inp0_pt << "\n"
-		  << "out0 = " << *out0_pt << "\n"
-		  << "inp1 = " << *inp1_pt << "\n"
-		  << "out1 = " << *out1_pt << "\n"
+		  << "inp0:C = " << *inp0_pt << "\n"
+		  << "out0   = " << *out0_pt << "\n"
+		  << "inp1:C = " << *inp1_pt << "\n"
+		  << "out1   = " << *out1_pt << "\n"
 		  << "out0 == out1? " << real_collision  << "\n"
 		  << "robinhood? " << is_robinhood  << "\n"
 		  << "#collisions = " << std::dec << n_collisions << "\n"
-		  << "#robinhood = "  << std::dec << n_robinhoods << "\n"
-		  << "_______\n";
+		  << "#robinhood = "  << std::dec << n_robinhoods << "\n";
+		 
+
+	printf("inp0:A = ");
+	for (int j = 0; j<64; ++j)
+	  printf("0x%02x, ", inp_A.data[j]);
+	std::cout << "\n";
+
+	printf("inp0:B = ");
+	for (int j = 0; j<64; ++j)
+	  printf("0x%02x, ", inp_B.data[j]);
+	std::cout << "\n";
+	
+	std::cout << "____________\n";
 
       }
     }
