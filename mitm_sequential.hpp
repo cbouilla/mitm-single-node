@@ -21,14 +21,14 @@
 
 #include <fstream>
 #include <chrono>
-#include <source_location>
-#include <string_view>
 
-
-
+// void* operator new(std::size_t size)
+// {
+//   /* Primitve way to track memory allocation */
+//   std::cout << "Allocated " << size << " bytes\n";
+//   return std::malloc(size);
+// }
  
-
-
 
 namespace mitm
 {
@@ -525,11 +525,12 @@ auto collision(Problem& Pb) -> std::pair<typename Problem::C_t, typename Problem
 
 
   // --------------------------------- INIT -----------------------------------/
-  size_t n_bytes =  0.8 * get_available_memory(); /* */
+  size_t n_bytes = 0.75*get_available_memory(); /* */
   std::cout << "Going to use "
 	    << std::dec << n_bytes
 	    << "bytes for dictionary!\n";
-  Dict<u64, C_t> dict{n_bytes}; /* create a dictionary */
+  
+  Dict<u64, C_t, Problem> dict{n_bytes}; /* create a dictionary */
   std::cout << "Initialized a dict with " << dict.n_slots << " slots\n";
 
 
@@ -538,7 +539,7 @@ auto collision(Problem& Pb) -> std::pair<typename Problem::C_t, typename Problem
   int difficulty = 4; // difficulty;
   /* inp/out variables are used as input and output to save one 1 copy */
 
-  std::cout << "before while loop\n";  
+
   /***************************************************************/
   /* when generating a distinguished point we have:              */
   /*  1)   inp0           =f/g=> out0                            */
@@ -564,8 +565,6 @@ auto collision(Problem& Pb) -> std::pair<typename Problem::C_t, typename Problem
   u64  out0_digest = 0; /* hashed value of the output0 */
   /* Recall: Problem::Dom_C::length = #needed bytes to encode an element of C_t */
   u8 out0_bytes[Pb.C.length];
-  A_t inp_A;
-  B_t inp_B;
 
 
   /* 2nd set of buffers: Related to input1 as a starting point */
@@ -578,12 +577,15 @@ auto collision(Problem& Pb) -> std::pair<typename Problem::C_t, typename Problem
   /* Always points to the region that contains the output */
   C_t* out1_pt = &inp1_or_out1_buffer1;
 
-
+  /* ---------------------------------------------------------------------- */
+  A_t inp_A{};
+  B_t inp_B{};
+  
 
   /* Store the results of collisions here */
   /* a:A_t -f-> x <-g- b:B_t */ 
   std::vector< std::pair<A_t, B_t> >  collisions_container{};
-  // TODO FATAL if A_t =/= B_t we will have an error because treat collision uses std::pair<C_t, C_t
+
 
 
   /**************************** Collisions counters ***************************/
@@ -610,19 +612,21 @@ auto collision(Problem& Pb) -> std::pair<typename Problem::C_t, typename Problem
 
   bool found_dist = false;
 
+  std::cout << "about to enter a while loop\n";
   /*------------------- Generate Distinguished Points ------------------------*/
+  // while (n_collisions < 1){
   while (n_collisions < n_needed_collisions){
+
     /* These simulations show that if 10w distinguished points are generated
      * for each version of the function, and theta = 2.25sqrt(w/n) then ...
      */
     /* update F and G by changing `send_C_to_A` and `send_C_to_B` */    
     Pb.update_embedding(rng_urandom);
-
     /* todo reset dictionary since all values will be useless */
 
     /* to do change the number of distinguished points before updates */
     /* After generating xy distinguished point change the iteration function */
-    for (size_t n_dist_points = 0; n_dist_points < (1LL<<28); ++n_dist_points){
+    for (size_t n_dist_points = 0; n_dist_points < (1LL<<31); ++n_dist_points){
       is_collision_found = false;
       /* fill the input with a fresh random value. */
       Pb.C.randomize(pre_inp0, rng_urandom);
@@ -636,19 +640,30 @@ auto collision(Problem& Pb) -> std::pair<typename Problem::C_t, typename Problem
 						chain_length0,
 						difficulty,
 						Pb);
+      out0_digest = Pb.C.hash(*out0_pt);
 
+      // std::cout << "After generatign dist point\n"
+      // 		<< "Found distinguished point? " << found_dist << "\n"
+      // 		<< "inp    = " << pre_inp0 << "\n"
+      // 		<< "inp0   = " << *inp0_pt << "\n"
+      // 		<< "out0   = " << *out0_pt << "\n"
+      // 		<< "digest = 0x" << std::hex <<  out0_digest << "\n"
+      // 		<< "chain length = " << std::dec << chain_length0 << "\n"
+      // 		<< "-------\n";
+      
       if (not found_dist) [[unlikely]]
 	continue; /* skip all calculation below and try again  */
       
       ++n_dist_points;
-      out0_digest = Pb.C.hash(*out0_pt);
+
       
       
       is_collision_found = dict.pop_insert(out0_digest, /* key */
 					   pre_inp0, /* value  */
 					   chain_length0,
 					   *inp1_pt, /* save popped element here */
-					   chain_length1 /* of popped input */);
+					   chain_length1, /* of popped input */
+					   Pb);
       
       if (is_collision_found) [[unlikely]]{
 	/* todo show the results of collisions */
@@ -666,6 +681,7 @@ auto collision(Problem& Pb) -> std::pair<typename Problem::C_t, typename Problem
 	/* respect the rule that inp0 doesn't have pointers dancing around it */
 	Pb.C.copy(pre_inp0, *inp0_pt); /* (*tmp0_ptO) holds the input value  */
 
+	
 	treat_collision<Problem>(inp0_pt, /* inp0 */
 				 out0_pt, /* inp0 scratch buffer  */
 				 chain_length0,
@@ -680,33 +696,27 @@ auto collision(Problem& Pb) -> std::pair<typename Problem::C_t, typename Problem
 	bool real_collision = Pb.C.is_equal(*out0_pt, *out1_pt);
 	bool is_robinhood = Pb.C.is_equal(*inp0_pt, *inp1_pt);
 
+	  
 	n_robinhoods += is_robinhood;
-
 	
-	Pb.send_C_to_A(*inp0_pt,  inp_A);
-	Pb.send_C_to_B(*inp1_pt,  inp_B);
 	std::cout << "After treating collision\n"
-		  << "inp0:C = " << *inp0_pt << "\n"
-		  << "out0   = " << *out0_pt << "\n"
-		  << "inp1:C = " << *inp1_pt << "\n"
-		  << "out1   = " << *out1_pt << "\n"
+		  << "inp0 = " << *inp0_pt << "\n"
+		  << "out0 = " << *out0_pt << "\n"
+		  << "inp1 = " << *inp1_pt << "\n"
+		  << "out1 = " << *out1_pt << "\n"
 		  << "out0 == out1? " << real_collision  << "\n"
+		  << "diges0 == digest1? "
 		  << "robinhood? " << is_robinhood  << "\n"
 		  << "#collisions = " << std::dec << n_collisions << "\n"
-		  << "#robinhood = "  << std::dec << n_robinhoods << "\n";
-		 
+		  << "#robinhood = "  << std::dec << n_robinhoods << "\n"
+		  << "\n";
 
-	printf("inp0:A = ");
-	for (int j = 0; j<64; ++j)
-	  printf("0x%02x, ", inp_A.data[j]);
-	std::cout << "\n";
+        Pb.send_C_to_A(*inp0_pt, inp_A);
+	Pb.send_C_to_B(*inp1_pt, inp_B);
+	std::cout << "inp_A = " << inp_A << "\n"
+		  << "inp_B = " << inp_B << "\n"
+		  << "____________________\n";
 
-	printf("inp0:B = ");
-	for (int j = 0; j<64; ++j)
-	  printf("0x%02x, ", inp_B.data[j]);
-	std::cout << "\n";
-	
-	std::cout << "____________\n";
 
       }
     }

@@ -11,7 +11,7 @@
 
 
 namespace mitm {
-template <typename K, typename V> 
+template <typename K, typename V, typename Problem> 
 struct Dict {
 
 
@@ -51,7 +51,8 @@ struct Dict {
 		  const V& value, /* input */
 		  uint64_t const chain_length0,
 		  V& out, /* popped input element */
-		  uint64_t& chain_length1)
+		  uint64_t& chain_length1,
+		  Problem& Pb)
   {
     
 
@@ -69,15 +70,15 @@ struct Dict {
     if (keys[idx] == key) [[unlikely]]
       flag = true; /* found a collision */
 
+
     /* RECALL: */
     /* <value:=input, key:=output>  in this order since value is usually larger */
     /* popped elements */
-    out = values[idx];
+    Pb.C.copy(values[idx], out); // out = values[idx];
+    Pb.C.copy(value, values[idx]); // values[idx] = value;
     chain_length1 = chain_lengths[idx];
     /* write the new entries */
-    values[idx] = value;
     keys[idx] = key;
-
     chain_lengths[idx] = chain_length0;
 
     return flag; /* flag  == 1, if we pop a pair and its value match with the key value */

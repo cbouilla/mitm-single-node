@@ -26,14 +26,11 @@ using i16 = int16_t;
 using i32 = int32_t;
 using i64 = int64_t;
 
-#define NWORDS_DIGEST 1
+#define NWORDS_DIGEST 2
 #define WORD_SIZE 4 // bytes
 #define NBYTES_DIGEST (NWORDS_DIGEST * WORD_SIZE)
 /*
  * repr is an encapsulation of whatever data used.
- * It should have
- * I : Constructor
- * II: Destructor
  */
 struct SHA2_out_repr {
   u32 state[NWORDS_DIGEST]; /* output */
@@ -43,8 +40,6 @@ struct SHA2_out_repr {
     for (size_t i = 0; i < NWORDS_DIGEST; ++i)
       state[i] = 0;
   }
-
-
 };
 
 
@@ -100,21 +95,17 @@ public:
   
   const static size_t n_elements = (1LL<<length)*8;
   /* todo: randomize */
+  inline
   void randomize(t& x, mitm::PRNG& prng) const
   {
-    u32 data[NWORDS_DIGEST];
     for(int i = 0; i<NWORDS_DIGEST; ++i )
-      data[i] = prng.rand();      
-
-    std::memcpy(x.state, data, NBYTES_DIGEST);
+      x.state[i] = prng.rand();
   }
 
   
   inline
   bool is_equal(t& x, t& y) const
   {
-   
-    
     return ( std::memcmp(x.state, y.state, NBYTES_DIGEST) == 0);
   }
 
@@ -149,7 +140,7 @@ public:
     /* in case we are only extracting one word digest */
     constexpr size_t _2nd_idx = std::min(NWORDS_DIGEST - 1, 1);
     constexpr  size_t cond_shift = std::min(NWORDS_DIGEST - 1, 1);
-    return (static_cast<u64>(x.state[_2nd_idx]) << WORD_SIZE*cond_shift)
+    return (static_cast<u64>(x.state[_2nd_idx]) << 8*WORD_SIZE*cond_shift)
             | x.state[0];
   }
 

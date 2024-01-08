@@ -13,7 +13,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON) # Compiler command json
 
 # common compiler option (between clang and gcc, not sure about the others)
 # add_compile_options(-ggdb -Wall -Wextra -pedantic -fsanitize=address)
-add_compile_options(-ggdb -Wall -Wextra -pedantic)
+add_compile_options(-ggdb -Wall -Wextra -pedantic -O3 -flto)
 # Needed this, other wise it won't link
 # set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -fsanitize=address")
 set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS}")
