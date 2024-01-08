@@ -43,11 +43,11 @@ cmake_print_variables(CMAKE_CXX_COMPILER_ID)
 include_directories(include)
 
 
-# add_executable(speck32_demo
-#         demos/speck32_demo.cpp
-#         mitm_sequential.hpp
-#         include/dict.hpp
-#         demos/speck32.hpp)
+add_executable(speck32_demo
+               demos/speck32_demo.cpp
+	       mitm_sequential.hpp
+	       include/dict.hpp
+               demos/speck32.hpp)
 
 add_executable(sha2_demo
         demos/sha2_demo.cpp

@@ -22,13 +22,6 @@
 #include <fstream>
 #include <chrono>
 
-// void* operator new(std::size_t size)
-// {
-//   /* Primitve way to track memory allocation */
-//   std::cout << "Allocated " << size << " bytes\n";
-//   return std::malloc(size);
-// }
- 
 
 namespace mitm
 {
@@ -602,10 +595,11 @@ auto collision(Problem& Pb) -> std::pair<typename Problem::C_t, typename Problem
   /* Always points to the region that contains the output */
   C_t* out1_pt = &inp1_or_out1_buffer1;
 
-  /* ---------------------------------------------------------------------- */
+  /* Use these variables to print the full collision */
   A_t inp_A{};
   B_t inp_B{};
-  
+  u8 inp_A_serial[Pb.A.length];
+  u8 inp_B_serial[Pb.B.length];
 
   /* Store the results of collisions here */
   /* a:A_t -f-> x <-g- b:B_t */ 
@@ -639,6 +633,8 @@ auto collision(Problem& Pb) -> std::pair<typename Problem::C_t, typename Problem
   size_t n_distinguished_points = 0;
   constexpr size_t interval = (1LL<<15);
   constexpr size_t interval_mod = interval - 1;
+  double collision_timer = wtime();
+  
   std::cout << "about to enter a while loop\n";
   /*------------------- Generate Distinguished Points ------------------------*/
   // while (n_collisions < 1){
@@ -701,6 +697,7 @@ auto collision(Problem& Pb) -> std::pair<typename Problem::C_t, typename Problem
 	++n_collisions;
 
         std::cout << "\nA collision is found\n"
+		  << "It took " << (wtime() - collision_timer) << " sec\n"
 		  << "inp0 (starting point) = " << pre_inp0 << "\n"
 		  << "digest0 = 0x" << out0_digest << "\n"
 		  << "chain length0 = " << chain_length0 << "\n"
@@ -708,7 +705,7 @@ auto collision(Problem& Pb) -> std::pair<typename Problem::C_t, typename Problem
 	  	  << "chain length1 = " << std::dec << chain_length1 << "\n"
 		  << "-------\n";
 
-	
+	collision_timer = wtime();
 	/* respect the rule that inp0 doesn't have pointers dancing around it */
 	Pb.C.copy(pre_inp0, *inp0_pt); /* (*tmp0_ptO) holds the input value  */
 
@@ -742,11 +739,25 @@ auto collision(Problem& Pb) -> std::pair<typename Problem::C_t, typename Problem
 		  << "#robinhood = "  << std::dec << n_robinhoods << "\n"
 		  << "\n";
 
+
+	/* Get the complete inputs as they live in A and B */
         Pb.send_C_to_A(*inp0_pt, inp_A);
 	Pb.send_C_to_B(*inp1_pt, inp_B);
-	std::cout << "inp_A = " << inp_A << "\n"
-		  << "inp_B = " << inp_B << "\n"
-		  << "____________________\n";
+	Pb.A.serialize(inp_A, inp_A_serial);
+	Pb.B.serialize(inp_B, inp_B_serial);
+
+
+	printf("inp_A = ");
+	for(size_t j = 0; j < Pb.A.length; ++j)
+	  printf("%02x, ", inp_A_serial[j]);
+	puts("");
+
+	printf("inp_B = ");
+	for(size_t j = 0; j < Pb.B.length; ++j)
+	  printf("%02x, ", inp_B_serial[j]);
+	puts("\n________________________________________\n");
+
+	
 
 
       }
