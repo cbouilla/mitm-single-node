@@ -16,7 +16,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON) # Compiler command json
 add_compile_options(-ggdb -Wall -Wextra -pedantic -O3 -flto)
 # Needed this, other wise it won't link
 # set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -fsanitize=address")
-set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS}")
+set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -flto")
 
 
 # The little bird says clang has a nicer error report than gcc!

@@ -79,7 +79,31 @@ inline auto wtime() -> double /* with inline it doesn't violate one definition r
 
 }
 
+ /*
+  * Print how long does it took to do n iterations.
+  */
+inline static void print_interval_time(size_t n)
+{
+  static double previous_time = -1;
+  double current_time = wtime();
+  double elapsed = current_time - previous_time;
+  
+  if (previous_time == -1){
+    previous_time = wtime();
+    return; /* 1st measurement */
+  }
 
+
+  printf("%lu=2^%0.2f iter took:"
+	 " %0.2f sec, i.e. %0.2f = 2^%0.2f iter/sec\n",
+	 n, std::log2(n),
+	 elapsed, n/elapsed, std::log2(n/elapsed) );
+
+  previous_time = wtime();
+  
+  
+}
+  
 
 template <size_t n>
 auto is_equal(std::array<u8, n> arr1,
@@ -527,11 +551,12 @@ auto collision(Problem& Pb) -> std::pair<typename Problem::C_t, typename Problem
   // --------------------------------- INIT -----------------------------------/
   size_t n_bytes = 0.75*get_available_memory(); /* */
   std::cout << "Going to use "
-	    << std::dec << n_bytes
-	    << "bytes for dictionary!\n";
+	    << std::dec << n_bytes << " bytes = 2^"<< std::log2(n_bytes)
+	    << " bytes for dictionary!\n";
   
   Dict<u64, C_t, Problem> dict{n_bytes}; /* create a dictionary */
-  std::cout << "Initialized a dict with " << dict.n_slots << " slots\n";
+  std::cout << "Initialized a dict with " << dict.n_slots << " slots = 2^"
+	    << std::log2(dict.n_slots) << " slots\n";
 
 
   // -----------------------------------------------------------------------------/
@@ -611,7 +636,9 @@ auto collision(Problem& Pb) -> std::pair<typename Problem::C_t, typename Problem
    *********************************************************/
 
   bool found_dist = false;
-
+  size_t n_distinguished_points = 0;
+  constexpr size_t interval = (1LL<<15);
+  constexpr size_t interval_mod = interval - 1;
   std::cout << "about to enter a while loop\n";
   /*------------------- Generate Distinguished Points ------------------------*/
   // while (n_collisions < 1){
@@ -641,7 +668,11 @@ auto collision(Problem& Pb) -> std::pair<typename Problem::C_t, typename Problem
 						difficulty,
 						Pb);
       out0_digest = Pb.C.hash(*out0_pt);
+      ++n_distinguished_points;
 
+      if (n_distinguished_points % interval_mod == 0) /* n_dist mod 2^25 =?= 0 */
+	print_interval_time(interval);
+	
       // std::cout << "After generatign dist point\n"
       // 		<< "Found distinguished point? " << found_dist << "\n"
       // 		<< "inp    = " << pre_inp0 << "\n"

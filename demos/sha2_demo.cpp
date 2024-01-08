@@ -162,6 +162,7 @@ public:
   void randomize(t& x, mitm::PRNG& prng) const
   {
     u64 data[8]; /* store 512 bits of random data  */
+    
     data[0] = prng.rand();
     data[1] = prng.rand();
     data[2] = prng.rand();
