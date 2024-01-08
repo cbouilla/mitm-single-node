@@ -350,7 +350,7 @@ bool generate_dist_point(typename Problem::C_t& inp0, /* don't change the pointe
  * add a drawing to illustrate this.
  */
 template<typename Problem>
-void walk(typename Problem::C_t*& inp0_pt,
+bool walk(typename Problem::C_t*& inp0_pt,
 	  typename Problem::C_t*& out0_pt, /* inp0 calculation buffer */
 	  u64 inp0_chain_len,
           typename Problem::C_t*& inp1_pt,
@@ -398,11 +398,12 @@ void walk(typename Problem::C_t*& inp0_pt,
     iterate_once(*inp1_pt, *out1_pt, Pb);
     
     if(Pb.C.is_equal( *out0_pt, *out1_pt ))
-      return; /* They are equal */
+      return true; /* They are equal */
 
     swap_pointers(inp0_pt, out0_pt);
     swap_pointers(inp1_pt, out1_pt);
   }
+  return false;
 }
 
 
@@ -446,7 +447,11 @@ bool send_2_A_and_B(typename Problem::C_t& inp0_C,
 }
 
 
-
+/*
+ * return false if the two inputs leads to a robinhood or collision on the same
+ * function (when f =/= g). todo: walk should also return false when it could
+ * not get a collisison
+ */
 template <typename Problem >
 bool treat_collision(typename Problem::C_t*& inp0_pt,
 		     typename Problem::C_t*& out0_pt, /* inp0 calculation buffer */
@@ -478,24 +483,33 @@ bool treat_collision(typename Problem::C_t*& inp0_pt,
    ****************************************************************************/
   /* walk inp0 and inp1 just before `x` */
   /* i.e. iterate_once(inp0) = iterate_once(inp1) */
-  walk<Problem>(inp0_pt,
-		out0_pt,
-		inp0_chain_len,
-		inp1_pt,
-		out1_pt, /* inp1 calculation buffer */
-		inp1_chain_len,
-	        Pb);
-					   
+  /* return false when walking the two inputs don't collide */
+  bool found_collision = walk<Problem>(inp0_pt,
+				       out0_pt,
+				       inp0_chain_len,
+				       inp1_pt,
+				       out1_pt,
+				       inp1_chain_len,
+				       Pb);
 
+  /* The two inputs don't lead to the same output */
+  if (not found_collision) 
+    return false;
 
+  /* If found a robinhood, don't  */
+  if ( Pb.C.is_equal(*inp0_pt, *inp1_pt) )
+    return false; 
 
   /* send inp{0,1} to inp_A and inp_B. If it is not possible, return false.*/
   A_t inp_A{};
   B_t inp_B{};
+
+
+  /* when f=/= g the one of the input should an A input while the other is B's */
+  /* If this is not satisfied return */
   bool is_potential_collision = send_2_A_and_B(*inp0_pt, *inp1_pt,
 					       inp_A,     inp_B,
 					       Pb);
-
   if (not is_potential_collision)
     return false; /* don't add this pair */
   
@@ -709,57 +723,55 @@ auto collision(Problem& Pb) -> std::pair<typename Problem::C_t, typename Problem
 	/* respect the rule that inp0 doesn't have pointers dancing around it */
 	Pb.C.copy(pre_inp0, *inp0_pt); /* (*tmp0_ptO) holds the input value  */
 
-	
-	treat_collision<Problem>(inp0_pt, /* inp0 */
-				 out0_pt, /* inp0 scratch buffer  */
-				 chain_length0,
-				 inp1_pt,
-				 out1_pt,
-				 chain_length1,
-				 collisions_container,
-				 Pb);
+	/* i.e. when f =/= g then one of the inputs has to  correspond to A
+	 * and the other has to correspond to B. The order doesn't matter.
+	 * todo: it should also neglect robinhood.
+	 */
+	bool is_potential_coll = treat_collision<Problem>(inp0_pt,
+							  out0_pt,
+							  chain_length0,
+							  inp1_pt,
+							  out1_pt,
+							  chain_length1,
+							  collisions_container,
+							  Pb);
 
 
 
 	bool real_collision = Pb.C.is_equal(*out0_pt, *out1_pt);
 	bool is_robinhood = Pb.C.is_equal(*inp0_pt, *inp1_pt);
-
-	  
 	n_robinhoods += is_robinhood;
-	
-	std::cout << "After treating collision\n"
-		  << "inp0 = " << *inp0_pt << "\n"
-		  << "out0 = " << *out0_pt << "\n"
-		  << "inp1 = " << *inp1_pt << "\n"
-		  << "out1 = " << *out1_pt << "\n"
-		  << "out0 == out1? " << real_collision  << "\n"
-		  << "diges0 == digest1? "
-		  << "robinhood? " << is_robinhood  << "\n"
-		  << "#collisions = " << std::dec << n_collisions << "\n"
-		  << "#robinhood = "  << std::dec << n_robinhoods << "\n"
-		  << "\n";
+
+	if (is_potential_coll){ 
+	  std::cout << "After treating collision\n"
+		    << "inp0 = " << *inp0_pt << "\n"
+		    << "out0 = " << *out0_pt << "\n"
+		    << "inp1 = " << *inp1_pt << "\n"
+		    << "out1 = " << *out1_pt << "\n"
+		    << "out0 == out1? " << real_collision  << "\n"
+		    << "diges0 == digest1? "
+		    << "robinhood? " << is_robinhood  << "\n"
+		    << "#collisions = " << std::dec << n_collisions << "\n"
+		    << "#robinhood = "  << std::dec << n_robinhoods << "\n"
+		    << "\n";
 
 
-	/* Get the complete inputs as they live in A and B */
-        Pb.send_C_to_A(*inp0_pt, inp_A);
-	Pb.send_C_to_B(*inp1_pt, inp_B);
-	Pb.A.serialize(inp_A, inp_A_serial);
-	Pb.B.serialize(inp_B, inp_B_serial);
+	  /* Get the complete inputs as they live in A and B */
+	  std::cout << "container length " << collisions_container.size() << "\n"
+		    << "is a good collisision? " << is_potential_coll << "\n";
+	  Pb.A.serialize(collisions_container.back().first, inp_A_serial);
+	  Pb.B.serialize(collisions_container.back().second, inp_B_serial);
 
+	  printf("inp_A = ");
+	  for(size_t j = 0; j < Pb.A.length; ++j)
+	    printf("%02x, ", inp_A_serial[j]);
+	  puts("");
 
-	printf("inp_A = ");
-	for(size_t j = 0; j < Pb.A.length; ++j)
-	  printf("%02x, ", inp_A_serial[j]);
-	puts("");
-
-	printf("inp_B = ");
-	for(size_t j = 0; j < Pb.B.length; ++j)
-	  printf("%02x, ", inp_B_serial[j]);
-	puts("\n________________________________________\n");
-
-	
-
-
+	  printf("inp_B = ");
+	  for(size_t j = 0; j < Pb.B.length; ++j)
+	    printf("%02x, ", inp_B_serial[j]);
+	  puts("\n________________________________________\n");
+	}
       }
     }
   }
