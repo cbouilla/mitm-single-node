@@ -13,7 +13,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON) # Compiler command json
 
 # common compiler option (between clang and gcc, not sure about the others)
 # add_compile_options(-ggdb -Wall -Wextra -pedantic -fsanitize=address)
-add_compile_options(-ggdb -Wall -Wextra -pedantic -O3 -flto)
+add_compile_options(-march=native -ggdb -Wall -Wextra -pedantic -O3 -flto)
 # Needed this, other wise it won't link
 # set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -fsanitize=address")
 set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -flto")
@@ -52,6 +52,12 @@ include_directories(include)
 add_executable(sha2_demo
         demos/sha2_demo.cpp
 	demos/sha256.c
+        mitm_sequential.hpp
+        include/dict.hpp)
+
+add_executable(sha2-x86_demo
+        demos/sha2_demo.cpp
+	demos/sha256_x86.c
         mitm_sequential.hpp
         include/dict.hpp)
 

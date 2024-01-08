@@ -94,11 +94,11 @@ inline static void print_interval_time(size_t n)
   }
 
 
-  printf("%lu=2^%0.2f iter took:"
-	 " %0.2f sec, i.e. %0.2f = 2^%0.2f iter/sec\n",
+  printf("\r%lu=2^%0.2f iter took:"
+	 " %0.2f sec, i.e. %0.2f = 2^%0.2f iter/sec",
 	 n, std::log2(n),
 	 elapsed, n/elapsed, std::log2(n/elapsed) );
-
+  fflush(stdout);
   previous_time = wtime();
   
   
@@ -549,7 +549,7 @@ auto collision(Problem& Pb) -> std::pair<typename Problem::C_t, typename Problem
 
 
   // --------------------------------- INIT -----------------------------------/
-  size_t n_bytes = 0.75*get_available_memory(); /* */
+  size_t n_bytes = 0.5*get_available_memory(); /* */
   std::cout << "Going to use "
 	    << std::dec << n_bytes << " bytes = 2^"<< std::log2(n_bytes)
 	    << " bytes for dictionary!\n";
@@ -561,7 +561,7 @@ auto collision(Problem& Pb) -> std::pair<typename Problem::C_t, typename Problem
 
   // -----------------------------------------------------------------------------/
   // VARIABLES FOR GENERATING RANDOM DISTINGUISHED POINTS
-  int difficulty = 4; // difficulty;
+  int difficulty = 9; // difficulty;
   /* inp/out variables are used as input and output to save one 1 copy */
 
 
@@ -700,7 +700,7 @@ auto collision(Problem& Pb) -> std::pair<typename Problem::C_t, typename Problem
 	/* todo show the results of collisions */
 	++n_collisions;
 
-        std::cout << "A collision is found\n"
+        std::cout << "\nA collision is found\n"
 		  << "inp0 (starting point) = " << pre_inp0 << "\n"
 		  << "digest0 = 0x" << out0_digest << "\n"
 		  << "chain length0 = " << chain_length0 << "\n"

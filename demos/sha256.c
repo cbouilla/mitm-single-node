@@ -1,6 +1,6 @@
 /* sha256.c - SHA reference implementation using C            */
 /*   Written and placed in public domain by Jeffrey Walton    */
-
+/* source: https://github.com/noloader/SHA-Intrinsics/tree/master */
 /* xlc -DTEST_MAIN sha256.c -o sha256.exe           */
 /* gcc -DTEST_MAIN -std=c99 sha256.c -o sha256.exe  */
 
