@@ -762,15 +762,15 @@ auto collision(Problem& Pb) -> std::pair<typename Problem::C_t, typename Problem
 	  Pb.A.serialize(collisions_container.back().first, inp_A_serial);
 	  Pb.B.serialize(collisions_container.back().second, inp_B_serial);
 
-	  printf("inp_A = ");
+	  printf("inp_A = {");
 	  for(size_t j = 0; j < Pb.A.length; ++j)
-	    printf("%02x, ", inp_A_serial[j]);
-	  puts("");
+	    printf("0x%02x, ", inp_A_serial[j]);
+	  puts("};");
 
-	  printf("inp_B = ");
+	  printf("inp_B = {");
 	  for(size_t j = 0; j < Pb.B.length; ++j)
 	    printf("%02x, ", inp_B_serial[j]);
-	  puts("\n________________________________________\n");
+	  puts("};\n________________________________________\n");
 	}
       }
     }
