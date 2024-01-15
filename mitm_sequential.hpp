@@ -556,7 +556,8 @@ auto collision(Problem& Pb) -> std::pair<typename Problem::C_t, typename Problem
 
 
   // --------------------------------- INIT -----------------------------------/
-  size_t n_bytes = 0.5*get_available_memory(); /* */
+  size_t n_bytes = 0.5*get_available_memory();
+  
   std::cout << "Going to use "
 	    << std::dec << n_bytes << " bytes = 2^"<< std::log2(n_bytes)
 	    << " bytes for dictionary!\n";
@@ -659,11 +660,15 @@ auto collision(Problem& Pb) -> std::pair<typename Problem::C_t, typename Problem
      */
     /* update F and G by changing `send_C_to_A` and `send_C_to_B` */    
     Pb.update_embedding(rng_urandom);
+    dict.flush();
     /* todo reset dictionary since all values will be useless */
 
     /* to do change the number of distinguished points before updates */
     /* After generating xy distinguished point change the iteration function */
-    for (size_t n_dist_points = 0; n_dist_points < (1LL<<31); ++n_dist_points){
+    for (size_t n_dist_points = 0;
+	 n_dist_points < 10*(dict.n_slots);
+	 ++n_dist_points){
+
       is_collision_found = false;
       /* fill the input with a fresh random value. */
       Pb.C.randomize(pre_inp0, rng_urandom);

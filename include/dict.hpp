@@ -4,11 +4,12 @@
 
 #ifndef MITM_SEQUENTIAL_DICT_HPP
 #define MITM_SEQUENTIAL_DICT_HPP
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <sys/types.h>
 #include <vector>
-
+#include <iostream>
 
 namespace mitm {
 template <typename K, typename V, typename Problem> 
@@ -16,7 +17,7 @@ struct Dict {
 
 
   const size_t n_slots; /* How many slots a dictionary have */
-  size_t n_elmenents = 0; /* Number of the actual elements that are in the dict */
+  size_t n_elements = 0; /* Number of the actual elements that are in the dict */
   size_t n_bytes;
 
   /* <value:=input, key:=output>  in this order since value is usually larger */
@@ -47,6 +48,16 @@ struct Dict {
     std::fill(chain_lengths.begin(), chain_lengths.end(), 0);
   }
 
+  /*
+   * Reset keys, and counters.
+   */
+  void flush()
+  {
+    std::fill(keys.begin(), keys.end(), 0);
+    std::fill(chain_lengths.begin(), chain_lengths.end(), 0);
+    n_elements = 0;
+  }
+  
   bool pop_insert(const K& key, /* output of f or g */
 		  const V& value, /* input */
 		  uint64_t const chain_length0,
@@ -65,7 +76,7 @@ struct Dict {
 
     /* Found an empty slot, thus we're adding a new element  */
     if (keys[idx] == 0)
-      ++n_elmenents; 
+      ++n_elements; 
     
     if (keys[idx] == key) [[unlikely]]
       flag = true; /* found a collision */
