@@ -33,14 +33,9 @@ using i16 = int16_t;
 using i32 = int32_t;
 using i64 = int64_t;
 
-
-
 /******************************************************************************/
 /* Document for standard implementation                                       */
 /******************************************************************************/
-
-
-
 /*
  * A "domain" extends some type to provide the extra functions we need.
  * An instance of the domain can contain extra information
@@ -107,6 +102,7 @@ public:
   void update_embedding(PRNG& rng); 
 };
 
+
 /******************************************************************************/
 /* a user does not need to look at the code below                             */
 /******************************************************************************/
@@ -119,6 +115,7 @@ inline void swap_pointers(C_t*& pt1,
     pt2 = tmp_pt;
 }
 
+
 template <typename Problem>
 bool is_serialize_inverse_of_unserialize(Problem Pb, PRNG& prng)
 {
@@ -129,11 +126,8 @@ bool is_serialize_inverse_of_unserialize(Problem Pb, PRNG& prng)
   C_t orig{};
   C_t copy{};
   u8 serial[length];
-
   size_t n_elements = Pb.C.n_elements;
-
   const size_t n_tests = std::min(n_elements, static_cast<size_t>(1024));
-
 
   for(size_t i = 0; i < n_tests; ++i){
     /* */
@@ -143,20 +137,14 @@ bool is_serialize_inverse_of_unserialize(Problem Pb, PRNG& prng)
 
     if (not Pb.C.is_equal(copy, orig)){
       /* todo throw exception */
-      std::cout << "Error at testing serialization:\n"
-		<< "orig = " << orig << "\n"
-		<< "copy = " << copy << "\n";
+      std::cout << "Error at testing serialization:\n";
       return false; /* there is a bug in the adaptationof the code  */
     }
-      
   }
-
   return true;
-
 }
 
 
-   
 /* todo pass the function number. e.g. first version of (f, g) second version */
 template <typename Problem>
 void iterate_once(typename Problem::C_t& inp,
@@ -182,8 +170,6 @@ void iterate_once(typename Problem::C_t& inp,
 }
 
 
-
-
 inline bool is_distinguished_point(u64 digest, u64 mask)
 {  return (0 == (mask & digest) ); }
 
@@ -201,8 +187,6 @@ bool generate_dist_point(const typename Problem::C_t& inp0, /* don't change the 
 			 const i64 difficulty, /* #bits are zero at the beginning */
 			 Problem& Pb)
 {
-
-
   /* copy the input to tmp, then never touch the inp again! */
   Pb.C.copy(inp0, *tmp_inp_pt);
 
@@ -210,7 +194,6 @@ bool generate_dist_point(const typename Problem::C_t& inp0, /* don't change the 
   u64 digest = 0;
   bool found_distinguished = false;
   
-
   /* The probability, p, of NOT finding a distinguished point after the loop is */
   /* Let: theta := 2^-d
      ifficulty, N = k*2^difficulty then,                      */
@@ -223,7 +206,6 @@ bool generate_dist_point(const typename Problem::C_t& inp0, /* don't change the 
     /* we may get a dist point here */
     digest = Pb.C.hash(*out_pt);
     found_distinguished = is_distinguished_point(digest, mask);
-      
 
     /* unlikely with high values of difficulty */
     if (found_distinguished) [[unlikely]]{
@@ -235,9 +217,6 @@ bool generate_dist_point(const typename Problem::C_t& inp0, /* don't change the 
   }
   return false; /* no distinguished point were found */
 }
-
-
-
 
 
 /* Given two inputs that lead to the same distinguished point,
@@ -282,7 +261,6 @@ bool walk(typename Problem::C_t*& inp0_pt,
     swap_pointers(inp1_pt, out1_pt);
   }
 
-
   /*****************************************************************************/
   /* now both inputs have equal amount of steps to reach a distinguished point */
   /* both sequences needs exactly `len` steps to reach distinguished point.    */
@@ -300,8 +278,6 @@ bool walk(typename Problem::C_t*& inp0_pt,
   }
   return false;
 }
-
-
 
 
 /*
@@ -340,6 +316,7 @@ bool send_2_A_and_B(typename Problem::C_t& inp0_C,
   }
   return false;
 }
+
 
 
 /*
@@ -417,8 +394,6 @@ void apply_g(C_t& inp, Problem& Pb){
 }
 
 
-
-/* todo start from here */
 template<typename Problem>
 std::pair<typename Problem::C_t, typename Problem::C_t> collision(Problem& Pb) 
 {
@@ -426,14 +401,11 @@ std::pair<typename Problem::C_t, typename Problem::C_t> collision(Problem& Pb)
   using B_t = typename Problem::B_t;
   using C_t = typename Problem::C_t;
   PRNG rng_urandom;
-
   
   /* Sanity Test: */
   std::cout << "unserial(serial(.)) =?= id(.) : "
 	    << is_serialize_inverse_of_unserialize<Problem>(Pb, rng_urandom)
 	    << "\n";
-
-  
 
 
   // --------------------------------- INIT -----------------------------------/
@@ -479,7 +451,6 @@ std::pair<typename Problem::C_t, typename Problem::C_t> collision(Problem& Pb)
   u64  out0_digest = 0; /* hashed value of the output0 */
   /* Recall: Problem::Dom_C::length = #needed bytes to encode an element of C_t */
   u8 out0_bytes[Pb.C.length];
-
 
   /* 2nd set of buffers: Related to input1 as a starting point */
   /* When we potentially find a collision, we need 2 buffers for (inp1, out1) */
@@ -528,7 +499,6 @@ std::pair<typename Problem::C_t, typename Problem::C_t> collision(Problem& Pb)
   bool found_dist = false;
   size_t n_distinguished_points = 0;
   constexpr size_t interval = (1LL<<15);
-  constexpr size_t interval_mod = interval - 1;
   double collision_timer = wtime();
   
   std::cout << "about to enter a while loop\n";
@@ -542,49 +512,32 @@ std::pair<typename Problem::C_t, typename Problem::C_t> collision(Problem& Pb)
     /* update F and G by changing `send_C_to_A` and `send_C_to_B` */    
     Pb.update_embedding(rng_urandom);
     dict.flush();
-    /* todo reset dictionary since all values will be useless */
 
-    /* to do change the number of distinguished points before updates */
-    /* After generating xy distinguished point change the iteration function */
     for (size_t n_dist_points = 0;
 	 n_dist_points < 10*(dict.n_slots);
-	 ++n_dist_points){
-
+	 ++n_dist_points)
+      {
       is_collision_found = false;
       /* fill the input with a fresh random value. */
       Pb.C.randomize(pre_inp0, rng_urandom);
-
-      chain_length0 = 0; /* DO we need to reset it? */
+      chain_length0 = 0; /*  */
 
       found_dist = generate_dist_point<Problem>(pre_inp0,
 						inp0_pt,
 						out0_pt,
-						out0_bytes,
 						chain_length0,
 						difficulty,
 						Pb);
       out0_digest = Pb.C.hash(*out0_pt);
       ++n_distinguished_points;
 
-      if (n_distinguished_points % interval_mod == 0) /* n_dist mod 2^25 =?= 0 */
-	print_interval_time(interval);
-	
-      // std::cout << "After generatign dist point\n"
-      // 		<< "Found distinguished point? " << found_dist << "\n"
-      // 		<< "inp    = " << pre_inp0 << "\n"
-      // 		<< "inp0   = " << *inp0_pt << "\n"
-      // 		<< "out0   = " << *out0_pt << "\n"
-      // 		<< "digest = 0x" << std::hex <<  out0_digest << "\n"
-      // 		<< "chain length = " << std::dec << chain_length0 << "\n"
-      // 		<< "-------\n";
+      print_interval_time(n_distinguished_points, interval);
       
       if (not found_dist) [[unlikely]]
 	continue; /* skip all calculation below and try again  */
       
       ++n_dist_points;
 
-      
-      
       is_collision_found = dict.pop_insert(out0_digest, /* key */
 					   pre_inp0, /* value  */
 					   chain_length0,
@@ -593,9 +546,9 @@ std::pair<typename Problem::C_t, typename Problem::C_t> collision(Problem& Pb)
 					   Pb);
       
       if (is_collision_found) [[unlikely]]{
-	/* todo show the results of collisions */
 	++n_collisions;
 
+	/* Move this code to print collision information */
         std::cout << "\nA collision is found\n"
 		  << "It took " << (wtime() - collision_timer) << " sec\n"
 		  << "inp0 (starting point) = " << pre_inp0 << "\n"
@@ -622,13 +575,14 @@ std::pair<typename Problem::C_t, typename Problem::C_t> collision(Problem& Pb)
 							  collisions_container,
 							  Pb);
 
-
+	/* move print_collision_info here */
 
 	bool real_collision = Pb.C.is_equal(*out0_pt, *out1_pt);
 	bool is_robinhood = Pb.C.is_equal(*inp0_pt, *inp1_pt);
 	n_robinhoods += is_robinhood;
 
-	if (is_potential_coll){ 
+	if (is_potential_coll){
+	  /* remove this printing */
 	  std::cout << "After treating collision\n"
 		    << "inp0 = " << *inp0_pt << "\n"
 		    << "out0 = " << *out0_pt << "\n"
@@ -664,7 +618,6 @@ std::pair<typename Problem::C_t, typename Problem::C_t> collision(Problem& Pb)
   /* end of work */
   return std::pair<C_t, C_t>(*inp0_pt, *inp1_pt); // todo wrong values
 }
-
 
 // to use parallel sort sort
 // install tbb lib

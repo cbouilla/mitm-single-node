@@ -47,19 +47,28 @@ add_executable(speck32_demo
                demos/speck32_demo.cpp
 	       mitm_sequential.hpp
 	       include/dict.hpp
+	       include/memory.hpp
+	       include/prng.hpp
+	       include/timing.hpp
                demos/speck32.hpp)
 
 add_executable(sha2_demo
         demos/sha2_demo.cpp
 	demos/sha256.c
         mitm_sequential.hpp
-        include/dict.hpp)
+        include/dict.hpp
+      	include/memory.hpp
+	include/prng.hpp
+	include/timing.hpp)
 
 add_executable(sha2-x86_demo
         demos/sha2_demo.cpp
 	demos/sha256_x86.c
         mitm_sequential.hpp
-        include/dict.hpp)
+        include/dict.hpp
+      	include/memory.hpp
+	include/prng.hpp
+	include/timing.hpp)
 
 
 # # Link TBB to your executable

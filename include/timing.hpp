@@ -33,10 +33,12 @@ double wtime() /* with inline it doesn't violate one definition rule */
 }
 
  /*
-  * Print how long does it took to do n iterations.
+  * Print how long does it took to do n iterations, when i = 0 mod n.
   */
-inline static void print_interval_time(size_t n)
+inline static void print_interval_time(size_t i, size_t n)
 {
+  if (i%n != 0) return;
+  
   static double previous_time = -1;
   double current_time = wtime();
   double elapsed = current_time - previous_time;
