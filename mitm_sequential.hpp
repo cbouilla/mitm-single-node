@@ -15,13 +15,12 @@
 #include <vector>
 #include <algorithm>
 #include <omp.h>
-#include "include/dict.hpp"
-#include "include/memory.hpp"
 #include <string>
 
-#include <fstream>
-#include <chrono>
-
+#include "include/dict.hpp"
+#include "include/memory.hpp"
+#include "include/timing.hpp"
+#include "include/prng.hpp"
 
 namespace mitm
 {
@@ -35,116 +34,11 @@ using i32 = int32_t;
 using i64 = int64_t;
 
 
-/******************************************************************************/
-// independent code
-/******************************************************************************/
-/* Setting up the problem                                                     */
-/******************************************************************************/
-/* source : https://gist.github.com/mortenpi/9745042 */
-
-template<class T>
-T read_urandom()
-{
-    union {
-        T value;
-        char cs[sizeof(T)];
-    } u;
-
-    std::ifstream rfin("/dev/urandom");
-    rfin.read(u.cs, sizeof(u.cs));
-    rfin.close();
-
-    return u.value;
-}
-
-
-
-
-inline auto wtime() -> double /* with inline it doesn't violate one definition rule */
-{
-
-  auto clock = std::chrono::high_resolution_clock::now();
-  auto nanoseconds = std::chrono::duration_cast<std::chrono::nanoseconds>(clock.time_since_epoch()).count();
-  double seconds = nanoseconds / (static_cast<double>(1000000000.0));
-
-
-  return seconds;
-
-}
-
- /*
-  * Print how long does it took to do n iterations.
-  */
-inline static void print_interval_time(size_t n)
-{
-  static double previous_time = -1;
-  double current_time = wtime();
-  double elapsed = current_time - previous_time;
-  
-  if (previous_time == -1){
-    previous_time = wtime();
-    return; /* 1st measurement */
-  }
-
-
-  printf("\r%lu=2^%0.2f iter took:"
-	 " %0.2f sec, i.e. %0.2f = 2^%0.2f iter/sec",
-	 n, std::log2(n),
-	 elapsed, n/elapsed, std::log2(n/elapsed) );
-  fflush(stdout);
-  previous_time = wtime();
-  
-  
-}
-  
-
-template <size_t n>
-auto is_equal(std::array<u8, n> arr1,
-	      std::array<u8, n> arr2)
-  -> bool
-{
-  for (size_t i = 0; i<n; ++i){
-    if (arr1[i] != arr2[i])
-      return false;
-  }
-  return true;
-}
-
-
-
-
-/******************************************************************************/
 
 /******************************************************************************/
 /* Document for standard implementation                                       */
 /******************************************************************************/
 
-
-/*
- * Generic interface for a PRNG. The sequence of pseudo-random numbers
- * depends on both seed and seq
- */
-class PRNG {
-  /* todo make it support length */
-  /* source : https://gist.github.com/mortenpi/9745042 */
-  union {
-    u64 value;
-    char cs[sizeof(u64)];
-  } u;
-  
-public:
-
-  PRNG() { };
-  
-  u64 rand(){
-    std::ifstream rfin("/dev/urandom");
-    rfin.read(u.cs, sizeof(u.cs));
-    rfin.close();
-
-    return u.value;
-  };
-  
-};
 
 
 /*
@@ -165,7 +59,7 @@ public:
   static void randomize(t &x, PRNG &p);           /* set x to a random value */
 
   static void randomize(t &x);  /* set x to a random value */
-  auto is_equal(t& x, t& y) const -> bool;
+  bool is_equal(t& x, t& y) const;
 
 
   /* get the next element after x.*/
@@ -188,7 +82,6 @@ public:
  * E.g. In the attack on double-encryption, where the goal is to find
  *      x, y s.t. f(x, a) == g(y, b), the problem should contain (a, b).
  */
-
 template<typename Domain_A, typename Domain_B, typename Domain_C>
 class AbstractProblem {
 public:
@@ -207,8 +100,8 @@ public:
   
   inline void f(const A_t &x, C_t &y) const;  /* y <--- f(x) */
   inline void g(const B_t &x, C_t &y) const;  /* y <--- g(x) */
-  inline void send_C_to_A(C_t& inp_C, A_t& out_A) const;
-  inline void send_C_to_B(C_t& inp_C, B_t& out_B) const;
+  inline void send_C_to_A(const C_t& inp_C, A_t& out_A) const;
+  inline void send_C_to_B(const C_t& inp_C, B_t& out_B) const;
 
   /* changes the behavior of the two above functions */
   void update_embedding(PRNG& rng); 
@@ -227,7 +120,7 @@ inline void swap_pointers(C_t*& pt1,
 }
 
 template <typename Problem>
-auto is_serialize_inverse_of_unserialize(Problem Pb, PRNG& prng) -> bool
+bool is_serialize_inverse_of_unserialize(Problem Pb, PRNG& prng)
 {
   /// Test that unserialize(serialize(r)) == r for a randomly chosen r
   using C_t = typename Problem::C_t;
@@ -267,8 +160,8 @@ auto is_serialize_inverse_of_unserialize(Problem Pb, PRNG& prng) -> bool
 /* todo pass the function number. e.g. first version of (f, g) second version */
 template <typename Problem>
 void iterate_once(typename Problem::C_t& inp,
-		  typename Problem::C_t& out,
-		  Problem& Pb)
+		  typename Problem::C_t& out,	
+	  Problem& Pb)
 {
   /*
    * Do 1 iteration inp =(f/g)=> out, write the output in the address pointed
@@ -294,20 +187,20 @@ void iterate_once(typename Problem::C_t& inp,
 inline bool is_distinguished_point(u64 digest, u64 mask)
 {  return (0 == (mask & digest) ); }
 
+
+/*
+ * Given an input, iterate functions either F or G until a distinguished point
+ * is found, save the distinguished point in out_pt and output_bytes
+ * Then return `true`. If the iterations limit is passed, returns `false`.
+ */
 template<typename Problem>
-bool generate_dist_point(typename Problem::C_t& inp0, /* don't change the pointer */
+bool generate_dist_point(const typename Problem::C_t& inp0, /* don't change the pointer */
 			 typename Problem::C_t*& tmp_inp_pt,
 			 typename Problem::C_t*& out_pt,
-                         u8* const output_bytes, /* size Problem::Dom_C::length */
 			 u64& chain_length, /* write chain lenght here */
 			 const i64 difficulty, /* #bits are zero at the beginning */
 			 Problem& Pb)
 {
-  /*
-   * Given an input, iterate functions either F or G until a distinguished point
-   * is found, save the distinguished point in out_pt and output_bytes
-   * Then return `true`. If the iterations limit is passed, returns `false`.
-   */
 
 
   /* copy the input to tmp, then never touch the inp again! */
@@ -318,9 +211,12 @@ bool generate_dist_point(typename Problem::C_t& inp0, /* don't change the pointe
   bool found_distinguished = false;
   
 
-  /* The probability of not finding a distinguished point during this loop is*/
-  /* 2^{-some big k} */
-  for (i64 i = 0; i < 40*(1LL<<difficulty); ++i){
+  /* The probability, p, of NOT finding a distinguished point after the loop is */
+  /* Let: theta := 2^-d
+     ifficulty, N = k*2^difficulty then,                      */
+  /* p = (1 - theta)^N =>  let ln(p) <= -k                                      */
+  constexpr u64 k = 40;
+  for (u64 i = 0; i < k*(1LL<<difficulty); ++i){
     iterate_once(*tmp_inp_pt, *out_pt, Pb);
     ++chain_length;
 
@@ -331,7 +227,6 @@ bool generate_dist_point(typename Problem::C_t& inp0, /* don't change the pointe
 
     /* unlikely with high values of difficulty */
     if (found_distinguished) [[unlikely]]{
-      Pb.C.serialize(*out_pt, output_bytes);
       return true; /* exit the whole function */
     }
 
@@ -467,20 +362,6 @@ bool treat_collision(typename Problem::C_t*& inp0_pt,
   using B_t = typename Problem::B_t;
   using C_t = typename Problem::C_t;
 
-
-  /****************************************************************************+
-   *            walk the longest sequence until they are equal                 |
-   * Two chains that leads to the same distinguished point but not necessarily |
-   * have the same length. e.g.                                                |
-   *                                                                           |
-   * chain1: ----------------x-------o                                         |
-   *                        /                                                  |
-   *          chain2: ------                                                   |
-   *                                                                           |
-   * o: is a distinguished point                                               |
-   * x: the collision we're looking for                                        |
-   *                                                                           |   
-   ****************************************************************************/
   /* walk inp0 and inp1 just before `x` */
   /* i.e. iterate_once(inp0) = iterate_once(inp1) */
   /* return false when walking the two inputs don't collide */
@@ -539,7 +420,7 @@ void apply_g(C_t& inp, Problem& Pb){
 
 /* todo start from here */
 template<typename Problem>
-auto collision(Problem& Pb) -> std::pair<typename Problem::C_t, typename Problem::C_t>
+std::pair<typename Problem::C_t, typename Problem::C_t> collision(Problem& Pb) 
 {
   using A_t = typename Problem::A_t;
   using B_t = typename Problem::B_t;
