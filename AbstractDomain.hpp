@@ -1,0 +1,3 @@
+#ifndef MITM_ABSTRACT_DOMAIN
+#define MITM_ABSTRACT_DOMAIN
+#endif

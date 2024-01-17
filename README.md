@@ -1,3 +1,26 @@
 # Sequential meet in the middle
 
-Provide two functions as written in the example in `demo.cpp`, then compile the code, and run it et ben, dis donc you obtained a collision!
+```
+                AbstractDomain.hpp
+					    +
+				       / \
+                      /   \
+                     /     \
+                    /       \
+				   /         \
+AbstractClawProblem.hpp     AbstractCollisionProblem.hpp
+                  ^           ^
+                  |           |
+         claw_egine.hpp    collision_engine.hpp
+                  ^           ^
+                   \         /
+                    engine.hpp
+                        ^
+                        |
+                     mitm.hpp
+                        ^
+                        |
+                   your_code.cpp
+	               /    |    \
+follows AbstractDomain and {AbstractClawProblem or AbstractCollisionProblem})
+```

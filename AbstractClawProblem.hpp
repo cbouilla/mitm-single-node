@@ -1,0 +1,3 @@
+#ifndef MITM_ABSTRACT_CLAW
+#define MITM_ABSTRACT_CLAW
+#endif

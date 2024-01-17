@@ -17,7 +17,7 @@
 #include <omp.h>
 #include <string>
 
-#include "include/dict.hpp"
+#include "dict.hpp"
 #include "include/memory.hpp"
 #include "include/timing.hpp"
 #include "include/prng.hpp"
