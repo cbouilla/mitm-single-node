@@ -2,12 +2,12 @@
 
 ```
                 AbstractDomain.hpp
-					    +
-				       / \
+                        +
+                       / \
                       /   \
                      /     \
                     /       \
-				   /         \
+                   /         \
 AbstractClawProblem.hpp     AbstractCollisionProblem.hpp
                   ^           ^
                   |           |
@@ -21,6 +21,6 @@ AbstractClawProblem.hpp     AbstractCollisionProblem.hpp
                         ^
                         |
                    your_code.cpp
-	               /    |    \
+                   /    |    \
 follows AbstractDomain and {AbstractClawProblem or AbstractCollisionProblem})
 ```
