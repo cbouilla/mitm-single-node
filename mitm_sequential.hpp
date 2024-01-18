@@ -1,8 +1,8 @@
 #ifndef MITM_SEQUENTIAL
 #define MITM_SEQUENTIAL
 #include <array>
-#include <cstddef>
-#include <cstdint>
+
+#include <type_traits>
 #include<cstring>
 #include <ios>
 #include <cmath>
@@ -17,90 +17,18 @@
 #include <omp.h>
 #include <string>
 
+#include "AbstractDomain.hpp"
+#include "AbstractClawProblem.hpp"
+#include "AbstractCollisionProblem.hpp"
+#include "claw_engine.hpp"
+#include "collision_engine.hpp"
+#include "engine.hpp"
 #include "dict.hpp"
 #include "include/memory.hpp"
 #include "include/timing.hpp"
 #include "include/prng.hpp"
 
-namespace mitm
-{
-using u8  = uint8_t ;
-using u16 = uint16_t;
-using u32 = uint32_t;
-using u64 = uint64_t;
-using i8  = int8_t ;
-using i16 = int16_t;
-using i32 = int32_t;
-using i64 = int64_t;
-
-/******************************************************************************/
-/* Document for standard implementation                                       */
-/******************************************************************************/
-/*
- * A "domain" extends some type to provide the extra functions we need.
- * An instance of the domain can contain extra information
- * E.g. for small integers mod p, "repr" could be u64 while the domain actually contains p
- * E.g. for points on an elliptic curve, "repr" could be a pair of integers mod p, while the
- *      domain would contain the equation of the curve, etc.
- */
-template<class repr>           /* repr must support comparisons, and assignment */
-class AbstractDomain {
-public:
-  static int length;  /* nbytes needed to encode an element */
-  static size_t n_elements; /* how many elements in the domain */
-  using t = repr;            /* t is the machine representation of elements of the domain */
-
-  template<typename PRNG>
-  static void randomize(t &x, PRNG &p);           /* set x to a random value */
-
-  static void randomize(t &x);  /* set x to a random value */
-  bool is_equal(t& x, t& y) const;
-
-
-  /* get the next element after x.*/
-  /* What matters is getting a different element each time, not the order. */
-  inline t next(t& x)  const;
-  inline void serialize(const t &x, u8 *out) const;   /* write this to out */
-  inline void unserialize(const u8 *in, t &x) const;        /* read this from in */
-  inline void copy(const t& inp, t& out) const; /* deepcopy inp to out */
-  inline int extract_1_bit(const t& inp) const;
-
-  u64 hash(const t &x) const;               /* return some bits from this */
-  u64 hash_extra(const t &x) const ;         /* return more bits from this */
-};
-
-
-/*
- * Provides the description of the type A and a function f : A -> A.
- *
- * The problem instance can contain extra data.
- * E.g. In the attack on double-encryption, where the goal is to find
- *      x, y s.t. f(x, a) == g(y, b), the problem should contain (a, b).
- */
-template<typename Domain_A, typename Domain_B, typename Domain_C>
-class AbstractProblem {
-public:
-  /* these lines have to be retyped again */
-  using C_t = typename Domain_C::t;
-  using A_t = typename Domain_A::t;
-  using B_t = typename Domain_B::t;
-
-  static const int f_eq_g;
-  
-  AbstractProblem() {
-    // enforce that A is a subclass of AbstractDomain
-    static_assert(std::is_base_of<AbstractDomain<typename Domain_A::t>, Domain_A>::value,
-		  "A not derived from AbstractDomain");
-  }
-  
-  inline void f(const A_t &x, C_t &y) const;  /* y <--- f(x) */
-  inline void g(const B_t &x, C_t &y) const;  /* y <--- g(x) */
-  inline void send_C_to_A(const C_t& inp_C, A_t& out_A) const;
-  inline void send_C_to_B(const C_t& inp_C, B_t& out_B) const;
-
-  /* changes the behavior of the two above functions */
-  void update_embedding(PRNG& rng); 
-};
+namespace mitm {
 
 
 /******************************************************************************/
