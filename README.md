@@ -3,8 +3,8 @@
 ```
                 AbstractDomain.hpp
                         ^
-						|
-		                x
+                        |
+                        x
                        / \
                       /   \
                      /     \
@@ -13,11 +13,11 @@
 AbstractClawProblem.hpp     AbstractCollisionProblem.hpp
                    \         /
                     \       /
-					 \     /
+                     \     /
                       \   /
                        \ /
                         ^
-						|
+                        |
         prng.hpp  <- engine.hpp -> dict.hpp
                         ^
                         |
@@ -31,7 +31,7 @@ AbstractClawProblem.hpp     AbstractCollisionProblem.hpp
                   ^           ^
                    \         /
                     --+   +--
-					   \ /
+                       \ /
                         |
                      mitm.hpp
                         ^
