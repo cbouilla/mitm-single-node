@@ -19,8 +19,6 @@ public:
   using A_t = typename Domain_A::t;
   using C_t = typename Domain_C::t;
 
-
-
   static const int f_eq_g;
   
   AbstractCollisionProblem() {
