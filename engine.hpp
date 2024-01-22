@@ -13,6 +13,7 @@
 
 #include <exception>
 #include <iostream>
+#include <vector>
 
 /// When a function, func, behavior's depends if the problem is a claw or a
 ///  collision, we use veriadic template to have two different implementation:
@@ -214,8 +215,15 @@ bool walk(Problem& Pb,
 }
 
 
-template <typename Problem, typename... Types >
-bool treat_collision(typename Problem::C_t*& inp0_pt,
+/*
+ * In case of claw: two extra additional arguments:
+ * 1) inpA_pt
+ * 2) inpB_pt
+ */
+template <typename Problem, typename PAIR_T, typename... Types >
+bool treat_collision(Problem& Pb,
+		     std::vector<PAIR_T> collisions_container,
+		     typename Problem::C_t*& inp0_pt,
 		     typename Problem::C_t*& out0_pt, /* inp0 calculation buffer */
 		     const u64 inp0_chain_len,
 		     typename Problem::C_t*& inp1_pt,
@@ -227,52 +235,49 @@ bool treat_collision(typename Problem::C_t*& inp0_pt,
   std::terminate(); /* Never use this implementation! */
 }
 
+// Start from here
 
-
-
-template<typename Problem, typename C_t, typename T, typename... Types>
-T search_generic(Problem& Pb,
-		  ) 
+template<typename Problem, typename PAIR_T, typename... Types>
+PAIR_T search_generic(Problem& Pb,
+		      typename Problem::C_t& inp_St, // Startign point in chain
+		      typename Problem::C_t* inp0_pt,
+		      typename Problem::C_t* inp1_pt,
+		      typename Problem::C_t* out0_pt,
+		      typename Problem::C_t* out1_pt,
+		      typename Problem::A_t* inp0A_pt,
+		      typename Problem::A_t* inp1A_pt,
+		      Types... args) /* two extra arguments if claw problem
+				      * 1) inp0B_pt
+				      * 2) inp1B_pt
+				      */
 {
   PRNG rng_urandom;
+
+  using C_t = typename Problem::C_t;
+  using A_t = typename Problem::A_t;
   
   /* Sanity Test:  */
   is_serialize_inverse_of_unserialize<Problem>(Pb, rng_urandom);
 
-  // --------------------------------- INIT -----------------------------------/
+  /*----------------------------- DICT INIT ----------------------------------*/
   size_t n_bytes = 0.5*get_available_memory();
-  
   std::cout << "Going to use "
 	    << std::dec << n_bytes << " bytes = 2^"<< std::log2(n_bytes)
 	    << " bytes for dictionary!\n";
   
-  Dict<u64, C_t, Problem> dict{n_bytes}; /* create a dictionary */
+
+  Dict<u64, C_t, Problem> dict{n_bytes};
+  /* In claw: PAIR_T = <A_t, B_t>, in collisions PAIR_T = <C_t, C_t> */
+  std::vector<PAIR_T> collisions_container{};
+  u64 out0_digest = 0;
+  
+  
   std::cout << "Initialized a dict with " << dict.n_slots << " slots = 2^"
 	    << std::log2(dict.n_slots) << " slots\n";
 
+  /*--------------------------- Collisions counters --------------------------*/
 
-  // -----------------------------------------------------------------------------/
-  // VARIABLES FOR GENERATING RANDOM DISTINGUISHED POINTS
-  int difficulty = 9; // difficulty;
-  /* inp/out variables are used as input and output to save one 1 copy */
-
-
-  /***************************************************************/
-  /* when generating a distinguished point we have:              */
-  /*  1)   inp0           =f/g=> out0                            */
-  /*  2)  (inp1 := out0)  =f/g=> out1                            */
-  /*  3)  (inp2 := out1)  =f/g=> out2                            */
-  /*            ...                                              */
-  /* m+1) (inp_m := out_m) =f/g=> out_m                          */
-  /* A distinguished point found at step `m+1`                   */
-  /* "We would like to preserve inp0 at the end of calculation." */
-  /* In order to save ourselves from copying in each step.       */
-  /***************************************************************/
-
-
-
-
-  /**************************** Collisions counters ***************************/
+  int difficulty = 9;
   /* How many steps does it take to get a distinguished point from  an input */
   size_t chain_length0 = 0;
   size_t chain_length1 = 0;
@@ -288,7 +293,7 @@ T search_generic(Problem& Pb,
   constexpr size_t interval = (1LL<<15);
   double collision_timer = wtime();
   
-  std::cout << "about to enter a while loop\n";
+
   /*------------------- Generate Distinguished Points ------------------------*/
   // while (n_collisions < 1){
   while (n_collisions < n_needed_collisions){
@@ -306,11 +311,12 @@ T search_generic(Problem& Pb,
       {
       is_collision_found = false;
       /* fill the input with a fresh random value. */
-      Pb.C.randomize(st_inp0, rng_urandom);
-      chain_length0 = 0; /*  */
-
-      found_dist = generate_dist_point<Problem>(pre_inp0,
-						inp0_pt,
+      Pb.C.randomize(inp_St, rng_urandom);
+      Pb.C.copy(inp_St, *inp0A_pt);
+      chain_length0 = 0; 
+      
+      
+      found_dist = generate_dist_point<Problem>(inp0_pt,
 						out0_pt,
 						chain_length0,
 						difficulty,
@@ -326,7 +332,7 @@ T search_generic(Problem& Pb,
       ++n_dist_points;
 
       is_collision_found = dict.pop_insert(out0_digest, /* key */
-					   pre_inp0, /* value  */
+					   inp_St, /* value  */
 					   chain_length0,
 					   *inp1_pt, /* save popped element here */
 					   chain_length1, /* of popped input */
@@ -338,7 +344,7 @@ T search_generic(Problem& Pb,
 	/* Move this code to print collision information */
         std::cout << "\nA collision is found\n"
 		  << "It took " << (wtime() - collision_timer) << " sec\n"
-		  << "inp0 (starting point) = " << pre_inp0 << "\n"
+		  << "inp0 (starting point) = " << inp_St << "\n"
 		  << "digest0 = 0x" << out0_digest << "\n"
 		  << "chain length0 = " << chain_length0 << "\n"
 		  << "inp1 (starting point) = " << *inp1_pt << "\n"
@@ -347,23 +353,24 @@ T search_generic(Problem& Pb,
 
 	collision_timer = wtime();
 	/* respect the rule that inp0 doesn't have pointers dancing around it */
-	Pb.C.copy(pre_inp0, *inp0_pt); /* (*tmp0_ptO) holds the input value  */
+	Pb.C.copy(inp_St, *inp0_pt); /* (*tmp0_ptO) holds the input value  */
 
-	/* i.e. when f =/= g then one of the inputs has to  correspond to A
-	 * and the other has to correspond to B. The order doesn't matter.
-	 * todo: it should also neglect robinhood.
+	/*
+	 * In case of claw: two extra additional arguments:
+	 * 1) inpA_pt
+	 * 2) inpB_pt
 	 */
-	bool is_potential_coll = treat_collision<Problem>(inp0_pt,
+	bool is_potential_coll = treat_collision<Problem>(Pb,
+							  collisions_container,
+							  inp0_pt,
 							  out0_pt,
 							  chain_length0,
 							  inp1_pt,
 							  out1_pt,
 							  chain_length1,
-							  collisions_container,
-							  Pb);
+							  args...);
 
 	/* move print_collision_info here */
-
 	bool real_collision = Pb.C.is_equal(*out0_pt, *out1_pt);
 	bool is_robinhood = Pb.C.is_equal(*inp0_pt, *inp1_pt);
 	n_robinhoods += is_robinhood;
@@ -386,24 +393,13 @@ T search_generic(Problem& Pb,
 	  /* Get the complete inputs as they live in A and B */
 	  std::cout << "container length " << collisions_container.size() << "\n"
 		    << "is a good collisision? " << is_potential_coll << "\n";
-	  Pb.A.serialize(collisions_container.back().first, inp_A_serial);
-	  Pb.B.serialize(collisions_container.back().second, inp_B_serial);
-
-	  printf("inp_A = {");
-	  for(size_t j = 0; j < Pb.A.length; ++j)
-	    printf("0x%02x, ", inp_A_serial[j]);
-	  puts("};");
-
-	  printf("inp_B = {");
-	  for(size_t j = 0; j < Pb.B.length; ++j)
-	    printf("%02x, ", inp_B_serial[j]);
-	  puts("};\n________________________________________\n");
 	}
       }
     }
   }
   /* end of work */
-  return std::pair<C_t, C_t>(*inp0_pt, *inp1_pt); // todo wrong values
+  /* todo fix this return type! */
+  return PAIR_T(*inp0_pt, *inp1_pt); // todo wrong values
 }
 
 
