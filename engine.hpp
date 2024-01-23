@@ -1,8 +1,5 @@
 #ifndef MITM_ENGINE
 #define MITM_ENGINE
-
-
-
 #include "AbstractDomain.hpp"
 #include "AbstractClawProblem.hpp"
 #include "AbstractCollisionProblem.hpp"
@@ -24,27 +21,23 @@
 /// `collisions_engine.hpp`
 /// List of functions that are different for claw and collision problem:
 /// 1) `iterate_once` claw_engine.hpp introduces 2 more arguments.
-/// 
-
-// breaking code notes:
-// 1- the order of arguments have changed. Pb is the first now.
-// 2- inp0 should be copied outside the function.
 
 namespace mitm {
-
 
 /*
  * Defines how to walk in a sequence. Use functions overloading to differentiate
  * between a claw's iteration and a collisions's iteration. Specfically:
  * When it's a claw problem, then it would have 2 extra arguments, namely:
- * 1) inp_A 2) inp_B. Besides Pb, inp, and out.
- * When it's a collision, args would be empty. i.e. it only uses:
- * Pb, inp, and out.
+ * 1)  inpB. Besides Pb, inp, out, and inpA
+ * When it's a collision:
+ * args is empty
+ * 
  */
 template <typename Problem, typename... Types>
 void iterate_once(Problem &Pb,
-		  typename Problem::C_t &inp,
-                  typename Problem::C_t &out,
+		  typename Problem::C_t& inp,
+                  typename Problem::C_t& out,
+		  typename Problem::A_t& inpA,
 		  Types... args)
 {
   /* C++ always prefers more specialized templates. 
@@ -216,9 +209,8 @@ bool walk(Problem& Pb,
 
 
 /*
- * In case of claw: two extra additional arguments:
- * 1) inpA_pt
- * 2) inpB_pt
+ * In case of claw: an additional arguments:
+ * 1) inpB_pt
  */
 template <typename Problem, typename PAIR_T, typename... Types >
 bool treat_collision(Problem& Pb,
@@ -238,7 +230,7 @@ bool treat_collision(Problem& Pb,
 // Start from here
 
 template<typename Problem, typename PAIR_T, typename... Types>
-PAIR_T search_generic(Problem& Pb,
+std::vector<PAIR_T> search_generic(Problem& Pb,
 		      typename Problem::C_t& inp_St, // Startign point in chain
 		      typename Problem::C_t* inp0_pt,
 		      typename Problem::C_t* inp1_pt,
@@ -248,8 +240,7 @@ PAIR_T search_generic(Problem& Pb,
 		      typename Problem::A_t* inp1A_pt,
 		      Types... args) /* two extra arguments if claw problem
 				      * 1) inp0B_pt
-				      * 2) inp1B_pt
-				      */
+				      * 2) inp1B_pt */
 {
   PRNG rng_urandom;
 
@@ -267,7 +258,7 @@ PAIR_T search_generic(Problem& Pb,
   
 
   Dict<u64, C_t, Problem> dict{n_bytes};
-  /* In claw: PAIR_T = <A_t, B_t>, in collisions PAIR_T = <C_t, C_t> */
+  /* In claw: PAIR_T = std::pair<A_t, B_t>, in collisions PAIR_T = std::pair<C_t, C_t> */
   std::vector<PAIR_T> collisions_container{};
   u64 out0_digest = 0;
   
@@ -376,7 +367,7 @@ PAIR_T search_generic(Problem& Pb,
 	n_robinhoods += is_robinhood;
 
 	if (is_potential_coll){
-	  /* remove this printing */
+	  /* todo remove this printing or replace it! */
 	  std::cout << "After treating collision\n"
 		    << "inp0 = " << *inp0_pt << "\n"
 		    << "out0 = " << *out0_pt << "\n"
@@ -399,9 +390,8 @@ PAIR_T search_generic(Problem& Pb,
   }
   /* end of work */
   /* todo fix this return type! */
-  return PAIR_T(*inp0_pt, *inp1_pt); // todo wrong values
+  return collisions_container; // todo wrong value
 }
-
 
 }
 
