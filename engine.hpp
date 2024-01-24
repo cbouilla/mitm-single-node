@@ -75,6 +75,7 @@ bool generate_dist_point(Problem& Pb,
 			 const i64 difficulty, /* #bits are zero at the beginning */
 			 typename Problem::C_t*& inp_pt,
 			 typename Problem::C_t*& out_pt,
+			 typename Problem::A_t& inpA,
 			 Types... args)
 {
   /* todo break note copy inp0 before passing it here! */
@@ -94,7 +95,7 @@ bool generate_dist_point(Problem& Pb,
   constexpr u64 k = 40;
   for (u64 i = 0; i < k*(1LL<<difficulty); ++i){
     /* uses claw's iterate_once if args... is not empty, otherwise collisions'*/
-    iterate_once(Pb, *inp_pt, *out_pt, args...); 
+    iterate_once(Pb, *inp_pt, *out_pt, inpA, args...); 
     ++chain_length;
 
     /* we may get a dist point here */
@@ -221,26 +222,30 @@ bool treat_collision(Problem& Pb,
 		     typename Problem::C_t*& inp1_pt,
 		     typename Problem::C_t*& out1_pt, /* inp1 calculation buffer */
 		     const u64 inp1_chain_len,
+		     typename Problem::A_t& inp0_A,
+		     typename Problem::A_t& inp1_A,
 		     Types... args)
 {
   std::cerr << "Internal Error: should not use general implementation of if `treate_collision`!\n";
   std::terminate(); /* Never use this implementation! */
 }
 
-// Start from here
 
+/* todo add documentation */
 template<typename Problem, typename PAIR_T, typename... Types>
-std::vector<PAIR_T> search_generic(Problem& Pb,
-		      typename Problem::C_t& inp_St, // Startign point in chain
-		      typename Problem::C_t* inp0_pt,
-		      typename Problem::C_t* inp1_pt,
-		      typename Problem::C_t* out0_pt,
-		      typename Problem::C_t* out1_pt,
-		      typename Problem::A_t* inp0A_pt,
-		      typename Problem::A_t* inp1A_pt,
-		      Types... args) /* two extra arguments if claw problem
-				      * 1) inp0B_pt
-				      * 2) inp1B_pt */
+void search_generic(Problem& Pb,
+		    std::vector<PAIR_T>& collisions_container,
+		    int difficulty,
+		    typename Problem::C_t& inp_St, // Startign point in chain
+		    typename Problem::C_t* inp0_pt,
+		    typename Problem::C_t* inp1_pt,
+		    typename Problem::C_t* out0_pt,
+		    typename Problem::C_t* out1_pt,
+		    typename Problem::A_t& inp0A,
+		    typename Problem::A_t& inp1A,
+		    Types... args) /* two extra arguments if claw problem
+				    * 1) inp0B passed as a reference
+				    * 2) inp1B passed as a reference */
 {
   PRNG rng_urandom;
 
@@ -250,7 +255,7 @@ std::vector<PAIR_T> search_generic(Problem& Pb,
   /* Sanity Test:  */
   is_serialize_inverse_of_unserialize<Problem>(Pb, rng_urandom);
 
-  /*----------------------------- DICT INIT ----------------------------------*/
+  /*============================= DICT INIT ==================================*/
   size_t n_bytes = 0.5*get_available_memory();
   std::cout << "Going to use "
 	    << std::dec << n_bytes << " bytes = 2^"<< std::log2(n_bytes)
@@ -258,17 +263,13 @@ std::vector<PAIR_T> search_generic(Problem& Pb,
   
 
   Dict<u64, C_t, Problem> dict{n_bytes};
-  /* In claw: PAIR_T = std::pair<A_t, B_t>, in collisions PAIR_T = std::pair<C_t, C_t> */
-  std::vector<PAIR_T> collisions_container{};
   u64 out0_digest = 0;
   
   
   std::cout << "Initialized a dict with " << dict.n_slots << " slots = 2^"
 	    << std::log2(dict.n_slots) << " slots\n";
 
-  /*--------------------------- Collisions counters --------------------------*/
-
-  int difficulty = 9;
+  /*=========================== Collisions counters ==========================*/
   /* How many steps does it take to get a distinguished point from  an input */
   size_t chain_length0 = 0;
   size_t chain_length1 = 0;
@@ -285,8 +286,9 @@ std::vector<PAIR_T> search_generic(Problem& Pb,
   double collision_timer = wtime();
   
 
-  /*------------------- Generate Distinguished Points ------------------------*/
-  // while (n_collisions < 1){
+  /*----------------------------MAIN COMPUTATION------------------------------*/
+  /*=================== Generate Distinguished Points ========================*/
+
   while (n_collisions < n_needed_collisions){
 
     /* These simulations show that if 10w distinguished points are generated
@@ -302,16 +304,17 @@ std::vector<PAIR_T> search_generic(Problem& Pb,
       {
       is_collision_found = false;
       /* fill the input with a fresh random value. */
-      Pb.C.randomize(inp_St, rng_urandom);
-      Pb.C.copy(inp_St, *inp0A_pt);
+      Pb.C.randomize(inp_St, rng_urandom); /* todo rng should be reviewed */
+      Pb.C.copy(inp_St, inp0A);
       chain_length0 = 0; 
-      
-      
-      found_dist = generate_dist_point<Problem>(inp0_pt,
-						out0_pt,
-						chain_length0,
-						difficulty,
-						Pb);
+      // todo error here, check generate_dist_point signature 
+      found_dist = generate_dist_point(Pb,
+				       chain_length0,
+				       difficulty,
+				       inp0_pt,
+				       out0_pt,
+				       args...);
+
       out0_digest = Pb.C.hash(*out0_pt);
       ++n_distinguished_points;
 
@@ -332,7 +335,7 @@ std::vector<PAIR_T> search_generic(Problem& Pb,
       if (is_collision_found) [[unlikely]]{
 	++n_collisions;
 
-	/* Move this code to print collision information */
+        /* Move this code to print collision information */
         std::cout << "\nA collision is found\n"
 		  << "It took " << (wtime() - collision_timer) << " sec\n"
 		  << "inp0 (starting point) = " << inp_St << "\n"
@@ -347,19 +350,21 @@ std::vector<PAIR_T> search_generic(Problem& Pb,
 	Pb.C.copy(inp_St, *inp0_pt); /* (*tmp0_ptO) holds the input value  */
 
 	/*
-	 * In case of claw: two extra additional arguments:
-	 * 1) inpA_pt
-	 * 2) inpB_pt
+	 * In case of claw, two extra additional arguments: (passed as references)
+	 * 1) inpA 
+	 * 2) inpB
 	 */
-	bool is_potential_coll = treat_collision<Problem>(Pb,
-							  collisions_container,
-							  inp0_pt,
-							  out0_pt,
-							  chain_length0,
-							  inp1_pt,
-							  out1_pt,
-							  chain_length1,
-							  args...);
+	bool is_potential_coll = treat_collision(Pb,
+						 collisions_container,
+						 inp0_pt,
+						 out0_pt,
+						 chain_length0,
+						 inp1_pt,
+						 out1_pt,
+						 chain_length1,
+						 inp0A,
+						 inp1A,
+						 args...);
 
 	/* move print_collision_info here */
 	bool real_collision = Pb.C.is_equal(*out0_pt, *out1_pt);
@@ -389,10 +394,8 @@ std::vector<PAIR_T> search_generic(Problem& Pb,
     }
   }
   /* end of work */
-  /* todo fix this return type! */
-  return collisions_container; // todo wrong value
+  return collisions_container;
 }
 
 }
-
 #endif
