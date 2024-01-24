@@ -3,21 +3,23 @@
 #include "AbstractDomain.hpp"
 #include "AbstractClawProblem.hpp"
 #include "engine.hpp"
+#include <vector>
 
 
 namespace mitm {
-
+/*
+ * Do 1 iteration inp =(f/g)=> out, write the output in the address pointed
+ * by out_pt.
+ */
 template <typename Problem>
 void iterate_once(Problem &Pb,
 		  typename Problem::C_t& inp,
                   typename Problem::C_t& out,
 		  typename Problem::A_t& inpA, /* scratch buffer */
-		  typename Problem::B_t& inpB /* scratch buffer */ )
-{
-  /*
-   * Do 1 iteration inp =(f/g)=> out, write the output in the address pointed
-   * by out_pt.
-   */
+		  typename Problem::B_t& inpB /* scratch buffer */,
+		  typename Problem::B_t& inpB_dummy )
+{/* inpB_dummy only to distinguish this function from iterate_once in collision_problem  */
+  
   int f_or_g = Pb.C.extract_1_bit(inp);
   if (f_or_g == 1){
     Pb.send_C_to_A(inp, inpA);
@@ -104,16 +106,13 @@ bool treat_collision(Problem& Pb,
                                        inp1_pt,
 				       out1_pt);
 
-
   /* The two inputs don't lead to the same output */
   if (not found_collision) 
     return false;
 
   /* If found a robinhood, don't  */
   if ( Pb.C.is_equal(*inp0_pt, *inp1_pt) )
-    return false; 
-
-
+    return false;
 
   /* when f=/= g the one of the input should an A input while the other is B's */
   /* If this is not satisfied return */
@@ -140,6 +139,72 @@ bool treat_collision(Problem& Pb,
 template <typename Problem>
 void claw_search(Problem& Pb)
 {
+  using A_t = typename Problem::Pb::A_t;
+  using B_t = typename Problem::Pb::B_t;
+  using C_t = typename Problem::Pb::C_t;
+
+  using PAIR_T = std::pair<A_t, B_t>;
+
+  /* ============================= BUFFERS ================================== */
+  std::vector<PAIR_T> collisions_container{};
+
+
+  /* Input/Output containers */
+  /* 1st set of buffers: Related to input0 as a starting point */
+  /* either tmp0 or  output0 */
+  C_t inp0_or_out0_buffer0{};
+  C_t inp0_or_out0_buffer1{};
+
+
+  /* 2nd set of buffers: Related to input1 as a starting point */
+  /* When we potentially find a collision, we need 2 buffers for (inp1, out1) */
+  /* We will use the initial value of inp1 once, thus we don't need to gaurd  */
+  /* in an another variable untouched */
+  C_t inp1_or_out1_buffer0{};
+  C_t inp1_or_out1_buffer1{};
+
+
+  /* -------------------------- Passed variables ---------------------------- */
+  C_t inp0_st{}; /* starting input on the chain */
+
+  /* Always points to the region that contains the output,  */
+  C_t* inp0_pt = &inp0_or_out0_buffer0; /* even if it's not the same address*/
+  C_t* inp1_pt = &inp1_or_out1_buffer0;
+
+  /* Always points to the region that contains the output */
+  C_t* out0_pt = &inp0_or_out0_buffer1;/* even if it's not the same address*/
+  C_t* out1_pt = &inp1_or_out1_buffer1;
+
+ 
+  /* Use these variables to print the full collision */
+  A_t inp0A{};
+  B_t inp0B{};
+  A_t inp1A{};
+  B_t inp1B{};
+
+  /****************************** EXPERIMENTAL ********************************/
+  /* Think about these two varaibles, todo */
+  u64  out0_digest = 0; /* hashed value of the output0 */
+  /* Problem::Dom_C::length = #needed bytes to encode an element of C_t */
+  u8 inp_A_serial[Pb.A.length];
+  u8 inp_B_serial[Pb.B.length];
+  u8 out0_bytes[Pb.C.length];
+  /****************************************************************************/
+  int difficulty = 4;
+  
+  search_generic(Pb,
+	       difficulty,
+	       collisions_container, /* save found collisions here */
+	       inp0_st, /* starting point in the chain, not a pointer! */
+	       inp0_pt,/* pointer to the inp0 s.t. f(inp0) = out0 or using g*/
+               inp1_pt,/* pointer to the 2nd input, s.t. f or g (inp1) = out1 */
+               out0_pt,
+	       out1_pt,
+	       &inp0A,
+	       &inp1A,
+	       &inp0B, /* Last two inputs are args... in search generic */
+	       &inp1B);
+  
   
 }
 
