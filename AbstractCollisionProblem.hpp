@@ -6,11 +6,11 @@
 
 namespace mitm {
 /*
- * Provides the description of the type A and a function f : A -> A.
+ * Provides the description of the types A, C and a function f : A -> C.
  *
- * The problem instance can contain extra data.
- * E.g. In the attack on double-encryption, where the goal is to find
- *      x, y s.t. f(x, a) == g(y, b), the problem should contain (a, b).
+ * The problem instance can contain extra data, e.g. if the goal consists
+ * in finding H(prefix || x) == H(prefix || y) with x != y, then the Problem
+ * could contain prefix.
  */
 template<typename Domain_A,  typename Domain_C>
 class AbstractCollisionProblem {
@@ -18,8 +18,6 @@ public:
   /* these lines have to be retyped again */
   using A_t = typename Domain_A::t;
   using C_t = typename Domain_C::t;
-
-  static const int f_eq_g;
   
   AbstractCollisionProblem() {
     // enforce that A is a subclass of AbstractDomain
@@ -27,10 +25,21 @@ public:
 		  "A not derived from AbstractDomain");
   }
   
-  inline void f(const A_t &x, C_t &y) const;  /* y <--- f(x) */
-  inline void send_C_to_A(const C_t& inp_C, A_t& out_A) const;
+  void f(const A_t &x, C_t &y) const;  /* y <--- f(x) */
+  void send_C_to_A(const C_t& inp_C, A_t& out_A) const;
+
+  /* assuming that f(x) == g(y) == z, is (x, y) an acceptable outcome? */
+  bool good_collision(const A_t &x, const A_t &y, const C_t &z) const 
+  { 
+    /* 
+     * problem: to invoke the "is_equal(x, y)" method from the domain, we need an
+     * object of type Domain_A.
+     */
+    return (x != y); 
+  }
 
   /* changes the behavior of the two above functions */
+  /* CB: I am tempted to make the "index" of the function family explicit */
   void update_embedding(PRNG& rng); 
 };
 

@@ -27,14 +27,14 @@ using i64 = int64_t;
 template<class repr>           /* repr must support comparisons, and assignment */
 class AbstractDomain {
 public:
-  static int length;  /* nbytes needed to encode an element */
-  static size_t n_elements; /* how many elements in the domain */
+  int length;  /* nbytes needed to encode an element */
+  size_t n_elements; /* how many elements in the domain */
   using t = repr;            /* t is the machine representation of elements of the domain */
 
   template<typename PRNG>
-  static void randomize(t &x, PRNG &p);           /* set x to a random value */
+  void randomize(t &x, PRNG &p);           /* set x to a random value */
 
-  static void randomize(t &x);  /* set x to a random value */
+  void randomize(t &x);  /* set x to a random value */
   bool is_equal(t& x, t& y) const;
 
 
