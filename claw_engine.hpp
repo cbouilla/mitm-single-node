@@ -18,7 +18,10 @@ void iterate_once(Problem &Pb,
 		  typename Problem::A_t& inpA, /* scratch buffer */
 		  typename Problem::B_t& inpB /* scratch buffer */,
 		  typename Problem::B_t& inpB_dummy )
-{/* inpB_dummy only to distinguish this function from iterate_once in collision_problem  */
+{
+  /* inpB_dummy only to distinguish this function from iterate_once
+   * in collision_engine.hpp. Also, args... will be always passed as two inputs at once
+   */
   
   int f_or_g = Pb.C.extract_1_bit(inp);
   if (f_or_g == 1){
@@ -84,10 +87,10 @@ bool treat_collision(Problem& Pb,
 		     typename Problem::C_t*& inp1_pt,
 		     typename Problem::C_t*& out1_pt, /* inp1 calculation buffer */
 		     const u64 inp1_chain_len,
-		     typename Problem::A_t*& inp0_A,
-		     typename Problem::A_t*& inp1_A, /* dummy input */
-		     typename Problem::B_t*& inp0_B, /* dummy input */
-		     typename Problem::B_t*& inp1_B,
+		     typename Problem::A_t& inp0_A,   // arguments from here are
+/*dummy argument -> */ typename Problem::A_t& inp1_A, // references since no need
+/*dummy argument -> */ typename Problem::B_t& inp0_B, // to swap them. 
+		     typename Problem::B_t& inp1_B, 
 		     int dummy_arg /* To distinguish it from claw treat... */)
 {
 
