@@ -10,7 +10,9 @@
                      /     \
                     /       \
                    /         \
+                  /           \
 AbstractClawProblem.hpp     AbstractCollisionProblem.hpp
+                  \           /
                    \         /
                     \       /
                      \     /
@@ -18,7 +20,7 @@ AbstractClawProblem.hpp     AbstractCollisionProblem.hpp
                        \ /
                         ^
                         |
-        prng.hpp  <- engine.hpp -> dict.hpp
+      prng.hpp  <- base_engine.hpp -> dict.hpp
                         ^
                         |
                         x
@@ -32,9 +34,6 @@ AbstractClawProblem.hpp     AbstractCollisionProblem.hpp
                    \         /
                     --+   +--
                        \ /
-                        |
-                     mitm.hpp
-                        ^
                         |
                    your_code.cpp
  

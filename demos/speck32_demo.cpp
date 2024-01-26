@@ -9,7 +9,7 @@
 #include <stdint.h>
 #include <iostream>
 #include <array>
-#include "../mitm_sequential.hpp"
+#include "../claw_engine.hpp"
 #include "speck32.hpp"
 #include <iomanip>
 
@@ -113,7 +113,7 @@ public:
 
 };
 
-class Problem : mitm::AbstractProblem<SPECK_DOMAIN, SPECK_DOMAIN, SPECK_DOMAIN >{
+class Problem : mitm::AbstractClawProblem<SPECK_DOMAIN, SPECK_DOMAIN, SPECK_DOMAIN >{
 private:
   u64 version_send_C_to_A = 0;
   u64 version_send_C_to_B = 0;
@@ -170,6 +170,6 @@ public:
 int main(int argc, char* argv[])
 {
   Problem Pb;
-  mitm::collision<Problem>(Pb);
+  mitm::claw_search(Pb);
 }
 

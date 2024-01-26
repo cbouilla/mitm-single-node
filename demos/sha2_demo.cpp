@@ -1,4 +1,4 @@
-#include "../mitm_sequential.hpp"
+#include "../collision_engine.hpp"
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
@@ -225,18 +225,16 @@ public:
 // sha256_process(uint32_t state[8], const uint8_t data[], uint32_t length);
 
 class SHA2_Problem
-    : mitm::AbstractProblem<SHA2_INP_DOMAIN, SHA2_INP_DOMAIN, SHA2_OUT_DOMAIN>
+    : mitm::AbstractCollisionProblem<SHA2_INP_DOMAIN, SHA2_OUT_DOMAIN>
 {
 public:
 
   
   SHA2_INP_DOMAIN A; /* Input related functions */
-  SHA2_INP_DOMAIN B; /* Input related functions */
   SHA2_OUT_DOMAIN C; /* Output related functions */
 
-  
+  /* These two line are vital to have. */
   using C_t = SHA2_out_repr;
-  using B_t = SHA2_inp_repr;
   using A_t = SHA2_inp_repr;
   
   static const int f_eq_g = 1;
@@ -250,8 +248,6 @@ public:
     std::memcpy(y.state, state, NBYTES_DIGEST);
   }
 
-  inline /* In this case it's same as f  */
-  void g(const B_t& x, C_t& y) const  { f(x, y); }
 
   inline
   void send_C_to_A(C_t& inp_C, A_t& out_A) const
@@ -261,8 +257,6 @@ public:
     std::memcpy(out_A.data, inp_C.state, NBYTES_DIGEST);
   }
 
-  inline void send_C_to_B(C_t& inp_C, B_t& out_B) const
-  { send_C_to_A(inp_C, out_B); }
 
   /* change */
   void update_embedding(mitm::PRNG& rng) { ++embedding_n; }
@@ -285,6 +279,6 @@ int main(int argc, char* argv[])
 
   
   SHA2_Problem Pb;
-  mitm::collision(Pb);
+  mitm::collisoin_search(Pb);
 }
 

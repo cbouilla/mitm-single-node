@@ -45,8 +45,8 @@ include_directories(include)
 
 add_executable(speck32_demo
                demos/speck32_demo.cpp
-	       mitm_sequential.hpp
-	       include/dict.hpp
+	       claw_engine.hpp
+	       dict.hpp
 	       include/memory.hpp
 	       include/prng.hpp
 	       include/timing.hpp
@@ -55,8 +55,8 @@ add_executable(speck32_demo
 add_executable(sha2_demo
         demos/sha2_demo.cpp
 	demos/sha256.c
-        mitm_sequential.hpp
-        include/dict.hpp
+	collision_engine.hpp
+        dict.hpp
       	include/memory.hpp
 	include/prng.hpp
 	include/timing.hpp)
@@ -64,8 +64,8 @@ add_executable(sha2_demo
 add_executable(sha2-x86_demo
         demos/sha2_demo.cpp
 	demos/sha256_x86.c
-        mitm_sequential.hpp
-        include/dict.hpp
+	collision_engine.hpp
+        dict.hpp
       	include/memory.hpp
 	include/prng.hpp
 	include/timing.hpp)
@@ -75,6 +75,6 @@ add_executable(sha2-x86_demo
 # target_link_libraries(speck32_demo PRIVATE TBB::tbb)
 # #[[
 # add_executable(test demos/basic_demo.cpp mitm_sequential.hpp
-#         include/dict.hpp
-#         include/dict.hpp
+#         dict.hpp
+#         dict.hpp
 #         demos/basic_demo.cpp)]]

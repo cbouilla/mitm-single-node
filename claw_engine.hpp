@@ -2,11 +2,13 @@
 #define MITM_CLAW_ENGINE
 #include "AbstractDomain.hpp"
 #include "AbstractClawProblem.hpp"
-#include "engine.hpp"
+#include "base_engine.hpp"
 #include <vector>
 
 
 namespace mitm {
+
+/* args... = inp0B, inp1B*/
 /*
  * Do 1 iteration inp =(f/g)=> out, write the output in the address pointed
  * by out_pt.
@@ -88,10 +90,9 @@ bool treat_collision(Problem& Pb,
 		     typename Problem::C_t*& out1_pt, /* inp1 calculation buffer */
 		     const u64 inp1_chain_len,
 		     typename Problem::A_t& inp0_A,   // arguments from here are
-/*dummy argument -> */ typename Problem::A_t& inp1_A, // references since no need
+		     typename Problem::A_t& inp1_A, // references since no need
 /*dummy argument -> */ typename Problem::B_t& inp0_B, // to swap them. 
-		     typename Problem::B_t& inp1_B, 
-		     int dummy_arg /* To distinguish it from claw treat... */)
+/*dummy argument -> */ typename Problem::B_t& inp1_B)
 {
 
   /*
@@ -107,7 +108,10 @@ bool treat_collision(Problem& Pb,
 				       out0_pt,
 				       inp1_chain_len,
                                        inp1_pt,
-				       out1_pt);
+				       out1_pt,
+				       inp0_A,
+				       inp0_B,
+				       inp1_B);
 
   /* The two inputs don't lead to the same output */
   if (not found_collision) 
@@ -122,8 +126,8 @@ bool treat_collision(Problem& Pb,
   bool is_potential_collision = send_2_A_and_B(Pb,
 					       *inp0_pt,
 					       *inp1_pt,
-					       *inp0_A,
-					       *inp1_B);
+					       inp0_A,
+					       inp1_B);
   if (not is_potential_collision)
     return false; /* don't add this pair */
   
@@ -142,9 +146,9 @@ bool treat_collision(Problem& Pb,
 template <typename Problem>
 void claw_search(Problem& Pb)
 {
-  using A_t = typename Problem::Pb::A_t;
-  using B_t = typename Problem::Pb::B_t;
-  using C_t = typename Problem::Pb::C_t;
+  using A_t = typename Problem::A_t;
+  using B_t = typename Problem::B_t;
+  using C_t = typename Problem::C_t;
 
   using PAIR_T = std::pair<A_t, B_t>;
 
@@ -196,17 +200,17 @@ void claw_search(Problem& Pb)
   int difficulty = 4;
   
   search_generic(Pb,
-	       difficulty,
 	       collisions_container, /* save found collisions here */
+	       difficulty,
 	       inp0_st, /* starting point in the chain, not a pointer! */
 	       inp0_pt,/* pointer to the inp0 s.t. f(inp0) = out0 or using g*/
                inp1_pt,/* pointer to the 2nd input, s.t. f or g (inp1) = out1 */
                out0_pt,
 	       out1_pt,
-	       &inp0A,
-	       &inp1A,
-	       &inp0B, /* Last two inputs are args... in search generic */
-	       &inp1B);
+	       inp0A,
+	       inp1A,
+	       inp0B, /* Last two inputs are args... in search generic */
+	       inp1B);
   
   
 }
