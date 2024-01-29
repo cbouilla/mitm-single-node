@@ -2,7 +2,7 @@
 #define MITM_COLLISION_ENGINE
 #include "AbstractDomain.hpp"
 #include "AbstractCollisionProblem.hpp"
-#include "engine.hpp"
+#include "base_engine.hpp"
 
 namespace mitm {
 
@@ -59,7 +59,8 @@ bool treat_collision(Problem& Pb,
 				       out0_pt,
 				       inp1_chain_len,
                                        inp1_pt,
-				       out1_pt);
+				       out1_pt,
+				       inp0_A);
   
   /* The two inputs don't lead to the same output */
   if (not found_collision) 
@@ -87,8 +88,8 @@ bool treat_collision(Problem& Pb,
 template <typename Problem>
 void collisoin_search(Problem& Pb)
 {
-  using A_t = typename Problem::Pb::A_t;
-  using C_t = typename Problem::Pb::C_t;
+  using A_t = typename Problem::A_t;
+  using C_t = typename Problem::C_t;
 
   using PAIR_T = std::pair<A_t, A_t>;
 
@@ -128,11 +129,11 @@ void collisoin_search(Problem& Pb)
   A_t inp1A{};
 
   /****************************** EXPERIMENTAL ********************************/
+
   /* Think about these two varaibles, todo */
   u64  out0_digest = 0; /* hashed value of the output0 */
   /* Problem::Dom_C::length = #needed bytes to encode an element of C_t */
   u8 inp_A_serial[Pb.A.length];
-  u8 inp_B_serial[Pb.B.length];
   u8 out0_bytes[Pb.C.length];
   /****************************************************************************/
   int difficulty = 4;
@@ -140,8 +141,8 @@ void collisoin_search(Problem& Pb)
   
   /* note the search_engine has different arguments than claw_search */
   search_generic(Pb,
+		 collisions_container, /* save found collisions here */
 	       difficulty,
-	       collisions_container, /* save found collisions here */
 	       inp0_st, /* starting point in the chain, not a pointer! */
 	       inp0_pt,/* pointer to the inp0 s.t. f(inp0) = out0 or using g*/
 	       inp1_pt,/* pointer to the 2nd input, s.t. f or g (inp1) = out1 */

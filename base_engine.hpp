@@ -28,7 +28,7 @@ namespace mitm {
  * Defines how to walk in a sequence. Use functions overloading to differentiate
  * between a claw's iteration and a collisions's iteration. Specfically:
  * When it's a claw problem, then it would have 2 extra arguments, namely:
- * 1)  inpB. Besides Pb, inp, out, and inpA
+ * 1)  inp0B, and inp1B.
  * When it's a collision:
  * args is empty
  * 
@@ -152,14 +152,16 @@ bool is_serialize_inverse_of_unserialize(Problem Pb, PRNG& prng)
  * find the earliest collision in the sequence before the distinguished point
  * add a drawing to illustrate this.
  */
-template<typename Problem>
+template<typename Problem, typename... Types>
 bool walk(Problem& Pb,
 	  u64 inp0_chain_len,
 	  typename Problem::C_t*& inp0_pt,
 	  typename Problem::C_t*& out0_pt, /* inp0 calculation buffer */
 	  u64 inp1_chain_len,
           typename Problem::C_t*& inp1_pt,
-	  typename Problem::C_t*& out1_pt /* inp1 calculation buffer */)
+	  typename Problem::C_t*& out1_pt, /* inp1 calculation buffer */
+	  typename Problem::A_t& inpA,
+	  Types... args)
 {
   /****************************************************************************+
    *            walk the longest sequence until they are equal                 |
@@ -181,12 +183,12 @@ bool walk(Problem& Pb,
   /* move the longest sequence until the remaining number of steps is equal */
   /* to the shortest sequence. */
   for (; inp0_chain_len > inp1_chain_len; --inp0_chain_len){
-    iterate_once(*inp0_pt, *out0_pt, Pb);
+    iterate_once(Pb, *inp0_pt, *out0_pt, inpA, args...);
     swap_pointers(inp0_pt, out0_pt);
   }
   
   for (; inp0_chain_len < inp1_chain_len; --inp1_chain_len){
-    iterate_once(*inp1_pt, *out1_pt, Pb);
+    iterate_once(Pb, *inp1_pt, *out1_pt, inpA, args...);
     swap_pointers(inp1_pt, out1_pt);
   }
 
@@ -196,8 +198,8 @@ bool walk(Problem& Pb,
   for (size_t i = 0; i < len; ++i){
     /* walk them together and check each time if their output are equal     */
     /* return as soon equality is found. The equality could be a robinhood. */
-    iterate_once(*inp0_pt, *out0_pt, Pb);
-    iterate_once(*inp1_pt, *out1_pt, Pb);
+    iterate_once(Pb, *inp0_pt, *out0_pt, inpA, args...);
+    iterate_once(Pb, *inp1_pt, *out1_pt, inpA, args...);
     
     if(Pb.C.is_equal( *out0_pt, *out1_pt ))
       return true; /* They are equal */
@@ -305,7 +307,7 @@ void search_generic(Problem& Pb,
       is_collision_found = false;
       /* fill the input with a fresh random value. */
       Pb.C.randomize(inp_St, rng_urandom); /* todo rng should be reviewed */
-      Pb.C.copy(inp_St, inp0A);
+      Pb.C.copy(inp_St, *inp0_pt);
       chain_length0 = 0; 
       // todo error here, check generate_dist_point signature 
       found_dist = generate_dist_point(Pb,
@@ -313,6 +315,7 @@ void search_generic(Problem& Pb,
 				       difficulty,
 				       inp0_pt,
 				       out0_pt,
+				       inp0A,
 				       args...);
 
       out0_digest = Pb.C.hash(*out0_pt);
@@ -394,7 +397,7 @@ void search_generic(Problem& Pb,
     }
   }
   /* end of work */
-  return collisions_container;
+  return;// collisions_container; // todo return something useful 
 }
 
 }
