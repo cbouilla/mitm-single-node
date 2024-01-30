@@ -21,13 +21,20 @@ public:
   using C_t = typename Domain_C::t;
   using A_t = typename Domain_A::t;
   using B_t = typename Domain_B::t;
-
-  static const int f_eq_g;
+  
   
   AbstractClawProblem() {
     // enforce that A is a subclass of AbstractDomain
     static_assert(std::is_base_of<AbstractDomain<typename Domain_A::t>, Domain_A>::value,
 		  "A not derived from AbstractDomain");
+
+    static_assert(std::is_base_of<AbstractDomain<typename Domain_B::t>, Domain_B>::value,
+		  "B not derived from AbstractDomain");
+
+    static_assert(std::is_base_of<AbstractDomain<typename Domain_C::t>, Domain_C>::value,
+		  "C not derived from AbstractDomain");
+
+
   }
   
   inline void f(const A_t &x, C_t &y) const;  /* y <--- f(x) */

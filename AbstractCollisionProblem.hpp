@@ -25,6 +25,9 @@ public:
     // enforce that A is a subclass of AbstractDomain
     static_assert(std::is_base_of<AbstractDomain<typename Domain_A::t>, Domain_A>::value,
 		  "A not derived from AbstractDomain");
+    static_assert(std::is_base_of<AbstractDomain<typename Domain_C::t>, Domain_A>::value,
+		  "C not derived from AbstractDomain");
+
   }
   
   inline void f(const A_t &x, C_t &y) const;  /* y <--- f(x) */
