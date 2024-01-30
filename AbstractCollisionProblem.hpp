@@ -12,24 +12,25 @@ namespace mitm {
  * in finding H(prefix || x) == H(prefix || y) with x != y, then the Problem
  * could contain prefix.
  */
-template<typename Domain_A,  typename Domain_C>
+template<typename A, typename Domain_C>
 class AbstractCollisionProblem {
 public:
   /* these lines have to be retyped again */
-  using A_t = typename Domain_A::t;
   using C_t = typename Domain_C::t;
   
   AbstractCollisionProblem() {
-    // enforce that A is a subclass of AbstractDomain
-    static_assert(std::is_base_of<AbstractDomain<typename Domain_A::t>, Domain_A>::value,
-		  "A not derived from AbstractDomain");
+    // enforce that C is a subclass of AbstractDomain
+    // In fact, we don't need to know **anything** about A
+    static_assert(std::is_base_of<AbstractDomain<typename Domain_C::t>, Domain_C>::value,
+		  "C not derived from AbstractDomain");
+
   }
   
-  void f(const A_t &x, C_t &y) const;  /* y <--- f(x) */
-  void send_C_to_A(const C_t& inp_C, A_t& out_A) const;
+  void f(const A &x, C_t &y) const;  /* y <--- f(x) */
+  void send_C_to_A(const C_t& inp_C, A& out_A) const;
 
   /* assuming that f(x) == g(y) == z, is (x, y) an acceptable outcome? */
-  bool good_collision(const A_t &x, const A_t &y, const C_t &z) const 
+  bool good_collision(const A &x, const A &y, const C_t &z) const 
   { 
     /* 
      * problem: to invoke the "is_equal(x, y)" method from the domain, we need an

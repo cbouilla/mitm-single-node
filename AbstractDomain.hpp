@@ -34,19 +34,17 @@ public:
   template<typename PRNG>
   void randomize(t &x, PRNG &p);           /* set x to a random value */
 
-  void randomize(t &x);  /* set x to a random value */
-  bool is_equal(t& x, t& y) const;
-
+  bool is_equal(t &x, t &y) const;
 
   /* get the next element after x.*/
   /* What matters is getting a different element each time, not the order. */
-  inline t next(t& x)  const;
-  inline void serialize(const t &x, u8 *out) const;   /* write this to out */
-  inline void unserialize(const u8 *in, t &x) const;        /* read this from in */
-  inline void copy(const t& inp, t& out) const; /* deepcopy inp to out */
-  inline int extract_1_bit(const t& inp) const;
+  t next(t& x)  const;
+  void serialize(const t &x, u8 *out) const;   /* write this to out */
+  void unserialize(const u8 *in, t &x) const;        /* read this from in */
+  void copy(const t& inp, t& out) const; /* deepcopy inp to out */
+  int extract_1_bit(const t& inp) const;
 
-  u64 hash(const t &x) const;               /* return some bits from this */
+  u64 hash(const t &x) const;                /* return some bits from this */
   u64 hash_extra(const t &x) const ;         /* return more bits from this */
 };
 
