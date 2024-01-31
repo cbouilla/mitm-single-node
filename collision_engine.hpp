@@ -17,19 +17,18 @@ namespace mitm {
   /* "We would like to preserve inp0 at the end of calculation." */
   /***************************************************************/
 
+/*
+ * Do 1 iteration inp =(f/g)=> out, write the output in the address pointed
+ * by out.
+ */
 template <typename Problem>
 void iterate_once(Problem &Pb,
 		  typename Problem::C_t& inp,
                   typename Problem::C_t& out,
 		  typename Problem::A_t& inpA)
 {
-  /*
-   * Do 1 iteration inp =(f/g)=> out, write the output in the address pointed
-   * by out_pt.
-   */
-  Pb.send_C_to_A(inp, inpA);
-  Pb.f(inpA, out);
-
+        Pb.send_C_to_A(inp, inpA);
+        Pb.f(inpA, out);
 }
 
 

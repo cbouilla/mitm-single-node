@@ -27,26 +27,23 @@ using i64 = int64_t;
 template<class repr>           /* repr must support comparisons, and assignment */
 class AbstractDomain {
 public:
-  static int length;  /* nbytes needed to encode an element */
-  static size_t n_elements; /* how many elements in the domain */
+  int length;  /* nbytes needed to encode an element */
+  size_t n_elements; /* how many elements in the domain */
   using t = repr;            /* t is the machine representation of elements of the domain */
 
   template<typename PRNG>
-  static void randomize(t &x, PRNG &p);           /* set x to a random value */
+  void randomize(t &x, PRNG &p) const;           /* set x to a random value */
 
-  static void randomize(t &x);  /* set x to a random value */
-  bool is_equal(t& x, t& y) const;
+  bool is_equal(const t &x, const t &y) const;
 
+  void serialize(const t &x, u8 *out) const;   /* write this to out */
+  void unserialize(const u8 *in, t &x) const;        /* read this from in */
+  void copy(const t& inp, t& out) const; /* deepcopy inp to out */
 
-  /* get the next element after x.*/
-  /* What matters is getting a different element each time, not the order. */
-  inline t next(t& x)  const;
-  inline void serialize(const t &x, u8 *out) const;   /* write this to out */
-  inline void unserialize(const u8 *in, t &x) const;        /* read this from in */
-  inline void copy(const t& inp, t& out) const; /* deepcopy inp to out */
-  inline int extract_1_bit(const t& inp) const;
+  /* debatable: we only need it in the claw case */
+  int extract_1_bit(const t &inp) const;
 
-  u64 hash(const t &x) const;               /* return some bits from this */
+  u64 hash(const t &x) const;                /* return some bits from this */
   u64 hash_extra(const t &x) const ;         /* return more bits from this */
 };
 
