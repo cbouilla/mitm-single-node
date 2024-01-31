@@ -34,6 +34,7 @@ public:
 
 	/* specification of the collision to find */
 
+
 	void f(const A &x, C_t &y) const;  /* y <--- f(x) */
   
 	/* assuming that f(x) == f(y) == z and x != y, is (x, y) an acceptable outcome? */

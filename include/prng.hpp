@@ -1,60 +1,34 @@
 #ifndef MITM_PRNG
 #define MITM_PRNG
-#include <chrono>
+
 #include <fstream>
 #include <array>
 #include <cstddef>
 #include <cstdint>
 #include<cstring>
-
+#include <random>
 
 namespace mitm {
-/* source : https://gist.github.com/mortenpi/9745042 */
-
-  
-template<class T>
-T read_urandom()
-{
-    union {
-        T value;
-        char cs[sizeof(T)];
-    } u;
-
-    std::ifstream rfin("/dev/urandom");
-    rfin.read(u.cs, sizeof(u.cs));
-    rfin.close();
-
-    return u.value;
-}
-
-
 
 /*
  * Generic interface for a PRNG. The sequence of pseudo-random numbers
  * depends on both seed and seq
  */
 class PRNG {
-  /* todo make it support length */
-  /* source : https://gist.github.com/mortenpi/9745042 */
-  union {
-    uint64_t value;
-    char cs[sizeof(uint64_t)];
-  } u;
-  
+  /* source : https://en.cppreference.com/w/cpp/numeric/random/mersenne_twister_engine  */
+  std::mersenne_twister_engine<std::uint_fast64_t, 64, 312, 156, 31,
+			       0xb5026f5aa96619e9, 29,
+			       0x5555555555555555, 17,
+			       0x71d67fffeda60000, 37,
+			       0xfff7eee000000000, 43,
+			       6364136223846793005> gen64;
+
 public:
 
   PRNG() { };
   
-  uint64_t rand(){
-    std::ifstream rfin("/dev/urandom");
-    rfin.read(u.cs, sizeof(u.cs));
-    rfin.close();
-
-    return u.value;
-  };
-  
+  uint64_t rand(){ return gen64(); };
 };
-
 
 }
 

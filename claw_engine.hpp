@@ -201,6 +201,7 @@ void claw_search(Problem& Pb)
   
   search_generic(Pb,
 	       collisions_container, /* save found collisions here */
+	       1LL<<20, /* #needed_collisions, todo don't hard code it */
 	       difficulty,
 	       inp0_st, /* starting point in the chain, not a pointer! */
 	       inp0_pt,/* pointer to the inp0 s.t. f(inp0) = out0 or using g*/

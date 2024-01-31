@@ -49,6 +49,27 @@ void iterate_once(Problem &Pb,
 }
 
 
+/*
+ * In case of claw: an additional arguments:
+ * 1) inpB_pt
+ */
+template <typename Problem, typename PAIR_T, typename... Types >
+bool treat_collision(Problem& Pb,
+		     std::vector<PAIR_T> collisions_container,
+		     typename Problem::C_t*& inp0_pt,
+		     typename Problem::C_t*& out0_pt, /* inp0 calculation buffer */
+		     const u64 inp0_chain_len,
+		     typename Problem::C_t*& inp1_pt,
+		     typename Problem::C_t*& out1_pt, /* inp1 calculation buffer */
+		     const u64 inp1_chain_len,
+		     typename Problem::A_t& inp0_A,
+		     typename Problem::A_t& inp1_A,
+		     Types... args)
+{
+  std::cerr << "Internal Error: should not use general implementation of if `treate_collision`!\n";
+  std::terminate(); /* Never use this implementation! */
+}
+
 
 inline bool is_distinguished_point(u64 digest, u64 mask)
 {  return (0 == (mask & digest) ); }
@@ -207,36 +228,21 @@ bool walk(Problem& Pb,
     swap_pointers(inp0_pt, out0_pt);
     swap_pointers(inp1_pt, out1_pt);
   }
-  return false;
+  return false; /* we did not find a common point */
 }
 
 
-/*
- * In case of claw: an additional arguments:
- * 1) inpB_pt
+
+
+/* The basic search finds collision(s) of
+ * iterate_once: C -> C, these collisions can be converted into a solution
+ * to the problem we are treating, claw or a collision.
+ *  
  */
-template <typename Problem, typename PAIR_T, typename... Types >
-bool treat_collision(Problem& Pb,
-		     std::vector<PAIR_T> collisions_container,
-		     typename Problem::C_t*& inp0_pt,
-		     typename Problem::C_t*& out0_pt, /* inp0 calculation buffer */
-		     const u64 inp0_chain_len,
-		     typename Problem::C_t*& inp1_pt,
-		     typename Problem::C_t*& out1_pt, /* inp1 calculation buffer */
-		     const u64 inp1_chain_len,
-		     typename Problem::A_t& inp0_A,
-		     typename Problem::A_t& inp1_A,
-		     Types... args)
-{
-  std::cerr << "Internal Error: should not use general implementation of if `treate_collision`!\n";
-  std::terminate(); /* Never use this implementation! */
-}
-
-
-/* todo add documentation */
 template<typename Problem, typename PAIR_T, typename... Types>
 void search_generic(Problem& Pb,
 		    std::vector<PAIR_T>& collisions_container,
+		    size_t n_needed_collisions,
 		    int difficulty,
 		    typename Problem::C_t& inp_St, // Startign point in chain
 		    typename Problem::C_t* inp0_pt,
@@ -252,7 +258,7 @@ void search_generic(Problem& Pb,
   PRNG rng_urandom;
 
   using C_t = typename Problem::C_t;
-  using A_t = typename Problem::A_t;
+  // using A_t = typename Problem::A_t;
   
   /* Sanity Test:  */
   is_serialize_inverse_of_unserialize<Problem>(Pb, rng_urandom);
@@ -278,7 +284,7 @@ void search_generic(Problem& Pb,
   
   bool is_collision_found = false;
   size_t n_collisions = 0;
-  size_t n_needed_collisions = 1LL<<20;
+
   
   /* We should have ration 1/3 real collisions and 2/3 false collisions */
   size_t n_robinhoods = 0;
@@ -307,6 +313,7 @@ void search_generic(Problem& Pb,
       is_collision_found = false;
       /* fill the input with a fresh random value. */
       Pb.C.randomize(inp_St, rng_urandom); /* todo rng should be reviewed */
+
       Pb.C.copy(inp_St, *inp0_pt);
       chain_length0 = 0; 
       // todo error here, check generate_dist_point signature 
@@ -320,7 +327,7 @@ void search_generic(Problem& Pb,
 
       out0_digest = Pb.C.hash(*out0_pt);
       ++n_distinguished_points;
-
+      
       print_interval_time(n_distinguished_points, interval);
       
       if (not found_dist) [[unlikely]]
