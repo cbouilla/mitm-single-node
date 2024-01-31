@@ -13,15 +13,23 @@ namespace mitm {
  * in finding H(prefix || x) == H(prefix || y) with x != y, then the Problem
  * could contain prefix.
  */
-template<typename I, typename A, typename Domain_C>
+template<typename I, typename Domain_A, typename Domain_C>
 class AbstractCollisionProblem {
 public:
   /* these lines have to be retyped again */
+  using A_t = typename Domain_A::t;
   using C_t = typename Domain_C::t;
   
   AbstractCollisionProblem() {
     // enforce that C is a subclass of AbstractDomain
     // In fact, we don't need to know **anything** about A
+    /* At the end, we need to serialize A and B,  thus we need more information
+     * about their length and an extra function. We can move these tasks to
+     * to AbstractClawProblem. At the moment, we stick to the old method.
+     * */
+    static_assert(std::is_base_of<AbstractDomain<typename Domain_A::t>, Domain_A>::value,
+		  "A not derived from AbstractDomain");
+
     static_assert(std::is_base_of<AbstractDomain<typename Domain_C::t>, Domain_C>::value,
 		  "C not derived from AbstractDomain");
     // C does not need to have hash_1_bit
@@ -35,7 +43,7 @@ public:
   /* specification of the collision to find */
 
 
-  void f(const A &x, C_t &y) const;  /* y <--- f(x) */
+  void f(const A_t &x, C_t &y) const;  /* y <--- f(x) */
   
   /* assuming that f(x) == f(y) == z and x != y, is (x, y) an acceptable outcome? */
   bool good_collision(const A_t &x, const A_t &y, const C_t &z) const 
@@ -50,7 +58,7 @@ public:
    * It seems reasonable to ask that there must exist a subset D of C 
    * such that the embedding, when its domain is restricted to D, is injective. 
    */
-  void send_C_to_A(const C_t &inp_C, A& out_A) const;
+  void send_C_to_A(const C_t &inp_C, A_t& out_A) const;
 	
   /*
    * Family of permutations acting on the output domain.

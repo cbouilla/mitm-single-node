@@ -225,7 +225,7 @@ public:
 // sha256_process(uint32_t state[8], const uint8_t data[], uint32_t length);
 
 class SHA2_Problem
-    : mitm::AbstractCollisionProblem<SHA2_INP_DOMAIN, SHA2_OUT_DOMAIN>
+  : mitm::AbstractCollisionProblem<int, SHA2_INP_DOMAIN, SHA2_OUT_DOMAIN>
 {
 public:
 
