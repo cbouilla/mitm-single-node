@@ -47,6 +47,7 @@ add_executable(speck32_demo
                demos/speck32_demo.cpp
 	       claw_engine.hpp
 	       dict.hpp
+	       base_engine.hpp
 	       include/memory.hpp
 	       include/prng.hpp
 	       include/timing.hpp
@@ -65,6 +66,7 @@ add_executable(sha2-x86_demo
         demos/sha2_demo.cpp
 	demos/sha256_x86.c
 	collision_engine.hpp
+	base_engine.hpp
         dict.hpp
       	include/memory.hpp
 	include/prng.hpp

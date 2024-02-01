@@ -25,7 +25,7 @@ public:
 
   
   AbstractClawProblem() {
-    /* At the end we need to serialize A and B,  thus we need more information
+    /* At the end, we need to serialize A and B,  thus we need more information
      * about their length and an extra function. We can move these tasks to
      * to AbstractClawProblem. At the moment, we stick to the old method.
      * */
