@@ -35,9 +35,11 @@ namespace mitm {
  */
 template <typename Problem, typename... Types>
 void iterate_once(Problem &Pb,
+		  typename Problem::I_t& i, /*permutation number of f's input*/
 		  typename Problem::C_t& inp,
-                  typename Problem::C_t& out,
-		  typename Problem::A_t& inpA,
+		  typename Problem::C_t& out,
+		  typename Problem::C_t& inp_mixed,
+		  typename Problem::A_t& inpA, /* scratch buffer */
 		  Types... args)
 {
   /* C++ always prefers more specialized templates. 
@@ -55,6 +57,7 @@ void iterate_once(Problem &Pb,
  */
 template <typename Problem, typename PAIR_T, typename... Types >
 bool treat_collision(Problem& Pb,
+		     typename Problem::I_t& i,
 		     std::vector<PAIR_T> collisions_container,
 		     typename Problem::C_t*& inp0_pt,
 		     typename Problem::C_t*& out0_pt, /* inp0 calculation buffer */
@@ -62,6 +65,7 @@ bool treat_collision(Problem& Pb,
 		     typename Problem::C_t*& inp1_pt,
 		     typename Problem::C_t*& out1_pt, /* inp1 calculation buffer */
 		     const u64 inp1_chain_len,
+		     typename Problem::C_t& inp_mixed,
 		     typename Problem::A_t& inp0_A,
 		     typename Problem::A_t& inp1_A,
 		     Types... args)
@@ -92,10 +96,12 @@ inline void swap_pointers(C_t*& pt1,
  */
 template<typename Problem, typename... Types>
 bool generate_dist_point(Problem& Pb,
+			 typename Problem::I_t& i,
 			 u64& chain_length, /* write chain lenght here */
 			 const i64 difficulty, /* #bits are zero at the beginning */
 			 typename Problem::C_t*& inp_pt,
 			 typename Problem::C_t*& out_pt,
+			 typename Problem::C_t& inp_mixed,
 			 typename Problem::A_t& inpA,
 			 Types... args)
 {
@@ -116,7 +122,7 @@ bool generate_dist_point(Problem& Pb,
   constexpr u64 k = 40;
   for (u64 i = 0; i < k*(1LL<<difficulty); ++i){
     /* uses claw's iterate_once if args... is not empty, otherwise collisions'*/
-    iterate_once(Pb, *inp_pt, *out_pt, inpA, args...); 
+    iterate_once(Pb, i, *inp_pt, *out_pt, inp_mixed, inpA, args...); 
     ++chain_length;
 
     /* we may get a dist point here */
@@ -175,12 +181,14 @@ bool is_serialize_inverse_of_unserialize(Problem Pb, PRNG& prng)
  */
 template<typename Problem, typename... Types>
 bool walk(Problem& Pb,
+	  typename Problem::I_t& i,
 	  u64 inp0_chain_len,
 	  typename Problem::C_t*& inp0_pt,
 	  typename Problem::C_t*& out0_pt, /* inp0 calculation buffer */
 	  u64 inp1_chain_len,
           typename Problem::C_t*& inp1_pt,
 	  typename Problem::C_t*& out1_pt, /* inp1 calculation buffer */
+	  typename Problem::C_t& inp_mixed,
 	  typename Problem::A_t& inpA,
 	  Types... args)
 {
@@ -204,12 +212,12 @@ bool walk(Problem& Pb,
   /* move the longest sequence until the remaining number of steps is equal */
   /* to the shortest sequence. */
   for (; inp0_chain_len > inp1_chain_len; --inp0_chain_len){
-    iterate_once(Pb, *inp0_pt, *out0_pt, inpA, args...);
+    iterate_once(Pb, i, *inp0_pt, *out0_pt, inp_mixed, inpA, args...);
     swap_pointers(inp0_pt, out0_pt);
   }
   
   for (; inp0_chain_len < inp1_chain_len; --inp1_chain_len){
-    iterate_once(Pb, *inp1_pt, *out1_pt, inpA, args...);
+    iterate_once(Pb, i, *inp1_pt, *out1_pt, inp_mixed, inpA, args...);
     swap_pointers(inp1_pt, out1_pt);
   }
 
@@ -219,11 +227,20 @@ bool walk(Problem& Pb,
   for (size_t i = 0; i < len; ++i){
     /* walk them together and check each time if their output are equal     */
     /* return as soon equality is found. The equality could be a robinhood. */
-    iterate_once(Pb, *inp0_pt, *out0_pt, inpA, args...);
-    iterate_once(Pb, *inp1_pt, *out1_pt, inpA, args...);
+    iterate_once(Pb, i, *inp0_pt, *out0_pt, inp_mixed, inpA, args...);
+    iterate_once(Pb, i, *inp1_pt, *out1_pt, inp_mixed, inpA, args...);
     
-    if(Pb.C.is_equal( *out0_pt, *out1_pt ))
+    if(Pb.C.is_equal( *out0_pt, *out1_pt )){
+      /* inp0 & inp1 contain  input before mixing, we need to fix this  */
+      Pb.mix(i, *inp0_pt, inp_mixed);
+      Pb.C.copy(inp_mixed, *inp0_pt);
+
+      Pb.mix(i, *inp1_pt, inp_mixed);
+      Pb.C.copy(inp_mixed, *inp1_pt);
+
       return true; /* They are equal */
+    }
+      
 
     swap_pointers(inp0_pt, out0_pt);
     swap_pointers(inp1_pt, out1_pt);
@@ -249,19 +266,20 @@ void search_generic(Problem& Pb,
 		    typename Problem::C_t* inp1_pt,
 		    typename Problem::C_t* out0_pt,
 		    typename Problem::C_t* out1_pt,
+		    typename Problem::C_t& inp_mixed,
 		    typename Problem::A_t& inp0A,
 		    typename Problem::A_t& inp1A,
 		    Types... args) /* two extra arguments if claw problem
 				    * 1) inp0B passed as a reference
 				    * 2) inp1B passed as a reference */
 {
-  PRNG rng_urandom;
+  PRNG prng;
 
   using C_t = typename Problem::C_t;
   // using A_t = typename Problem::A_t;
   
   /* Sanity Test:  */
-  is_serialize_inverse_of_unserialize<Problem>(Pb, rng_urandom);
+  is_serialize_inverse_of_unserialize<Problem>(Pb, prng);
 
   /*============================= DICT INIT ==================================*/
   size_t n_bytes = 0.5*get_available_memory();
@@ -292,7 +310,10 @@ void search_generic(Problem& Pb,
   size_t n_distinguished_points = 0;
   constexpr size_t interval = (1LL<<15);
   double collision_timer = wtime();
-  
+
+  /* variable to generate families of functions f_i: C -> C */
+  /* typename Problem::I_t */
+  auto i = Pb.mix_default();
 
   /*----------------------------MAIN COMPUTATION------------------------------*/
   /*=================== Generate Distinguished Points ========================*/
@@ -302,9 +323,8 @@ void search_generic(Problem& Pb,
     /* These simulations show that if 10w distinguished points are generated
      * for each version of the function, and theta = 2.25sqrt(w/n) then ...
      */
-    /* update F and G by changing `send_C_to_A` and `send_C_to_B` */    
-    Pb.update_embedding(rng_urandom);
-    dict.flush();
+    /* update F and G by changing `send_C_to_A` and `send_C_to_B` */
+    // todo use mix_sample here
 
     for (size_t n_dist_points = 0;
 	 n_dist_points < 10*(dict.n_slots);
@@ -312,16 +332,18 @@ void search_generic(Problem& Pb,
       {
       is_collision_found = false;
       /* fill the input with a fresh random value. */
-      Pb.C.randomize(inp_St, rng_urandom); /* todo rng should be reviewed */
+      Pb.C.randomize(inp_St, prng); /* todo rng should be reviewed */
 
       Pb.C.copy(inp_St, *inp0_pt);
       chain_length0 = 0; 
       // todo error here, check generate_dist_point signature 
       found_dist = generate_dist_point(Pb,
+				       i, /* permutation number of f's input */
 				       chain_length0,
 				       difficulty,
 				       inp0_pt,
 				       out0_pt,
+				       inp_mixed,
 				       inp0A,
 				       args...);
 
@@ -365,6 +387,7 @@ void search_generic(Problem& Pb,
 	 * 2) inpB
 	 */
 	bool is_potential_coll = treat_collision(Pb,
+						 i,
 						 collisions_container,
 						 inp0_pt,
 						 out0_pt,
@@ -372,6 +395,7 @@ void search_generic(Problem& Pb,
 						 inp1_pt,
 						 out1_pt,
 						 chain_length1,
+						 inp_mixed,
 						 inp0A,
 						 inp1A,
 						 args...);
@@ -402,6 +426,10 @@ void search_generic(Problem& Pb,
 	}
       }
     }
+
+    /* We need to change to restart calculation with a different function */
+    i = Pb.mix_sample(prng); /* Generates new permutation of f */
+    dict.flush();
   }
   /* end of work */
   return;// collisions_container; // todo return something useful 

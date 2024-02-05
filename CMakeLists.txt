@@ -13,10 +13,10 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON) # Compiler command json
 
 # common compiler option (between clang and gcc, not sure about the others)
 # add_compile_options(-ggdb -Wall -Wextra -pedantic -fsanitize=address)
-add_compile_options(-march=native -ggdb -Wall -Wextra -pedantic -O0)
+add_compile_options(-march=native -ggdb -Wall -Wextra -pedantic -O3 -flto)
 # Needed this, other wise it won't link
 # set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -fsanitize=address")
-set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS}")
+set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -flto")
 
 
 # The little bird says clang has a nicer error report than gcc!
@@ -46,6 +46,9 @@ include_directories(include)
 add_executable(speck32_demo
                demos/speck32_demo.cpp
 	       claw_engine.hpp
+       	       base_engine.hpp
+	       AbstractClawProblem.hpp
+	       AbstractDomain.hpp
 	       dict.hpp
 	       base_engine.hpp
 	       include/memory.hpp
@@ -57,6 +60,9 @@ add_executable(sha2_demo
         demos/sha2_demo.cpp
 	demos/sha256.c
 	collision_engine.hpp
+	base_engine.hpp
+	AbstractCollisionProblem.hpp
+	AbstractDomain.hpp
         dict.hpp
       	include/memory.hpp
 	include/prng.hpp
@@ -67,6 +73,8 @@ add_executable(sha2-x86_demo
 	demos/sha256_x86.c
 	collision_engine.hpp
 	base_engine.hpp
+	AbstractCollisionProblem.hpp
+	AbstractDomain.hpp
         dict.hpp
       	include/memory.hpp
 	include/prng.hpp

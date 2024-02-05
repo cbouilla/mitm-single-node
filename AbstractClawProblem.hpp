@@ -62,7 +62,7 @@ public:
   /*
    * Family of permutations acting on the output domain.
    */
-  void mix(const I &i, const C_t& x, C_t& y) const;   /* y <--- f_i(x) */
+  void mix(const I &i, const C_t& x, C_t& y) const;   /* y <--- σ_i(x) */
 
   /* Generate a default permutation of C (e.g. the identity) */
   I& mix_default() const; 

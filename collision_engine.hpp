@@ -23,11 +23,14 @@ namespace mitm {
  */
 template <typename Problem>
 void iterate_once(Problem &Pb,
+		  typename Problem::I_t& i, /* permutation number of f's input */
 		  typename Problem::C_t& inp,
                   typename Problem::C_t& out,
+		  typename Problem::C_t& inp_mixed,
 		  typename Problem::A_t& inpA)
 {
-        Pb.send_C_to_A(inp, inpA);
+  	Pb.mix(i, inp, inp_mixed);
+        Pb.send_C_to_A(inp_mixed, inpA);
         Pb.f(inpA, out);
 }
 
@@ -40,6 +43,7 @@ void iterate_once(Problem &Pb,
  */ // todo: the pair type looks ugly, rethink the solution.
 template <typename Problem, typename PAIR_T> /* PAIR_T = std::pair<A_t, B_t> */
 bool treat_collision(Problem& Pb,
+		     typename Problem::I_t& i,
 		     std::vector<PAIR_T> collisions_container,
 		     typename Problem::C_t*& inp0_pt,
 		     typename Problem::C_t*& out0_pt, /* inp0 calculation buffer */
@@ -47,6 +51,7 @@ bool treat_collision(Problem& Pb,
 		     typename Problem::C_t*& inp1_pt,
 		     typename Problem::C_t*& out1_pt, /* inp1 calculation buffer */
 		     const u64 inp1_chain_len,
+		     typename Problem::C_t& inp_mixed,
 		     typename Problem::A_t& inp0_A,
 		     typename Problem::A_t& inp1_A)
 {
@@ -54,10 +59,12 @@ bool treat_collision(Problem& Pb,
   /* i.e. iterate_once(inp0) = iterate_once(inp1) */
   /* return false when walking the two inputs don't collide */
   bool found_collision = walk<Problem>(Pb,
+				       i,
 				       inp0_chain_len,
 				       inp0_pt,
 				       out0_pt,
 				       inp1_chain_len,
+				       inp_mixed,
                                        inp1_pt,
 				       out1_pt,
 				       inp0_A);
@@ -123,6 +130,7 @@ void collisoin_search(Problem& Pb)
   C_t* out0_pt = &inp0_or_out0_buffer1;/* even if it's not the same address*/
   C_t* out1_pt = &inp1_or_out1_buffer1;
 
+  C_t inp_mixed{};
  
   /* Use these variables to print the full collision */
   A_t inp0A{};
@@ -143,14 +151,15 @@ void collisoin_search(Problem& Pb)
   search_generic(Pb,
 		 collisions_container, /* save found collisions here */
 		 1LL<<20, /* #needed_collisions, todo don't hard code it */
-	       difficulty,
-	       inp0_st, /* starting point in the chain, not a pointer! */
-	       inp0_pt,/* pointer to the inp0 s.t. f(inp0) = out0 or using g*/
-	       inp1_pt,/* pointer to the 2nd input, s.t. f or g (inp1) = out1 */
-	       out0_pt,
-	       out1_pt,
-	       inp0A,
-	       inp1A);
+		 difficulty,
+		 inp0_st, /* starting point in the chain, not a pointer! */
+		 inp0_pt,/* pointer to the inp0 s.t. f(inp0) = out0 or using g*/
+		 inp1_pt,/* pointer to the 2nd input, s.t. f or g (inp1) = out1 */
+		 out0_pt,
+		 out1_pt,
+		 inp_mixed,
+		 inp0A,
+		 inp1A);
 
   
 }

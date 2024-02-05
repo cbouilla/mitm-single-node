@@ -16,7 +16,8 @@ namespace mitm {
 template<typename I, typename Domain_A, typename Domain_C>
 class AbstractCollisionProblem {
 public:
-  /* these lines have to be retyped again */
+  /* these lines have to be retyped again to use the above 4 types directly */
+  using I_t = I; 
   using A_t = typename Domain_A::t;
   using C_t = typename Domain_C::t;
   
@@ -63,7 +64,7 @@ public:
   /*
    * Family of permutations acting on the output domain.
    */
-  void mix(const I &i, const C_t& x, C_t& y) const;   /* y <--- f_i(x) */
+  void mix(const I &i, const C_t& x, C_t& y) const;   /* y <--- σ_i(x) */
 
   /* Generate a default permutation of C (e.g. the identity) */
   I& mix_default() const; 
@@ -71,6 +72,8 @@ public:
   /* Generate a new random permutation of C */
   I& mix_sample(PRNG& rng) const; 
 };
+  
 }
 
 #endif
+
