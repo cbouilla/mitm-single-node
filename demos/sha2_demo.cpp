@@ -225,7 +225,7 @@ public:
 // sha256_process(uint32_t state[8], const uint8_t data[], uint32_t length);
 
 class SHA2_Problem
-  : mitm::AbstractCollisionProblem<int, SHA2_INP_DOMAIN, SHA2_OUT_DOMAIN>
+  : mitm::AbstractCollisionProblem<uint64_t, SHA2_INP_DOMAIN, SHA2_OUT_DOMAIN>
 {
 public:
 
@@ -234,8 +234,11 @@ public:
   SHA2_OUT_DOMAIN C; /* Output related functions */
 
   /* These two line are vital to have. */
-  using C_t = SHA2_out_repr;
+  using I = uint64_t;
+  using I_t = I;
   using A_t = SHA2_inp_repr;
+  using C_t = SHA2_out_repr;
+  
   
   static const int f_eq_g = 1;
   
@@ -258,9 +261,14 @@ public:
   }
 
 
-  /* change */
-  void update_embedding(mitm::PRNG& rng) { ++embedding_n; }
 
+  void mix(const I& i, const C_t& x, C_t& y) const {
+    for (int j = 0; j<NWORDS_DIGEST; ++j)
+      y.state[j] = x.state[j] ^ (i>>(j*32));
+  }
+  I mix_default() const {return 0;}
+  I mix_sample(mitm::PRNG& rng) const {return rng.rand();}
+  
 private:
   /* Changes the extra bits in the input to embedding_n */
   int embedding_n = 0;

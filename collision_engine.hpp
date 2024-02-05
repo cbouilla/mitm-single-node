@@ -64,9 +64,9 @@ bool treat_collision(Problem& Pb,
 				       inp0_pt,
 				       out0_pt,
 				       inp1_chain_len,
-				       inp_mixed,
                                        inp1_pt,
 				       out1_pt,
+				       inp_mixed,
 				       inp0_A);
   
   /* The two inputs don't lead to the same output */

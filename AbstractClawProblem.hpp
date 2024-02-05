@@ -22,7 +22,7 @@ public:
   using A_t = typename Domain_A::t;
   using B_t = typename Domain_B::t;
   using C_t = typename Domain_C::t;
-
+  using I_t = I;
   
   AbstractClawProblem() {
     /* At the end, we need to serialize A and B,  thus we need more information
@@ -65,10 +65,10 @@ public:
   void mix(const I &i, const C_t& x, C_t& y) const;   /* y <--- σ_i(x) */
 
   /* Generate a default permutation of C (e.g. the identity) */
-  I& mix_default() const; 
+  I mix_default() const; 
 
   /* Generate a new random permutation of C */
-  I& mix_sample(PRNG& rng) const; 
+  I mix_sample(PRNG& rng) const; 
 };
 
 }
