@@ -15,27 +15,19 @@ namespace mitm {
    * E.g. In the attack on double-encryption, where the goal is to find
    *      x, y s.t. f(x, a) == g(y, b), the problem should contain (a, b).
    */
-template<typename I, typename Domain_A, typename Domain_B, typename Domain_C>
+template<typename I, typename A, typename B, typename Domain_C>
 class AbstractClawProblem {
 public:
   /* these lines have to be retyped again */
-  using A_t = typename Domain_A::t;
-  using B_t = typename Domain_B::t;
-  using C_t = typename Domain_C::t;
   using I_t = I;
+  using A_t = A;
+  using B_t = B;
+  using C_t = typename Domain_C::t;
+
   
   AbstractClawProblem() {
-    /* At the end, we need to serialize A and B,  thus we need more information
-     * about their length and an extra function. We can move these tasks to
-     * to AbstractClawProblem. At the moment, we stick to the old method.
-     * */
-    static_assert(std::is_base_of<AbstractDomain<typename Domain_A::t>, Domain_A>::value,
-		  "A not derived from AbstractDomain");
-    static_assert(std::is_base_of<AbstractDomain<typename Domain_B::t>, Domain_B>::value,
-		  "B not derived from AbstractDomain");
     static_assert(std::is_base_of<AbstractDomain<typename Domain_C::t>, Domain_C>::value,
 		  "C not derived from AbstractDomain");
-
   }
   
   /* specification of the collision to find */

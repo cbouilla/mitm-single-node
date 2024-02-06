@@ -13,12 +13,13 @@ namespace mitm {
  * in finding H(prefix || x) == H(prefix || y) with x != y, then the Problem
  * could contain prefix.
  */
-template<typename I, typename Domain_A, typename Domain_C>
+template<typename I, typename A, typename Domain_C>
 class AbstractCollisionProblem {
 public:
   /* these lines have to be retyped again to use the above 4 types directly */
   using I_t = I; 
-  using A_t = typename Domain_A::t;
+  // using A_t = typename Domain_A::t;
+  using A_t = A;
   using C_t = typename Domain_C::t;
   
   AbstractCollisionProblem() {
@@ -28,8 +29,6 @@ public:
      * about their length and an extra function. We can move these tasks to
      * to AbstractClawProblem. At the moment, we stick to the old method.
      * */
-    static_assert(std::is_base_of<AbstractDomain<typename Domain_A::t>, Domain_A>::value,
-		  "A not derived from AbstractDomain");
 
     static_assert(std::is_base_of<AbstractDomain<typename Domain_C::t>, Domain_C>::value,
 		  "C not derived from AbstractDomain");

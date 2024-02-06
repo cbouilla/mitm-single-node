@@ -40,7 +40,7 @@ void iterate_once(Problem &Pb,
 		  typename Problem::C_t& out,
 		  typename Problem::C_t& inp_mixed,
 		  typename Problem::A_t& inpA, /* scratch buffer */
-		  Types... args)
+		  Types... args) /* for claw args := inp0B, inp1B */
 {
   /* C++ always prefers more specialized templates. 
    * For the claw code, see `iterate_once` in `claw_engine.hpp`
@@ -68,7 +68,7 @@ bool treat_collision(Problem& Pb,
 		     typename Problem::C_t& inp_mixed,
 		     typename Problem::A_t& inp0_A,
 		     typename Problem::A_t& inp1_A,
-		     Types... args)
+		     Types... args) /* for claw args := inp0B, inp1B */
 {
   std::cerr << "Internal Error: should not use general implementation of if `treate_collision`!\n";
   std::terminate(); /* Never use this implementation! */
@@ -103,7 +103,7 @@ bool generate_dist_point(Problem& Pb,
 			 typename Problem::C_t*& out_pt,
 			 typename Problem::C_t& inp_mixed,
 			 typename Problem::A_t& inpA,
-			 Types... args)
+			 Types... args) /* for claw args := inp0B, inp1B */
 {
   /* todo break note copy inp0 before passing it here! */
   // code below was uncommented.
@@ -122,6 +122,7 @@ bool generate_dist_point(Problem& Pb,
   constexpr u64 k = 40;
   for (u64 i = 0; i < k*(1LL<<difficulty); ++i){
     /* uses claw's iterate_once if args... is not empty, otherwise collisions'*/
+    /* for claw args := inp0B, inp1B */
     iterate_once(Pb, i, *inp_pt, *out_pt, inp_mixed, inpA, args...); 
     ++chain_length;
 
@@ -212,11 +213,13 @@ bool walk(Problem& Pb,
   /* move the longest sequence until the remaining number of steps is equal */
   /* to the shortest sequence. */
   for (; inp0_chain_len > inp1_chain_len; --inp0_chain_len){
+    /* for claw args := inp0B, inp1B */
     iterate_once(Pb, i, *inp0_pt, *out0_pt, inp_mixed, inpA, args...);
     swap_pointers(inp0_pt, out0_pt);
   }
   
   for (; inp0_chain_len < inp1_chain_len; --inp1_chain_len){
+    /* for claw args := inp0B, inp1B */
     iterate_once(Pb, i, *inp1_pt, *out1_pt, inp_mixed, inpA, args...);
     swap_pointers(inp1_pt, out1_pt);
   }
@@ -227,6 +230,7 @@ bool walk(Problem& Pb,
   for (size_t i = 0; i < len; ++i){
     /* walk them together and check each time if their output are equal     */
     /* return as soon equality is found. The equality could be a robinhood. */
+    /* for claw args := inp0B, inp1B */
     iterate_once(Pb, i, *inp0_pt, *out0_pt, inp_mixed, inpA, args...);
     iterate_once(Pb, i, *inp1_pt, *out1_pt, inp_mixed, inpA, args...);
     
@@ -345,7 +349,7 @@ void search_generic(Problem& Pb,
 				       out0_pt,
 				       inp_mixed,
 				       inp0A,
-				       args...);
+				       args...);/* for claw args := inp0B, inp1B */
 
       out0_digest = Pb.C.hash(*out0_pt);
       ++n_distinguished_points;
@@ -398,7 +402,7 @@ void search_generic(Problem& Pb,
 						 inp_mixed,
 						 inp0A,
 						 inp1A,
-						 args...);
+						 args...); /* for claw args := inp0B, inp1B */
 
 	/* move print_collision_info here */
 	bool real_collision = Pb.C.is_equal(*out0_pt, *out1_pt);
