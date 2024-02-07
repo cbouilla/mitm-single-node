@@ -70,7 +70,7 @@ add_executable(sha2_demo
 
 add_executable(sha2_demo_C
         demos/sha2_demo_C.cpp
-	demos/sha256.c
+	demos/sha256_x86.c
 	collision_engine.hpp
 	base_engine.hpp
 	AbstractCollisionProblem.hpp
@@ -92,6 +92,18 @@ add_executable(sha2-x86_demo
 	include/prng.hpp
 	include/timing.hpp)
 
+
+add_executable(claw_sha2-x86
+        demos/sha2_claw_demo.cpp
+	demos/sha256_x86.c
+	collision_engine.hpp
+	base_engine.hpp
+	AbstractCollisionProblem.hpp
+	AbstractDomain.hpp
+        dict.hpp
+      	include/memory.hpp
+	include/prng.hpp
+	include/timing.hpp)
 
 # # Link TBB to your executable
 # target_link_libraries(speck32_demo PRIVATE TBB::tbb)

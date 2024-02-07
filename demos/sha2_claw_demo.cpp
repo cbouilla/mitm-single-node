@@ -47,26 +47,40 @@ struct SHA2_out_repr {
 
 
 struct SHA2_A_inp_repr {
-  u8 data[NBYTES_A]; /* output */
-
+  /* This is the active input */
+  // u8 data[NBYTES_A]; /* output */
+  /* but for convenience in writing f we make it as  following: */
+  u8 data[64]; /* output */
   /* Constructor */
   SHA2_A_inp_repr()  {
     for (size_t i = 0; i < NBYTES_A; ++i)
       data[i] = 0;
+
+    /* These parts is always zero! */
+    for (size_t i = NBYTES_A; i < 64; ++i)
+      data[i] = 0;
+
   }
 
 };
 
-struct SHA2_B_inp_repr {
-  u8 data[NBYTES_B]; /* output */
 
+struct SHA2_B_inp_repr {
+  /* This is the active input */
+  // u8 data[NBYTES_B]; /* output */
+  /* but for convenience in writing f we make it as  following: */
+  u8 data[64]; /* output */
   /* Constructor */
   SHA2_B_inp_repr()  {
     for (size_t i = 0; i < NBYTES_B; ++i)
       data[i] = 0;
-  }
 
+    /* These parts is always zero! */
+    for (size_t i = NBYTES_B; i < 64; ++i)
+      data[i] = 0;
+  }
 };
+
 
 
 /* Implement << operator for SHA2_inp_repr and SHA2_out_repr */
@@ -171,97 +185,24 @@ public:
 
 
 ////////////////////////////////////////////////////////////////////////////////
-// todo start here 
-
-class SHA2_A_INP_DOMAIN : mitm::AbstractDomain<SHA2_A_inp_repr>
-{
-public:
-  const static int length = 64;
-  const static size_t n_elements = -1;
-  using t = SHA2_A_inp_repr; /* */
-
-  void randomize(t& x, mitm::PRNG& prng) const
-  {
-    u64 data[NBYTES_A]; /* store 512 bits of random data  */
-    
-    data[0] = prng.rand();
-    data[1] = prng.rand();
-    data[2] = prng.rand();
-    data[3] = prng.rand();
-    data[4] = prng.rand();
-    data[5] = prng.rand();
-    data[6] = prng.rand();
-    data[7] = prng.rand();
-
-    std::memcpy(x.data, data, 64);
-  }
-
-  
-  inline
-  bool is_equal(t& x, t& y) const
-  {
-    return (0 == std::memcmp(x.data, y.data, 64));
-  }
-
-  inline
-  void serialize(const t& in, u8* out) const
-  {
-    std::memcpy(out, in.data, 64);
-  }
-
-  inline
-  void unserialize(const u8* in, t& out) const
-  {
-    std::memcpy(out.data, in, 64);
-  }
-
-
-  inline
-  void copy(const t& in, t& out)
-  {
-    std::memcpy(out.data, in.data, 64);
-  }
-
-  inline
-  int extract_1_bit(const t& inp) const
-  {
-    return (1&inp.data[0]);
-  }
-  
-  inline
-  u64 hash(const t& x) const
-  {
-    /* in case we are only extracting one word digest */
-    return (static_cast<u64>(x.data[0]) << 0 * 8) |
-           (static_cast<u64>(x.data[1]) << 1 * 8) |    
-           (static_cast<u64>(x.data[2]) << 2 * 8) |    
-           (static_cast<u64>(x.data[3]) << 3 * 8) |
-           (static_cast<u64>(x.data[4]) << 4 * 8) |
-           (static_cast<u64>(x.data[5]) << 5 * 8) |
-           (static_cast<u64>(x.data[6]) << 6 * 8) |
-           (static_cast<u64>(x.data[7]) << 7 * 8) ;
-  }
-};
-
-// sha256_process(uint32_t state[8], const uint8_t data[], uint32_t length);
 
 class SHA2_Problem
-  : mitm::AbstractCollisionProblem<uint64_t, SHA2_INP_DOMAIN, SHA2_OUT_DOMAIN>
+  : mitm::AbstractClawProblem<uint64_t, SHA2_A_inp_repr, SHA2_B_inp_repr, SHA2_OUT_DOMAIN>
 {
 public:
 
   
-  SHA2_INP_DOMAIN A; /* Input related functions */
+
   SHA2_OUT_DOMAIN C; /* Output related functions */
 
-  /* These two line are vital to have. */
-  using I = uint64_t;
-  using I_t = I;
-  using A_t = SHA2_inp_repr;
-  using C_t = SHA2_out_repr;
+  /* These types shorthand are essential ! */
+  using I_t = uint64_t; /* 1st tempalte type */
+  using A_t = SHA2_A_inp_repr; /* 2nd template type */
+  using B_t = SHA2_B_inp_repr; /* 3rd template type */
+  using C_t = SHA2_out_repr; /* 4th template type */
   
   
-  static const int f_eq_g = 1;
+  static const int f_eq_g = 0;
   
   inline
   void f(const A_t& x, C_t& y) const
@@ -283,12 +224,12 @@ public:
 
 
 
-  void mix(const I& i, const C_t& x, C_t& y) const {
+  void mix(const I_t& i, const C_t& x, C_t& y) const {
     for (int j = 0; j<NWORDS_DIGEST; ++j)
       y.state[j] = x.state[j] ^ (i>>(j*32));
   }
-  I mix_default() const {return 0;}
-  I mix_sample(mitm::PRNG& rng) const {return rng.rand();}
+  I_t mix_default() const {return 0;}
+  I_t mix_sample(mitm::PRNG& rng) const {return rng.rand();}
   
 private:
   /* Changes the extra bits in the input to embedding_n */
@@ -300,13 +241,6 @@ private:
 
 int main(int argc, char* argv[])
 {
-  SHA2_inp_repr inp;
-  std::cout << "dummy inp (only allocation is used) = " << inp << "\n";
-
-  SHA2_out_repr out;
-  std::cout << "dummy out (only allocation is used) = " << out << "\n";
-
-  
   SHA2_Problem Pb;
   mitm::collisoin_search(Pb);
 }
