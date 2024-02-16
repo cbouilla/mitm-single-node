@@ -67,7 +67,7 @@ auto images(void (*f)(X_t const& x, Y_t& y), /* y <- f(x) */
 }
 
 /* return -1 if a < b, 0 if a == b, 1 if a > b */
-template <typename Domain>
+Ootemplate <typename Domain>
 int compare(const typename Domain::t& a,
 	    const typename Domain::t& b)
 {
@@ -136,12 +136,24 @@ auto collisions(void (*copy)(const Y_t &y1, Y_t &y2),     /* y2 := y1 */
 	++start_g;
     }
 
+
     #pragma omp atomic
     { n_found_collisions += collisions_thd.size(); }
-    if (thd == 0) /* thd0 is always responsible for the grand list of collisions */
+
+    #pragma omp barrier /* all threads should've finished dealing with images_f, and images_g */
+    if (thd == 0){
+      /* free spaces used by images_g and images_f */
+      f_images = std::vector<Y_t>();
+      g_images = std::vector<Y_t>();
       collisions.reserve(n_found_collisions);
+    } /* thd0 is always responsible for the grand list of collisions */
+    #pragma omp barrier /* all threads should've finished dealing with images_f, and images_g */
+    
+
+      
     /* merge vectors  */
-    #pragma omp critical
+    
+   #pragma omp critical
     {
       collisions.insert(collisions.begin(), collisions_thd.begin(), collisions_thd.end());
     }
@@ -156,15 +168,39 @@ auto collisions(void (*copy)(const Y_t &y1, Y_t &y2),     /* y2 := y1 */
   return collisions;
 }
 
-// merge vectors with master
+
+/*
+ * Given a problem that follows AbstractDomain, and AbstractCollisionProblem.
+ * Try to find two inputs x and y s.t. f(x) = f(y), where:
+ * f: A -> C using a naive algortihm
+ * Note: It's guaranteed in this method to find all collisions.
+ */
+template <typename Problem>
+void naive_collisoin_search(Problem& Pb)
+{
+  /* aïe aïe aïe, just realized that it won't work looking at the inputs! */
+}
+
+
+/*
+ * Given a problem that follows AbstractDomain, and AbstractClawProblem.
+ * Try to find two inputs x_A and x_B s.t. f(x_A) = g(x_B), i.e.
+ * a claw between f and g.
+ * Note: It's guaranteed in this method to find all claws.
+ */
+template <typename Problem> void claw_search(Problem &Pb)
+{
+  /* get all the images of f */
+  /* get all the images of g */
+  /* compare them */
+  /* save the results in disk! */
+}
+
+
+
 
 #endif
 
 
 
-// /* sort the input output according to the second element (the output ) */
-// std::sort(std::execution::par,
-// 	    inp_out.begin(),
-// 	    inp_out.end(),
-// 	    [](std::pair<A_t, C_serial> io1, std::pair<A_t, C_serial> io2)
-// 	    {return io1.second < io2.second; });
+
