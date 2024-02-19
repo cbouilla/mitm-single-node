@@ -202,11 +202,11 @@ void claw_search(Problem& Pb)
 
   /****************************** EXPERIMENTAL ********************************/
   /* Think about these two varaibles, todo */
-  u64  out0_digest = 0; /* hashed value of the output0 */
+  // u64  out0_digest = 0; /* hashed value of the output0 */
   /* Problem::Dom_C::length = #needed bytes to encode an element of C_t */
-  u8 inp_A_serial[Pb.A.length];
-  u8 inp_B_serial[Pb.B.length];
-  u8 out0_bytes[Pb.C.length];
+  // u8 inp_A_serial[Pb.A.length];
+  // u8 inp_B_serial[Pb.B.length];
+  // u8 out0_bytes[Pb.C.length];
   /****************************************************************************/
   int difficulty = 4;
   

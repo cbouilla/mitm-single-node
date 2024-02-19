@@ -318,7 +318,6 @@ auto claw_search(Problem &Pb,
   /* todo iterating only over A inputs, may not return all claws!
    *  we should iterate over the largest domain
    */
-
   auto collisions = extract_collisions(compare<Dom_C>,
 				       f_images,
 				       g_images);

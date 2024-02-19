@@ -1,4 +1,4 @@
-#include "../collision_engine.hpp"
+#include "../claw_engine.hpp"
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
@@ -26,20 +26,22 @@ using i16 = int16_t;
 using i32 = int32_t;
 using i64 = int64_t;
 
-#define NWORDS_DIGEST 2
-#define WORD_SIZE 4
-#define NBYTES_A 64
-#define NBYTES_B 64
-#define NBYTES_DIGEST (NWORDS_DIGEST * WORD_SIZE)
+/* Edit the next *three* line to define a new demo! */
+#define NBYTES_A 64 /* A's input length <= 64 bytes  */
+#define NBYTES_B 64 /* B's input length <= 64 bytes */
+#define NBYTES_C 32 /* output length <= 32 bytes */
+/* stop here. */
+
+
 /*
  * repr is an encapsulation of whatever data used.
  */
 struct SHA2_out_repr {
-  u32 state[NWORDS_DIGEST]; /* output */
+  u8 state[NBYTES_C]; /* output */
 
   /* Constructor */
   SHA2_out_repr()  {
-    for (size_t i = 0; i < NWORDS_DIGEST; ++i)
+    for (size_t i = 0; i < NBYTES_C; ++i)
       state[i] = 0;
   }
 };
@@ -106,9 +108,9 @@ std::ostream& operator<<(std::ostream& os, const SHA2_B_inp_repr& x)
 
 std::ostream& operator<<(std::ostream& os, const SHA2_out_repr& x)
 {
-  
-  for (size_t i = 0; i < NWORDS_DIGEST; ++i) {
-    os << "0x" << std::setfill('0') << std::setw(8) <<  std::hex << x.state[i] << ", ";
+  os << "0x" ;
+  for (size_t i = 0; i < NBYTES_C; ++i) {
+    os << std::setfill('0') << std::setw(2) <<  std::hex << x.state[i] << ", ";
   }
   return os;
 }
@@ -126,42 +128,42 @@ public:
   // In template: 't' is a private member of 'mitm::AbstractDomain<SHA2_out_repr>'
   using t = SHA2_out_repr;
   
-  const static int length = NBYTES_DIGEST;
-  int a[NBYTES_DIGEST];
+  const static int length = NBYTES_C;
+  int a[NBYTES_C];
   
   const static size_t n_elements = (1LL<<length)*8;
   /* todo: randomize */
   inline
   void randomize(t& x, mitm::PRNG& prng) const
   {
-    for(int i = 0; i<NWORDS_DIGEST; ++i )
-      x.state[i] = prng.rand();
+    for(int i = 0; i < NBYTES_C; ++i )
+      x.state[i] = prng.rand(); /* a bit overkill to call rand on a single byte! */
   }
 
   
   inline
   bool is_equal(t& x, t& y) const
   {
-    return ( std::memcmp(x.state, y.state, NBYTES_DIGEST) == 0);
+    return ( std::memcmp(x.state, y.state, NBYTES_C) == 0);
   }
 
   inline
   void serialize(const t& in, u8* out) const
   {
-    std::memcpy(out, in.state, NBYTES_DIGEST);
+    std::memcpy(out, in.state, NBYTES_C);
   }
 
   inline
   void unserialize(const u8* in, t& out) const
   {
-    std::memcpy(out.state, in, NBYTES_DIGEST);
+    std::memcpy(out.state, in, NBYTES_C);
   }
 
 
   inline
   void copy(const t& in, t& out)
   {
-    std::memcpy(out.state, in.state, NBYTES_DIGEST);
+    std::memcpy(out.state, in.state, NBYTES_C);
   }
 
   inline
@@ -173,11 +175,13 @@ public:
   inline
   u64 hash(const t& x) const
   {
-    /* in case we are only extracting one word digest */
-    constexpr size_t _2nd_idx = std::min(NWORDS_DIGEST - 1, 1);
-    constexpr  size_t cond_shift = std::min(NWORDS_DIGEST - 1, 1);
-    return (static_cast<u64>(x.state[_2nd_idx]) << 8*WORD_SIZE*cond_shift)
-            | x.state[0];
+    /* Take into account all bytes of the output */
+    /* each bit k in position 64*r + l, contributes to the l poisition in the digest */
+    u64 digest = 0;
+    for (int i = 0; i < NBYTES_C; ++i)
+      digest ^= ((u64) x.state[i])<<((8*i)%64);
+
+    return digest;
   }
 
   
@@ -190,9 +194,6 @@ class SHA2_Problem
   : mitm::AbstractClawProblem<uint64_t, SHA2_A_inp_repr, SHA2_B_inp_repr, SHA2_OUT_DOMAIN>
 {
 public:
-
-  
-
   SHA2_OUT_DOMAIN C; /* Output related functions */
 
   /* These types shorthand are essential ! */
@@ -210,7 +211,19 @@ public:
     u32 state[8] = { 0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
 		     0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19};
     sha256_process(state, x.data, 64);
-    std::memcpy(y.state, state, NBYTES_DIGEST);
+    std::memcpy(y.state, state, NBYTES_C);
+
+  }
+
+  inline
+  void g(const B_t& x, C_t& y) const
+  {
+    u32 state[8] = { 0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
+		     0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19};
+
+    sha256_process(state, x.data, 64);
+    std::memcpy(y.state, state, NBYTES_C);
+
   }
 
 
@@ -219,14 +232,25 @@ public:
   {
     /* remove any junk in A */
     std::memset(out_A.data, embedding_n, 64);
-    std::memcpy(out_A.data, inp_C.state, NBYTES_DIGEST);
+    /* Since domain and range may have different size: */
+    std::memcpy(out_A.data, inp_C.state, std::min(NBYTES_A, NBYTES_C));
   }
 
+  inline
+  void send_C_to_B(C_t& inp_C, B_t& out_B) const
+  {
+    /* remove any junk in B */
+    std::memset(out_B.data, embedding_n, 64);
+    /* Since domain and range may have different size: */
+    std::memcpy(out_B.data, inp_C.state, std::min(NBYTES_B, NBYTES_C));
+  }
+
+  
 
 
   void mix(const I_t& i, const C_t& x, C_t& y) const {
-    for (int j = 0; j<NWORDS_DIGEST; ++j)
-      y.state[j] = x.state[j] ^ (i>>(j*32));
+    for (int j = 0; j < NBYTES_C; ++j)
+      y.state[j] = x.state[j] ^ (i>>(j*8));
   }
   I_t mix_default() const {return 0;}
   I_t mix_sample(mitm::PRNG& rng) const {return rng.rand();}
@@ -239,9 +263,12 @@ private:
 };
 
 
-int main(int argc, char* argv[])
+int main()
 {
+  std::cout << "sha2-claw demo! |inp_A| = " << NBYTES_A << "bytes, "
+	    << "|inp_B| = " << NBYTES_B << "bytes, "
+	    << "|out| = " << NBYTES_C << "bytes\n";
   SHA2_Problem Pb;
-  mitm::collisoin_search(Pb);
+  mitm::claw_search(Pb);
 }
 

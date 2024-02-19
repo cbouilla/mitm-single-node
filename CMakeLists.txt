@@ -13,10 +13,10 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON) # Compiler command json
 
 # common compiler option (between clang and gcc, not sure about the others)
 # add_compile_options(-ggdb -Wall -Wextra -pedantic -fsanitize=address)
-add_compile_options(-march=native -ggdb -Wall -Wextra -pedantic -O3 -flto)
+add_compile_options(-march=native -ggdb -Wall -Wextra -pedantic -O0 -ggdb )
 # Needed this, other wise it won't link
 # set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -fsanitize=address")
-set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -flto -fsanitize=address")
+set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS}  -fsanitize=address")
 
 
 # The little bird says clang has a nicer error report than gcc!
@@ -56,33 +56,9 @@ include_directories(include)
 # 	       include/timing.hpp
 #                demos/speck32.hpp)
 
-add_executable(sha2_demo
-        demos/sha2_demo.cpp
-	demos/sha256.c
-	collision_engine.hpp
-	base_engine.hpp
-	AbstractCollisionProblem.hpp
-	AbstractDomain.hpp
-        dict.hpp
-      	include/memory.hpp
-	include/prng.hpp
-	include/timing.hpp)
-
-add_executable(sha2_demo_C
-        demos/sha2_demo_C.cpp
-	demos/sha256_x86.c
-	collision_engine.hpp
-	base_engine.hpp
-	AbstractCollisionProblem.hpp
-	AbstractDomain.hpp
-        dict.hpp
-      	include/memory.hpp
-	include/prng.hpp
-	include/timing.hpp)
-
-add_executable(sha2-x86_demo
-        demos/sha2_demo.cpp
-	demos/sha256_x86.c
+add_executable(sha2_collision_demo
+        demos/sha2_collision_demo.cpp
+	demos/sha256_x86.c # demos/sha256.c
 	collision_engine.hpp
 	base_engine.hpp
 	AbstractCollisionProblem.hpp
@@ -93,7 +69,8 @@ add_executable(sha2-x86_demo
 	include/timing.hpp)
 
 
-add_executable(claw_sha2-x86
+
+add_executable(sha2_claw_demo
         demos/sha2_claw_demo.cpp
 	demos/sha256_x86.c
 	collision_engine.hpp
