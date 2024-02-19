@@ -22,6 +22,7 @@ public:
   using I_t = I;
   using A_t = A;
   using B_t = B;
+  using Dom_C = Domain_C;
   using C_t = typename Domain_C::t;
 
   

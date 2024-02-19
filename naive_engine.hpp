@@ -244,11 +244,36 @@ auto extract_collisions(int (*cmp)  (const T& y1, const T& y2),
  * Try to find two inputs x and y s.t. f(x) = f(y), where:
  * f: A -> C using a naive algortihm
  * Note: It's guaranteed in this method to find all collisions.
+ * This function asks for an extra input "ith_element"
+ * s.t. ith_element(x, i), x <- ith_input (according to some order, doesn't matter which )
+ *      ith_element(x, i) =/= ith_element(x, j) if i =/= j.
  */
 template <typename Problem>
-void naive_collisoin_search(Problem& Pb)
+auto naive_collisoin_search(Problem& Pb,
+			    void (*ith_element)(typename Problem::A_t &, size_t),
+			    size_t n_elements
+			    ) -> std::vector<std::pair<typename Problem::C_t,
+						       typename Problem::A_t>>
 {
 
+  using A_t = typename Problem::A_t;
+  using C_t = typename Problem::C_t;
+  using Dom_C = typename Problem::Dom_C;
+
+
+  /* create all possible pairs (f(x), x) sorted by f(x) as std::vector<std::pair<>> */
+  auto inps_outs = domain_images(Pb.f,
+				 ith_element,
+				 compare_pair<Dom_C, C_t, A_t>,
+				 0, /* start, this argument for future use with MPI */
+				 n_elements);
+
+  /* return all pairs (f(x), x) s.t. there is an x' =/= x and f(x') == f(x), do this for all x */
+  auto collisions = extract_collisions(compare_pair<Dom_C, C_t, A_t>, inps_outs, inps_outs);
+
+  /* save collisions in disk */
+  // todo
+  return collisions;
 }
 
 
@@ -258,12 +283,51 @@ void naive_collisoin_search(Problem& Pb)
  * a claw between f and g.
  * Note: It's guaranteed in this method to find all claws.
  */
-template <typename Problem> void claw_search(Problem &Pb)
+template <typename Problem>
+auto claw_search(Problem &Pb,
+		 void (*ith_element)(typename Problem::A_t &, size_t),
+		 size_t n_elements_A,
+		 size_t n_elements_B
+		 ) -> std::vector<typename Problem::C_t>
 {
-  /* get all the images of f */
-  /* get all the images of g */
-  /* compare them */
-  /* save the results in disk! */
+
+  using A_t = typename Problem::A_t;
+  using B_t = typename Problem::B_t;
+  using C_t = typename Problem::C_t;
+  using Dom_C = typename Problem::Dom_C;
+
+
+  /* get all f(x) where x in A, stored in std::vector<C_t>  */
+  auto f_images = images(Pb.f,
+			 ith_element,
+			 compare<Dom_C>,
+			 0, /* start with the 1st element in A */
+			 n_elements_A); /* end with the last element in A */
+
+  /* get all f(x) where x in A, stored in std::vector<C_t>  */
+  auto g_images = images(Pb.g,
+			 ith_element,
+			 compare<Dom_C>,
+			 0, /* start with the 1st element in A */
+			 n_elements_B); /* end with the last element in A */
+
+  
+  
+
+
+  /* todo iterating only over A inputs, may not return all claws!
+   *  we should iterate over the largest domain
+   */
+
+  auto collisions = extract_collisions(compare<Dom_C>,
+				       f_images,
+				       g_images);
+
+  /* todo save the results in disk! */
+
+
+  return collisions;
+  
 }
 
 

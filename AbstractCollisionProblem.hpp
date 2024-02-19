@@ -20,6 +20,7 @@ public:
   using I_t = I; 
   // using A_t = typename Domain_A::t;
   using A_t = A;
+  using Dom_C = Domain_C;
   using C_t = typename Domain_C::t;
   
   AbstractCollisionProblem() {
