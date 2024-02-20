@@ -1,4 +1,4 @@
-#ifndef NAIVE_ENGINE
+ #ifndef NAIVE_ENGINE
 #define NAIVE_ENGINE
 #include <cstddef>
 #include <cstdint>
@@ -9,6 +9,8 @@
 #include <execution>
 #include <omp.h>
 #include "AbstractDomain.hpp"
+
+namespace mitm {
 
 
 /* return -1 if a < b, 0 if a == b, 1 if a > b */
@@ -329,7 +331,7 @@ auto claw_search(Problem &Pb,
   
 }
 
-
+}
 
 
 #endif

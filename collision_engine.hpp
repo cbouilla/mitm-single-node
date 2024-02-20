@@ -144,7 +144,7 @@ void collisoin_search(Problem& Pb)
   // u8 inp_A_serial[Pb.A.length];
   // u8 out0_bytes[Pb.C.length];
   /****************************************************************************/
-  int difficulty = 9;
+  int difficulty = 4;
   
   
   /* note the search_engine has different arguments than claw_search */
