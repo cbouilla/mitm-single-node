@@ -51,14 +51,18 @@ void iterate_once(Problem &Pb,
 }
 
 
+
 /*
+ * Given two collisions in the modified function 'f: C_t -> C_t send them to
+ * their original domain: A_t or B_t (if it's a claw), and test if they make
+ * THE golden_collision. The implementation of this function is found in
+ * `claw_engine.hpp` or `collision_engine.hpp`
  * In case of claw: an additional arguments:
  * 1) inpB_pt
  */
 template <typename Problem, typename PAIR_T, typename... Types >
 bool treat_collision(Problem& Pb,
 		     typename Problem::I_t& i,
-		     std::vector<PAIR_T> collisions_container,
 		     typename Problem::C_t*& inp0_pt,
 		     typename Problem::C_t*& out0_pt, /* inp0 calculation buffer */
 		     const u64 inp0_chain_len,
@@ -262,8 +266,6 @@ bool walk(Problem& Pb,
  */
 template<typename Problem, typename PAIR_T, typename... Types>
 void search_generic(Problem& Pb,
-		    std::vector<PAIR_T>& collisions_container,
-		    size_t n_needed_collisions,
 		    int difficulty,
 		    typename Problem::C_t& inp_St, // Startign point in chain
 		    typename Problem::C_t* inp0_pt,
@@ -309,7 +311,6 @@ void search_generic(Problem& Pb,
 
   
   /* We should have ration 1/3 real collisions and 2/3 false collisions */
-  size_t n_robinhoods = 0;
   bool found_dist = false;
   size_t n_distinguished_points = 0;
   constexpr size_t interval = (1LL<<15);
@@ -319,10 +320,12 @@ void search_generic(Problem& Pb,
   /* typename Problem::I_t */
   auto i = Pb.mix_default();
 
+  /* we found a pair of inputs that lead to the golden collisoin or golden claw! */
+  bool found_golden_pair = false;
   /*----------------------------MAIN COMPUTATION------------------------------*/
   /*=================== Generate Distinguished Points ========================*/
 
-  while (n_collisions < n_needed_collisions){
+  while (not found_golden_pair){
 
     /* These simulations show that if 10w distinguished points are generated
      * for each version of the function, and theta = 2.25sqrt(w/n) then ...
@@ -390,43 +393,31 @@ void search_generic(Problem& Pb,
 	 * 1) inpA 
 	 * 2) inpB
 	 */
-	bool is_potential_coll = treat_collision(Pb,
-						 i,
-						 collisions_container,
-						 inp0_pt,
-						 out0_pt,
-						 chain_length0,
-						 inp1_pt,
-						 out1_pt,
-						 chain_length1,
-						 inp_mixed,
-						 inp0A,
-						 inp1A,
-						 args...); /* for claw args := inp0B, inp1B */
+	found_golden_pair = treat_collision(Pb,
+					    i,
+					    inp0_pt,
+					    out0_pt,
+					    chain_length0,
+					    inp1_pt,
+					    out1_pt,
+					    chain_length1,
+					    inp_mixed,
+					    inp0A,
+					    inp1A,
+					    args...); /* for claw args := inp0B, inp1B */
 
 	/* move print_collision_info here */
 	bool real_collision = Pb.C.is_equal(*out0_pt, *out1_pt);
-	bool is_robinhood = Pb.C.is_equal(*inp0_pt, *inp1_pt);
-	n_robinhoods += is_robinhood;
 
-	if (is_potential_coll){
+	if (found_golden_pair){
 	  /* todo remove this printing or replace it! */
-	  std::cout << "After treating collision\n"
+	  std::cout << "Found golden Pair !\n"
 		    << "inp0 = " << *inp0_pt << "\n"
 		    << "out0 = " << *out0_pt << "\n"
 		    << "inp1 = " << *inp1_pt << "\n"
 		    << "out1 = " << *out1_pt << "\n"
 		    << "out0 == out1? " << real_collision  << "\n"
-		    << "diges0 == digest1? "
-		    << "robinhood? " << is_robinhood  << "\n"
-		    << "#collisions = " << std::dec << n_collisions << "\n"
-		    << "#robinhood = "  << std::dec << n_robinhoods << "\n"
 		    << "\n";
-
-
-	  /* Get the complete inputs as they live in A and B */
-	  std::cout << "container length " << collisions_container.size() << "\n"
-		    << "is a good collisision? " << is_potential_coll << "\n";
 	}
       }
     }

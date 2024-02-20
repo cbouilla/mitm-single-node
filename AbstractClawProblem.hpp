@@ -35,9 +35,9 @@ public:
 
   void f(const A_t &x, C_t &y) const;  /* y <--- f(x) */
   void g(const B_t &x, C_t &y) const;  /* y <--- g(x) */
-        
+
   /* assuming that f(x) == g(y) == z, is (x, y) an acceptable outcome? */
-  bool good_collision(const A_t &x, const B_t &y, const C_t &z) const 
+  bool is_good_pair(C_t const &z,  A_t const &x,  B_t const &y) const 
   { 
     return true;    // by default, yes.
   }

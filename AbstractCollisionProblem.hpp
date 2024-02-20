@@ -46,10 +46,10 @@ public:
 
   void f(const A_t &x, C_t &y) const;  /* y <--- f(x) */
   
-  /* assuming that f(x) == f(y) == z and x != y, is (x, y) an acceptable outcome? */
-  bool good_collision(const A_t &x, const A_t &y, const C_t &z) const 
+  /* assuming that f(x0) == f(x1) == y, is (x0, x1) an acceptable outcome? */
+  bool is_good_pair(C_t const &z,  A_t const &x0,  A_t const &x1) const 
   { 
-    return true;  // by default, yes. 
+    return true;    // by default, yes.
   }
 	
   /* embedding and randomization */

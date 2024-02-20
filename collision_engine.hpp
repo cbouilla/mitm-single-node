@@ -1,5 +1,5 @@
-#ifndef MITM_COLLISION_ENGINE
 #define MITM_COLLISION_ENGINE
+#ifndef MITM_COLLISION_ENGINE
 #include "AbstractDomain.hpp"
 #include "AbstractCollisionProblem.hpp"
 #include "base_engine.hpp"
@@ -35,6 +35,8 @@ void iterate_once(Problem &Pb,
 }
 
 
+
+
 /*
  * Given a potential collision, walk the two inputs until reaching a common
  * point. If it's a claw problem, check that the two walked inputs reach the
@@ -44,7 +46,6 @@ void iterate_once(Problem &Pb,
 template <typename Problem, typename PAIR_T> /* PAIR_T = std::pair<A_t, B_t> */
 bool treat_collision(Problem& Pb,
 		     typename Problem::I_t& i,
-		     std::vector<PAIR_T> collisions_container,
 		     typename Problem::C_t*& inp0_pt,
 		     typename Problem::C_t*& out0_pt, /* inp0 calculation buffer */
 		     const u64 inp0_chain_len,
@@ -81,9 +82,9 @@ bool treat_collision(Problem& Pb,
   Pb.send_C_to_A(*inp0_pt, inp0_A);
   Pb.send_C_to_A(*inp1_pt, inp1_A);
   
-  PAIR_T p{inp0_A, inp1_A};
-  collisions_container.push_back(std::move(p)); 
-  return true; 
+
+  return Pb.is_good_pair(*out0_pt, inp0_A, inp1_A);
+
 }
 
 

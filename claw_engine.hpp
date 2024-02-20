@@ -43,6 +43,7 @@ void iterate_once(Problem &Pb,
 
 
 
+
 // --------------------------------------------------------------------------------
 
 /*
@@ -78,6 +79,7 @@ bool send_2_A_and_B(Problem& Pb,
 }
 
 
+  
 /*
  * Given a potential collision, walk the two inputs until reaching a common
  * point. If it's a claw problem, check that the two walked inputs reach the
@@ -87,7 +89,6 @@ bool send_2_A_and_B(Problem& Pb,
 template <typename Problem, typename PAIR_T> /* PAIR_T = std::pair<A_t, B_t> */
 bool treat_collision(Problem& Pb,
 		     typename Problem::I_t& i,
-		     std::vector<PAIR_T> collisions_container,
 		     typename Problem::C_t*& inp0_pt,
 		     typename Problem::C_t*& out0_pt, /* inp0 calculation buffer */
 		     const u64 inp0_chain_len,
@@ -96,9 +97,9 @@ bool treat_collision(Problem& Pb,
 		     const u64 inp1_chain_len,
 		     typename Problem::C_t& inp_mixed,
 		     typename Problem::A_t& inp0_A,
-		     typename Problem::A_t& inp1_A,
-/*dummy argument -> */ typename Problem::B_t& inp0_B,
-/*dummy argument -> */ typename Problem::B_t& inp1_B)
+		     typename Problem::A_t& inp1_A, /* <- dummy arg */  
+		     typename Problem::B_t& inp0_B, /* <- dummy arg */ 
+		     typename Problem::B_t& inp1_B)
 {
 
   /*
@@ -139,9 +140,8 @@ bool treat_collision(Problem& Pb,
   if (not is_potential_collision)
     return false; /* don't add this pair */
   
-  PAIR_T p{inp0_A, inp1_B};
-  collisions_container.push_back(std::move(p)); 
-  return true;
+  
+  return Pb.is_good_pair(*out0_pt, inp0_A, inp0_B);
 }
 
 
@@ -224,11 +224,10 @@ void claw_search(Problem& Pb)
 		 inp1A,
 		 inp0B, /* Last two inputs are args... in search generic */
 		 inp1B);
-  
+
   
 }
 
-  
 }
 
 #endif
