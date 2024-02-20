@@ -60,7 +60,7 @@ void iterate_once(Problem &Pb,
  * In case of claw: an additional arguments:
  * 1) inpB_pt
  */
-template <typename Problem, typename PAIR_T, typename... Types >
+template <typename Problem, typename... Types >
 bool treat_collision(Problem& Pb,
 		     typename Problem::I_t& i,
 		     typename Problem::C_t*& inp0_pt,
@@ -264,7 +264,7 @@ bool walk(Problem& Pb,
  * to the problem we are treating, claw or a collision.
  *  
  */
-template<typename Problem, typename PAIR_T, typename... Types>
+template<typename Problem,  typename... Types>
 void search_generic(Problem& Pb,
 		    int difficulty,
 		    typename Problem::C_t& inp_St, // Startign point in chain

@@ -1,5 +1,5 @@
-#define MITM_COLLISION_ENGINE
 #ifndef MITM_COLLISION_ENGINE
+#define MITM_COLLISION_ENGINE
 #include "AbstractDomain.hpp"
 #include "AbstractCollisionProblem.hpp"
 #include "base_engine.hpp"
@@ -99,12 +99,8 @@ void collisoin_search(Problem& Pb)
   using A_t = typename Problem::A_t;
   using C_t = typename Problem::C_t;
 
-  using PAIR_T = std::pair<A_t, A_t>;
 
   /* ============================= BUFFERS ================================== */
-  std::vector<PAIR_T> collisions_container{};
-
-
   /* Input/Output containers */
   /* 1st set of buffers: Related to input0 as a starting point */
   /* either tmp0 or  output0 */
@@ -150,8 +146,6 @@ void collisoin_search(Problem& Pb)
   
   /* note the search_engine has different arguments than claw_search */
   search_generic(Pb,
-		 collisions_container, /* save found collisions here */
-		 1LL<<20, /* #needed_collisions, todo don't hard code it */
 		 difficulty,
 		 inp0_st, /* starting point in the chain, not a pointer! */
 		 inp0_pt,/* pointer to the inp0 s.t. f(inp0) = out0 or using g*/
