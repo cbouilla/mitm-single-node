@@ -1,4 +1,5 @@
 #include "../collision_engine.hpp"
+#include "../naive_engine.hpp" /* depends on your usecase! */
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
@@ -7,6 +8,7 @@
 #include <iostream>
 #include <iomanip>
 #include <array>
+#include <vector>
 
 /* We would like to call C function defined in `sha256.c` */
 extern "C"{
@@ -211,6 +213,22 @@ public:
 private:
   /* Changes the extra bits in the input to embedding_n */
   int embedding_n = 0;
+  /*----------------------------------------------------------------------------
+   * In this demo, we only say the triple (z, x0, x1) is a golden collision
+   * after we observe all the possible triples that makes collision i.e.
+   * z = f(x0) = f(x1). We know we have exhausted all triples, since we computed
+   * them using the naïve method. You can define is_good_collision as you wish!
+   *
+   ******************************************************************************/
+  bool all_collisions_collected = false;
+  std::vector<std::pair<SHA2_OUT_DOMAIN, SHA2_A_inp_repr>> all_collisions{};
+  void collect_all_collisions_naive()
+  { /* todo start here */
+    all_collisions = mitm::naive_collisoin_search(*this, void (*ith_element)(typename Problem::A_t &, size_t), )
+    all_collisions_collected = true;
+  }
+  
+  
   
   
 };

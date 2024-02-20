@@ -262,7 +262,6 @@ auto naive_collisoin_search(Problem& Pb,
   using C_t = typename Problem::C_t;
   using Dom_C = typename Problem::Dom_C;
 
-
   /* create all possible pairs (f(x), x) sorted by f(x) as std::vector<std::pair<>> */
   auto inps_outs = domain_images(Pb.f,
 				 ith_element,
@@ -286,18 +285,17 @@ auto naive_collisoin_search(Problem& Pb,
  * Note: It's guaranteed in this method to find all claws.
  */
 template <typename Problem>
-auto claw_search(Problem &Pb,
-		 void (*ith_element)(typename Problem::A_t &, size_t),
-		 size_t n_elements_A,
-		 size_t n_elements_B
-		 ) -> std::vector<typename Problem::C_t>
+auto naive_claw_search(Problem &Pb,
+		       void (*ith_element)(typename Problem::A_t &, size_t),
+		       size_t n_elements_A,
+		       size_t n_elements_B
+		       ) -> std::vector<typename Problem::C_t>
 {
 
   using A_t = typename Problem::A_t;
   using B_t = typename Problem::B_t;
   using C_t = typename Problem::C_t;
   using Dom_C = typename Problem::Dom_C;
-
 
   /* get all f(x) where x in A, stored in std::vector<C_t>  */
   auto f_images = images(Pb.f,
@@ -312,11 +310,7 @@ auto claw_search(Problem &Pb,
 			 compare<Dom_C>,
 			 0, /* start with the 1st element in A */
 			 n_elements_B); /* end with the last element in A */
-
   
-  
-
-
   /* todo iterating only over A inputs, may not return all claws!
    *  we should iterate over the largest domain
    */
