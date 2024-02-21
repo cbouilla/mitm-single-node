@@ -16,7 +16,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON) # Compiler command json
 add_compile_options(-march=native -ggdb -Wall -Wextra -pedantic -O0 -ggdb )
 # Needed this, other wise it won't link
 # set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -fsanitize=address")
-set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS}  -fsanitize=address")
+set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -ltbb -fsanitize=address")
 
 
 # The little bird says clang has a nicer error report than gcc!
@@ -59,6 +59,7 @@ include_directories(include)
 add_executable(sha2_collision_demo
         demos/sha2_collision_demo.cpp
 	demos/sha256_x86.c # demos/sha256.c
+	naive_engine.hpp
 	collision_engine.hpp
 	base_engine.hpp
 	AbstractCollisionProblem.hpp
@@ -73,6 +74,7 @@ add_executable(sha2_collision_demo
 add_executable(sha2_claw_demo
         demos/sha2_claw_demo.cpp
 	demos/sha256_x86.c
+	naive_engine.hpp
 	collision_engine.hpp
 	base_engine.hpp
 	AbstractCollisionProblem.hpp
@@ -82,8 +84,16 @@ add_executable(sha2_claw_demo
 	include/prng.hpp
 	include/timing.hpp)
 
+
+find_package(OpenMP)
+if(OpenMP_CXX_FOUND)
+  target_link_libraries(sha2_collision_demo PUBLIC OpenMP::OpenMP_CXX)
+  target_link_libraries(sha2_claw_demo PUBLIC OpenMP::OpenMP_CXX)
+endif()
+
+
 # # Link TBB to your executable
-# target_link_libraries(speck32_demo PRIVATE TBB::tbb)
+
 # #[[
 # add_executable(test demos/basic_demo.cpp mitm_sequential.hpp
 #         dict.hpp

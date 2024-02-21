@@ -13,36 +13,36 @@
 namespace mitm {
 
 
-/* return -1 if a < b, 0 if a == b, 1 if a > b */
-template <typename Domain>
-int compare(const typename Domain::t& a,
-	    const typename Domain::t& b)
-{
-  Domain dom{};
-  static uint8_t a_serial[dom.length];
-  static uint8_t b_serial[dom.length];
+// /* return -1 if a < b, 0 if a == b, 1 if a > b */
+// template <typename Domain>
+// int compare(const typename Domain::t& a,
+// 	    const typename Domain::t& b)
+// {
+//   Domain dom{};
+//   static uint8_t a_serial[dom.length];
+//   static uint8_t b_serial[dom.length];
 
-  dom.serialize(a, a_serial);
-  dom.serialize(b, b_serial);
+//   dom.serialize(a, a_serial);
+//   dom.serialize(b, b_serial);
 
-  return std::memcmp(a_serial, b_serial, dom.length);
-}
+//   return std::memcmp(a_serial, b_serial, dom.length);
+// }
 
 
-/* given (a0, a1) and (b0, b1) return -1 if a0 < b0, 0 if a0 == b0, 1 if a0 > b0 */
-template <typename Domain, typename Y_t, typename X_t>
-int compare_pair(const typename std::pair<Y_t, X_t>& a,
-		 const typename std::pair<Y_t, X_t>& b)
-{/* todo take a1, b1 into considerations */
-  Domain dom{};
-  static uint8_t a_serial[dom.length];
-  static uint8_t b_serial[dom.length];
+// /* given (a0, a1) and (b0, b1) return -1 if a0 < b0, 0 if a0 == b0, 1 if a0 > b0 */
+// template <typename Domain, typename Y_t, typename X_t>
+// int compare_pair(const typename std::pair<Y_t, X_t>& a,
+// 		 const typename std::pair<Y_t, X_t>& b)
+// {/* todo take a1, b1 into considerations */
+//   Domain dom{};
+//   static uint8_t a_serial[dom.length];
+//   static uint8_t b_serial[dom.length];
 
-  dom.serialize(a.first, a_serial);
-  dom.serialize(b.first, b_serial);
+//   dom.serialize(a.first, a_serial);
+//   dom.serialize(b.first, b_serial);
 
-  return std::memcmp(a_serial, b_serial, dom.length);
-}
+//   return std::memcmp(a_serial, b_serial, dom.length);
+// }
 
 
 /* Generate all collisions/claws using naive algorithm. */
@@ -55,7 +55,6 @@ int compare_pair(const typename std::pair<Y_t, X_t>& a,
 template<typename X_t, typename Y_t>
 auto images(void (*f)(X_t const& x, Y_t& y), /* y <- f(x) */
 	    void (*ith_element)(X_t&, size_t),/* x = i */
-	    bool (*cmp)(Y_t& y1, Y_t& y2),
 	    size_t start, /* index of first x to treat */
 	    size_t end /* index of last x to treat. it's can be generated*/
 	    ) -> std::vector<Y_t>
@@ -93,8 +92,7 @@ auto images(void (*f)(X_t const& x, Y_t& y), /* y <- f(x) */
   /* sort outputs in parallel */
   std::sort(std::execution::par,
 	    outputs.begin(),
-	    outputs.end(),
-	    cmp);
+	    outputs.end());
   
 
   return outputs;
@@ -102,16 +100,15 @@ auto images(void (*f)(X_t const& x, Y_t& y), /* y <- f(x) */
 
 
 /* returns (X, f(X))*/
-template<typename X_t, typename Y_t>
+template<typename X_t, typename Y_t >
 auto domain_images(void (*f)(X_t const& x, Y_t& y), /* y <- f(x) */
 		   void (*ith_element)(X_t&, size_t),/* x = i */
-		   bool (*cmp)(Y_t& y1, Y_t& y2),
 		   size_t start, /* index of first x to treat */
 		   size_t end /* index of last x to treat. it's can be generated*/
-		   ) -> std::vector< std::pair<X_t, Y_t> >
+		   ) -> std::vector< std::pair<Y_t, X_t> >
 {
   size_t n_elements = end - start; /* to be processed in this function */
-  std::vector< std::pair<X_t, Y_t> > outputs{};
+  std::vector< std::pair<Y_t, X_t> > outputs{};
   outputs.resize(n_elements);
 
 
@@ -143,8 +140,8 @@ auto domain_images(void (*f)(X_t const& x, Y_t& y), /* y <- f(x) */
   /* sort outputs in parallel */
   std::sort(std::execution::par,
 	    outputs.begin(),
-	    outputs.end(),
-	    cmp);
+	    outputs.end());
+
   
 
   return outputs;
@@ -155,9 +152,8 @@ auto domain_images(void (*f)(X_t const& x, Y_t& y), /* y <- f(x) */
 /* return {y: there is u, v satisfies y = f(u) = g(v) } sorted by the image where f: X -> Y. */
 //template <typename X_t, typename Y_t>
 template <typename T>
-auto extract_collisions(int (*cmp)  (const T& y1, const T& y2),
-			const std::vector<T>& f_images,
-			const std::vector<T>& g_images		
+auto extract_collisions(std::vector<T>& f_images,
+			std::vector<T>& g_images		
 			) -> std::vector<T>
 {
   std::vector<T> collisions{};
@@ -178,37 +174,37 @@ auto extract_collisions(int (*cmp)  (const T& y1, const T& y2),
     //                                  const T& value, Compare comp );
     auto start_g = std::lower_bound(g_images.begin(),
 				    g_images.end(),
-				    f_images[idx_start_f],
-				    [cmp](T& a, T& b){return (cmp(a, b) == -1);}); // cmp_with_start_f);
+				    f_images[idx_start_f]);
+				    
 
     auto end_g = std::upper_bound(g_images.begin(),
 				  g_images.end(),
-				  [cmp](T& a, T& b){return (cmp(a, b) < 0);});
+				  f_images[idx_end_f]);
+
 
     auto start_f = (f_images.begin() + idx_start_f);
     auto end_f = (f_images.begin() + idx_end_f);
 
     while ( (start_g != end_g) || (start_f != end_f) ) {
-      /* if they are equal, store the collision */
-      result = cmp(*start_f, *start_g);
-      if (result == 0){
+
+      
+      /* elif f < g, forward only f */
+      if (*start_f < *start_g)
+	++start_f;
+      /* elif g < f, forward only g */
+      else if (*start_g < *start_f)
+	++start_g;
+      else { /* if they are equal, store the collision */
 	collisions_thd.push_back(*start_f);
 	++start_f;
 	++start_g;
       }
 
-      /* elif f < g, forward only f */
-      if (result < 0)
-	++start_f;
-
-      /* elif g < f, forward only g */
-      if (result > 0)
-	++start_g;
     }
 
 
     #pragma omp atomic
-    { n_found_collisions += collisions_thd.size(); }
+     n_found_collisions += collisions_thd.size();
 
     #pragma omp barrier /* all threads should've finished dealing with images_f, and images_g */
     if (thd == 0){
@@ -233,13 +229,26 @@ auto extract_collisions(int (*cmp)  (const T& y1, const T& y2),
   /* sort collisions in parallel */
   std::sort(std::execution::par,
 	    collisions.begin(),
-	    collisions.end(),
-	    [cmp](T const& a, T const& b){return (cmp(a, b) < 0);}
-	    );
+	    collisions.end());
+
 
   return collisions;
 }
 
+
+/* A stupid way to passs a wrap a member function */
+template <typename Problem>
+void f(typename Problem::A_t const& x, typename Problem::B_t& y){
+  static Problem Pb;
+  Pb.f(x, y);
+}
+
+
+template <typename Problem>
+void g(typename Problem::A_t const& x, typename Problem::B_t& y){
+  static Problem Pb;
+  Pb.g(x, y);
+}
 
 /*
  * Given a problem that follows AbstractDomain, and AbstractCollisionProblem.
@@ -260,17 +269,16 @@ auto naive_collisoin_search(Problem& Pb,
 
   using A_t = typename Problem::A_t;
   using C_t = typename Problem::C_t;
-  using Dom_C = typename Problem::Dom_C;
 
+  
   /* create all possible pairs (f(x), x) sorted by f(x) as std::vector<std::pair<>> */
-  auto inps_outs = domain_images(Pb.f,
+  auto inps_outs = domain_images<A_t, C_t>(Problem::f,
 				 ith_element,
-				 compare_pair<Dom_C, C_t, A_t>,
 				 0, /* start, this argument for future use with MPI */
 				 n_elements);
 
   /* return all pairs (f(x), x) s.t. there is an x' =/= x and f(x') == f(x), do this for all x */
-  auto collisions = extract_collisions(compare_pair<Dom_C, C_t, A_t>, inps_outs, inps_outs);
+  auto collisions = extract_collisions(inps_outs, inps_outs);
 
   /* save collisions in disk */
   // todo
@@ -300,22 +308,19 @@ auto naive_claw_search(Problem &Pb,
   /* get all f(x) where x in A, stored in std::vector<C_t>  */
   auto f_images = images(Pb.f,
 			 ith_element,
-			 compare<Dom_C>,
 			 0, /* start with the 1st element in A */
 			 n_elements_A); /* end with the last element in A */
 
   /* get all f(x) where x in A, stored in std::vector<C_t>  */
   auto g_images = images(Pb.g,
 			 ith_element,
-			 compare<Dom_C>,
 			 0, /* start with the 1st element in A */
 			 n_elements_B); /* end with the last element in A */
   
   /* todo iterating only over A inputs, may not return all claws!
    *  we should iterate over the largest domain
    */
-  auto collisions = extract_collisions(compare<Dom_C>,
-				       f_images,
+  auto collisions = extract_collisions(f_images,
 				       g_images);
 
   /* todo save the results in disk! */

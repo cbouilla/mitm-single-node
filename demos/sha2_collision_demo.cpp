@@ -29,8 +29,8 @@ using i32 = int32_t;
 using i64 = int64_t;
 
 /* Edit the next *three* line to define a new demo! */
-#define NBYTES_A 64 /* A's input length <= 64 bytes  */
-#define NBYTES_C 32 /* output length <= 32 bytes */
+#define NBYTES_A 4 /* A's input length <= 64 bytes  */
+#define NBYTES_C 4 /* output length <= 32 bytes */
 /* stop here. */
 
 
@@ -39,13 +39,38 @@ using i64 = int64_t;
  * repr is an encapsulation of whatever data used.
  */
 struct SHA2_out_repr {
-  u8 state[NBYTES_C]; /* output */
+  u8 data[NBYTES_C]; /* output */
 
   /* Constructor */
   SHA2_out_repr()  {
     for (size_t i = 0; i < NBYTES_C; ++i)
-      state[i] = 0;
+      data[i] = 0;
   }
+
+  /* I. destructor */
+  ~SHA2_out_repr(){}; /* no dynamic memory to be removed */
+  
+  /* II. copy constructor */
+  SHA2_out_repr(SHA2_out_repr const& other) {
+    for (size_t i = 0; i < NBYTES_C; ++i)
+      data[i] = other.data[i];
+  }
+
+  /* III. copy assignement  */
+  SHA2_out_repr& operator=(SHA2_out_repr const& other) {
+    for (size_t i = 0; i < NBYTES_C; ++i)
+      data[i] = other.data[i];
+
+    return *this;
+  }
+
+
+  /****************************************************************************/
+  // For the naive algorithm
+  bool operator<(SHA2_out_repr const& other) const {
+    return (std::memcmp(data, other.data, NBYTES_C) < 0);
+  }
+
 };
 
 
@@ -66,6 +91,25 @@ struct SHA2_A_inp_repr {
 
   }
 
+    /* II. copy constructor */
+  SHA2_A_inp_repr(SHA2_A_inp_repr const& other) {
+    for (size_t i = 0; i < NBYTES_C; ++i)
+      data[i] = other.data[i];
+  }
+
+  /* III. copy assignement  */
+  SHA2_A_inp_repr& operator=(SHA2_A_inp_repr const& other) {
+    for (size_t i = 0; i < NBYTES_C; ++i)
+      data[i] = other.data[i];
+
+    return *this;
+  }
+
+  /****************************************************************************/
+  // For the naive algorithm
+  bool operator<(SHA2_A_inp_repr const& other) const {
+    return (std::memcmp(data, other.data, NBYTES_A) < 0);
+  }
 };
 
 
@@ -88,7 +132,7 @@ std::ostream& operator<<(std::ostream& os, const SHA2_out_repr& x)
 {
   os << "0x" ;
   for (size_t i = 0; i < NBYTES_C; ++i) {
-    os << std::setfill('0') << std::setw(1) <<  std::hex << x.state[i] << ", ";
+    os << std::setfill('0') << std::setw(1) <<  std::hex << x.data[i] << ", ";
   }
   return os;
 }
@@ -115,39 +159,39 @@ public:
   void randomize(t& x, mitm::PRNG& prng) const
   {
     for(int i = 0; i < NBYTES_C; ++i )
-      x.state[i] = prng.rand(); /* a bit overkill to call rand on a single byte! */
+      x.data[i] = prng.rand(); /* a bit overkill to call rand on a single byte! */
   }
 
   
   inline
   bool is_equal(t& x, t& y) const
   {
-    return ( std::memcmp(x.state, y.state, NBYTES_C) == 0);
+    return ( std::memcmp(x.data, y.data, NBYTES_C) == 0);
   }
 
   inline
   void serialize(const t& in, u8* out) const
   {
-    std::memcpy(out, in.state, NBYTES_C);
+    std::memcpy(out, in.data, NBYTES_C);
   }
 
   inline
   void unserialize(const u8* in, t& out) const
   {
-    std::memcpy(out.state, in, NBYTES_C);
+    std::memcpy(out.data, in, NBYTES_C);
   }
 
 
   inline
   void copy(const t& in, t& out)
   {
-    std::memcpy(out.state, in.state, NBYTES_C);
+    std::memcpy(out.data, in.data, NBYTES_C);
   }
 
   inline
   int extract_1_bit(const t& inp) const
   {
-    return (1&inp.state[0]);
+    return (1&inp.data[0]);
   }
 
   inline
@@ -157,7 +201,7 @@ public:
     /* each bit k in position 64*r + l, contributes to the l poisition in the digest */
     u64 digest = 0;
     for (int i = 0; i < NBYTES_C; ++i)
-      digest ^= ((u64) x.state[i])<<((8*i)%64);
+      digest ^= ((u64) x.data[i])<<((8*i)%64);
 
     return digest;
   }
@@ -179,17 +223,17 @@ public:
   using I_t = uint64_t; /* 1st tempalte type */
   using A_t = SHA2_A_inp_repr; /* 2nd template type */
   using C_t = SHA2_out_repr; /* 4th template type */
-  
+  using Dom_C = SHA2_OUT_DOMAIN;
   
   static const int f_eq_g = 0;
   
-  inline
-  void f(const A_t& x, C_t& y) const
+  static inline
+  void f(const A_t& x, C_t& y)
   {
     u32 state[8] = { 0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
 		     0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19};
     sha256_process(state, x.data, 64);
-    std::memcpy(y.state, state, NBYTES_C);
+    std::memcpy(y.data, state, NBYTES_C);
   }
 
 
@@ -198,18 +242,29 @@ public:
   {
     /* remove any junk in A */
     std::memset(out_A.data, embedding_n, 64);
-    std::memcpy(out_A.data, inp_C.state, NBYTES_C);
+    std::memcpy(out_A.data, inp_C.data, NBYTES_C);
   }
 
 
 
   void mix(const I_t& i, const C_t& x, C_t& y) const {
     for (int j = 0; j < NBYTES_C; ++j)
-      y.state[j] = x.state[j] ^ (i>>(j*8));
+      y.data[j] = x.data[j] ^ (i>>(j*8));
   }
   I_t mix_default() const {return 0;}
   I_t mix_sample(mitm::PRNG& rng) const {return rng.rand();}
-  
+
+
+  void collect_all_collisions_naive()
+  { /* Get all collisions by the naive method. */
+    all_collisions = mitm::naive_collisoin_search(*this,
+						  [](SHA2_A_inp_repr& x, u64 i)
+						  {*((u64*) &x.data[0]) = i; },
+						  (1LL<<(NBYTES_A*8))// |A|
+						  );
+    all_collisions_collected = true;
+  }
+
 private:
   /* Changes the extra bits in the input to embedding_n */
   int embedding_n = 0;
@@ -221,22 +276,17 @@ private:
    *
    ******************************************************************************/
   bool all_collisions_collected = false;
-  std::vector<std::pair<SHA2_OUT_DOMAIN, SHA2_A_inp_repr>> all_collisions{};
-  void collect_all_collisions_naive()
-  { /* todo start here */
-    all_collisions = mitm::naive_collisoin_search(*this, void (*ith_element)(typename Problem::A_t &, size_t), )
-    all_collisions_collected = true;
-  }
+  std::vector<std::pair<SHA2_out_repr, SHA2_A_inp_repr>> all_collisions{};
   
-  
-  
-  
+
 };
 
 
 int main()
 {
+  
   SHA2_Problem Pb;
+  Pb.collect_all_collisions_naive();
   mitm::collisoin_search(Pb);
 }
 
