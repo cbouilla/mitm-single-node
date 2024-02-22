@@ -1,13 +1,15 @@
 #ifndef MITM_ENGINE
 #define MITM_ENGINE
+
 #include "AbstractDomain.hpp"
 #include "AbstractClawProblem.hpp"
 #include "AbstractCollisionProblem.hpp"
+#include "claw_engine.hpp"
+#include "collision_engine.hpp"
 #include "include/prng.hpp"
 #include "include/timing.hpp"
 #include "include/memory.hpp"
 #include "dict.hpp"
-
 #include <exception>
 #include <iostream>
 #include <vector>
@@ -33,22 +35,22 @@ namespace mitm {
  * args is empty
  * 
  */
-template <typename Problem, typename... Types>
-void iterate_once(Problem &Pb,
-		  typename Problem::I_t& i, /*permutation number of f's input*/
-		  typename Problem::C_t& inp,
-		  typename Problem::C_t& out,
-		  typename Problem::C_t& inp_mixed,
-		  typename Problem::A_t& inpA, /* scratch buffer */
-		  Types... args) /* for claw args := inp0B, inp1B */
-{
-  /* C++ always prefers more specialized templates. 
-   * For the claw code, see `iterate_once` in `claw_engine.hpp`
-   * For the collsions code, see `iterate_once` in `collision_engine.hpp`
-   */
-  std::cerr << "Internal Error: should not use general implementation of `iterate_once`!\n";
-  std::terminate(); /* Never use this implementation! */
-}
+// template <typename Problem, typename... Types>
+// void iterate_once(Problem &Pb,
+// 		  typename Problem::I_t& i, /*permutation number of f's input*/
+// 		  typename Problem::C_t& inp,
+// 		  typename Problem::C_t& out,
+// 		  typename Problem::C_t& inp_mixed,
+// 		  typename Problem::A_t& inpA, /* scratch buffer */
+// 		  Types... args) /* for claw args := inp0B, inp1B */
+// {
+//   /* C++ always prefers more specialized templates. 
+//    * For the claw code, see `iterate_once` in `claw_engine.hpp`
+//    * For the collsions code, see `iterate_once` in `collision_engine.hpp`
+//    */
+//   std::cerr << "Internal Error: should not use general implementation of `iterate_once`!\n";
+//   std::terminate(); /* Never use this implementation! */
+// }
 
 
 
@@ -60,23 +62,23 @@ void iterate_once(Problem &Pb,
  * In case of claw: an additional arguments:
  * 1) inpB_pt
  */
-template <typename Problem, typename... Types >
-bool treat_collision(Problem& Pb,
-		     typename Problem::I_t& i,
-		     typename Problem::C_t*& inp0_pt,
-		     typename Problem::C_t*& out0_pt, /* inp0 calculation buffer */
-		     const u64 inp0_chain_len,
-		     typename Problem::C_t*& inp1_pt,
-		     typename Problem::C_t*& out1_pt, /* inp1 calculation buffer */
-		     const u64 inp1_chain_len,
-		     typename Problem::C_t& inp_mixed,
-		     typename Problem::A_t& inp0_A,
-		     typename Problem::A_t& inp1_A,
-		     Types... args) /* for claw args := inp0B, inp1B */
-{
-  std::cerr << "Internal Error: should not use general implementation of if `treate_collision`!\n";
-  std::terminate(); /* Never use this implementation! */
-}
+// template <typename Problem, typename... Types >
+// bool treat_collision(Problem& Pb,
+// 		     typename Problem::I_t& i,
+// 		     typename Problem::C_t*& inp0_pt,
+// 		     typename Problem::C_t*& out0_pt, /* inp0 calculation buffer */
+// 		     const u64 inp0_chain_len,
+// 		     typename Problem::C_t*& inp1_pt,
+// 		     typename Problem::C_t*& out1_pt, /* inp1 calculation buffer */
+// 		     const u64 inp1_chain_len,
+// 		     typename Problem::C_t& inp_mixed,
+// 		     typename Problem::A_t& inp0_A,
+// 		     typename Problem::A_t& inp1_A,
+// 		     Types... args) /* for claw args := inp0B, inp1B */
+// {
+//   std::cerr << "Internal Error: should not use general implementation of if `treate_collision`!\n";
+//   std::terminate(); /* Never use this implementation! */
+// }
 
 
 inline bool is_distinguished_point(u64 digest, u64 mask)

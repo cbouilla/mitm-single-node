@@ -1,5 +1,4 @@
-#include "../collision_engine.hpp"
-#include "../naive_engine.hpp" /* depends on your usecase! */
+#include "../mitm.hpp"
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
@@ -287,6 +286,6 @@ int main()
   
   SHA2_Problem Pb;
   Pb.collect_all_collisions_naive();
-  mitm::collisoin_search(Pb);
+  mitm::collision_search(Pb);
 }
 

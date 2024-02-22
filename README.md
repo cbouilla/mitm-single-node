@@ -2,7 +2,6 @@
 
 ```
                 AbstractDomain.hpp
-                        ^
                         |
                         x
                        / \
@@ -11,31 +10,25 @@
                     /       \
                    /         \
                   /           \
+                 /             \
+	        /               \
 AbstractClawProblem.hpp     AbstractCollisionProblem.hpp
-                  \           /
-                   \         /
-                    \       /
-                     \     /
-                      \   /
-                       \ /
-                        ^
-                        |
-      prng.hpp  <- base_engine.hpp -> dict.hpp
-                        ^
-                        |
-                        x
-                       / \
-                      /   \
-                     |     |
-                  +---      --+
-                  |           |
-         claw_egine.hpp    collision_engine.hpp
-                  ^           ^
-                   \         /
-                    --+   +--
-                       \ /
-                        |
-                   your_code.cpp
+              /     ^---+---^    /
+             /          |       /
+            /           |      / 
+           / naive_engien.hpp /
+          /     |            /
+         /      |           /
+claw_egine.hpp  |    collision_engine.hpp 
+         \      |         /
+          \     |        /
+           \    |       /
+            \   |      /
+prng.hpp  <- engine.hpp -> dict.hpp
+                |
+              mitm.hpp
+                |
+            your_code.cpp
  
-follows AbstractDomain and {AbstractClawProblem or AbstractCollisionProblem})
+
 ```
