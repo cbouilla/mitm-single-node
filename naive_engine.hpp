@@ -185,7 +185,7 @@ auto extract_collisions(std::vector<T>& f_images,
     auto start_f = (f_images.begin() + idx_start_f);
     auto end_f = (f_images.begin() + idx_end_f);
 
-    while ( (start_g != end_g) || (start_f != end_f) ) {
+    while ( (start_g != end_g) && (start_f != end_f) ) {
 
       
       /* elif f < g, forward only f */

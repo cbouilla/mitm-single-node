@@ -29,8 +29,8 @@ using i32 = int32_t;
 using i64 = int64_t;
 
 /* Edit the next *three* line to define a new demo! */
-#define NBYTES_A 4 /* A's input length <= 64 bytes  */
-#define NBYTES_C 4 /* output length <= 32 bytes */
+#define NBYTES_A 2 /* A's input length <= 64 bytes  */
+#define NBYTES_C 2 /* output length <= 32 bytes */
 /* stop here. */
 
 
