@@ -264,6 +264,13 @@ public:
     all_collisions_collected = true;
   }
 
+    /* assuming that f(x0) == f(x1) == y, is (x0, x1) an acceptable outcome? */
+  bool is_good_pair(C_t const &z,  A_t const &x0,  A_t const &x1) const 
+  { 
+    return true;    // by default, yes.
+  }
+
+
 private:
   /* Changes the extra bits in the input to embedding_n */
   int embedding_n = 0;

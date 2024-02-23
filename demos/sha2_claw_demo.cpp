@@ -254,7 +254,12 @@ public:
   }
   I_t mix_default() const {return 0;}
   I_t mix_sample(mitm::PRNG& rng) const {return rng.rand();}
-  
+
+  bool is_good_pair(C_t const &z,  A_t const &x,  B_t const &y) const 
+  { 
+    return true;    // by default, yes.
+  }
+
 private:
   /* Changes the extra bits in the input to embedding_n */
   int embedding_n = 0;

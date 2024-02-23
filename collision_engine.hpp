@@ -43,7 +43,7 @@ void iterate_once(Problem &Pb,
  * same point using two different functions, f and g. Also, check it is not a
  * robinhood, and use the provided golden collision criterion.
  */ // todo: the pair type looks ugly, rethink the solution.
-template <typename Problem, typename PAIR_T> /* PAIR_T = std::pair<A_t, B_t> */
+template <typename Problem> /* PAIR_T = std::pair<A_t, B_t> */
 bool treat_collision(Problem& Pb,
 		     typename Problem::I_t& i,
 		     typename Problem::C_t*& inp0_pt,
