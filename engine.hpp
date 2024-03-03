@@ -420,6 +420,8 @@ void search_generic(Problem& Pb,
 		    << "out1 = " << *out1_pt << "\n"
 		    << "out0 == out1? " << real_collision  << "\n"
 		    << "\n";
+
+	  break; /* exit the for loop which will lead to exiting the while loop */
 	}
       }
     }

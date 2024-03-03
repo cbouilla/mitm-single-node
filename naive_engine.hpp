@@ -173,7 +173,9 @@ auto extract_collisions(std::vector<T>& f_images,
 
     /* which indices of f to read: */
     size_t idx_start_f = thd*(n_elements_f/nthreads);
-    size_t idx_end_f = thd*(n_elements_f/nthreads) + (n_elements_f%n_elements_f)*(thd == (nthreads -1));
+    size_t idx_end_f   = (thd+1)*(n_elements_f/nthreads) - 1 /* [start, end) */
+      + (n_elements_f % (n_elements_f/nthreads)) * (thd == (nthreads -1)); /* for the last thread add the n_elements mod (n_elements/nthreads )*/
+    
     /* what indices of g to read */
     // constexpr ForwardIt lower_bound( ForwardIt first, ForwardIt last,
     //                                  const T& value, Compare comp );

@@ -92,13 +92,13 @@ struct SHA2_A_inp_repr {
 
     /* II. copy constructor */
   SHA2_A_inp_repr(SHA2_A_inp_repr const& other) {
-    for (size_t i = 0; i < NBYTES_C; ++i)
+    for (size_t i = 0; i < NBYTES_A; ++i)
       data[i] = other.data[i];
   }
 
   /* III. copy assignement  */
   SHA2_A_inp_repr& operator=(SHA2_A_inp_repr const& other) {
-    for (size_t i = 0; i < NBYTES_C; ++i)
+    for (size_t i = 0; i < NBYTES_A; ++i)
       data[i] = other.data[i];
 
     return *this;
