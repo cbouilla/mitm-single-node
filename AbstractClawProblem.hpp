@@ -37,7 +37,7 @@ public:
   void g(const B_t &x, C_t &y) const;  /* y <--- g(x) */
 
   /* assuming that f(x) == g(y) == z, is (x, y) an acceptable outcome? */
-  bool is_good_pair(C_t const &z,  A_t const &x,  B_t const &y) const 
+  bool is_good_pair(C_t const &z,  A_t const &x,  B_t const &y)
   { 
     return true;    // by default, yes.
   }

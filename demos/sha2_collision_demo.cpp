@@ -267,9 +267,23 @@ public:
   }
 
     /* assuming that f(x0) == f(x1) == y, is (x0, x1) an acceptable outcome? */
-  bool is_good_pair(C_t const &z,  A_t const &x0,  A_t const &x1) const 
-  { 
-    return true;    // by default, yes.
+  bool is_good_pair(C_t const &z,  A_t const &x0,  A_t const &x1)
+  {
+    /* todo: test only against the ouputs */
+
+    auto candidate = std::pair<SHA2_out_repr, SHA2_A_inp_repr>(z, x0);
+    /* sorted search for candidate in the list of all collisions */
+    auto it = std::lower_bound(all_collisions.begin(),
+			       all_collisions.end(),
+			       candidate);
+
+    /* todo: stupid change it later */
+    bool are_eqaul = (0 == std::memcmp(it->first.data, z.data, NBYTES_C));
+    if (it != all_collisions.end() && are_eqaul){
+      all_collisions.erase(it);
+      std::cout << "reamingin collisions reduced to " << all_collisions.size() << "\n";
+    }
+    return (all_collisions.size() == 0);    // by default, yes.
   }
 
 

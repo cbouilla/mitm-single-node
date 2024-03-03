@@ -169,7 +169,6 @@ auto extract_collisions(std::vector<T>& f_images,
   size_t nthreads = 1;
   for (size_t thd=0; thd < nthreads; ++thd){
     std::vector<T> collisions_thd{};
-    int result = 0;
 
     /* which indices of f to read: */
     size_t idx_start_f = thd*(n_elements_f/nthreads);

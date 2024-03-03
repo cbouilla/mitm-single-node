@@ -47,7 +47,7 @@ public:
   void f(const A_t &x, C_t &y) const;  /* y <--- f(x) */
   
   /* assuming that f(x0) == f(x1) == y, is (x0, x1) an acceptable outcome? */
-  bool is_good_pair(C_t const &z,  A_t const &x0,  A_t const &x1) const 
+  bool is_good_pair(C_t const &z,  A_t const &x0,  A_t const &x1)
   { 
     return true;    // by default, yes.
   }

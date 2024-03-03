@@ -377,14 +377,14 @@ void search_generic(Problem& Pb,
 	++n_collisions;
 
         /* Move this code to print collision information */
-        std::cout << "\nA collision is found\n"
-		  << "It took " << (wtime() - collision_timer) << " sec\n"
-		  << "inp0 (starting point) = " << inp_St << "\n"
-		  << "digest0 = 0x" << out0_digest << "\n"
-		  << "chain length0 = " << chain_length0 << "\n"
-		  << "inp1 (starting point) = " << *inp1_pt << "\n"
-	  	  << "chain length1 = " << std::dec << chain_length1 << "\n"
-		  << "-------\n";
+        // std::cout << "\nA collision is found\n"
+	// 	  << "It took " << (wtime() - collision_timer) << " sec\n"
+	// 	  << "inp0 (starting point) = " << inp_St << "\n"
+	// 	  << "digest0 = 0x" << out0_digest << "\n"
+	// 	  << "chain length0 = " << chain_length0 << "\n"
+	// 	  << "inp1 (starting point) = " << *inp1_pt << "\n"
+	//   	  << "chain length1 = " << std::dec << chain_length1 << "\n"
+	// 	  << "-------\n";
 
 	collision_timer = wtime();
 	/* respect the rule that inp0 doesn't have pointers dancing around it */
