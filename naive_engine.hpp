@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <execution>
 #include <omp.h>
+#include<functional>
 #include "AbstractDomain.hpp"
 
 namespace mitm {
@@ -53,8 +54,8 @@ namespace mitm {
 
 /* return Image(f) where f: X -> Y. */
 template<typename X_t, typename Y_t>
-auto images(void (*f)(X_t const& x, Y_t& y), /* y <- f(x) */
-	    void (*ith_element)(X_t&, size_t),/* x = i */
+auto images(std::function<void(X_t const&, Y_t&)>& f, /* y <- f(x) */
+	    std::function<void(X_t const&, size_t)>& ith_element,/* x = i */
 	    size_t start, /* index of first x to treat */
 	    size_t end /* index of last x to treat. it's can be generated*/
 	    ) -> std::vector<Y_t>
@@ -78,7 +79,8 @@ auto images(void (*f)(X_t const& x, Y_t& y), /* y <- f(x) */
     /* get the ith input */
     ith_element(x, 0 + global_offset);
     /* last term accounts for r in  n_elements = nthreads*k + r, in the last thread */
-    size_t nelement_per_thd = (n_elements/nthreads) + (n_elements%n_elements)*(thd == (nthreads -1));
+    size_t nelement_per_thd = (n_elements/nthreads)
+                            + (n_elements%n_elements)*(thd == (nthreads -1));
 
     /* A thread main work */
     for (size_t i = 0; i < nelement_per_thd; ++i){
@@ -99,10 +101,13 @@ auto images(void (*f)(X_t const& x, Y_t& y), /* y <- f(x) */
 }
 
 
-/* returns (X, f(X))*/
+/* returns (X, f(X))
+ * This can be implemented by using the `images` method but since but would
+ * require higher usage of memory!
+ */
 template<typename X_t, typename Y_t >
-auto domain_images(void (*f)(X_t const& x, Y_t& y), /* y <- f(x) */
-		   void (*ith_element)(X_t&, size_t),/* x = i */
+auto domain_images(std::function<void(X_t const&, Y_t&)>& f, /* y <- f(x) */
+		   std::function<void(X_t const&, size_t)>& ith_element,/* x = i */
 		   size_t start, /* index of first x to treat */
 		   size_t end /* index of last x to treat. it's can be generated*/
 		   ) -> std::vector< std::pair<Y_t, X_t> >
@@ -236,19 +241,6 @@ auto extract_collisions(std::vector<T>& f_images,
 }
 
 
-/* A stupid way to passs a wrap a member function */
-template <typename Problem>
-void f(typename Problem::A_t const& x, typename Problem::B_t& y){
-  static Problem Pb;
-  Pb.f(x, y);
-}
-
-
-template <typename Problem>
-void g(typename Problem::A_t const& x, typename Problem::B_t& y){
-  static Problem Pb;
-  Pb.g(x, y);
-}
 
 
 }

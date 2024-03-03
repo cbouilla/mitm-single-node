@@ -181,7 +181,6 @@ void claw_search(Problem& Pb)
  */
 template <typename Problem>
 auto naive_collisoin_search(Problem& Pb,
-			    void (*ith_element)(typename Problem::A_t &, size_t),
 			    size_t n_elements
 			    ) -> std::vector<std::pair<typename Problem::C_t,
 						       typename Problem::A_t>>
@@ -189,13 +188,18 @@ auto naive_collisoin_search(Problem& Pb,
 
   using A_t = typename Problem::A_t;
   using C_t = typename Problem::C_t;
+  std::function<void(const A_t&, C_t&)> f = [&Pb](const A_t& x, C_t& y) { Pb.f(x, y); };
+  std::function<void(A_t const&, size_t)> ith_element = [&Pb](const A_t& x, size_t i) { Pb.ith_element(x, i); };
+  
+  /* create all possible pairs (f(x), x) sorted by f(x) as
+   * std::vector<std::pair<>>
+   */
 
   
-  /* create all possible pairs (f(x), x) sorted by f(x) as std::vector<std::pair<>> */
-  auto inps_outs = domain_images<A_t, C_t>(Problem::f,
-				 ith_element,
-				 0, /* start, this argument for future use with MPI */
-				 n_elements);
+  auto inps_outs = domain_images<A_t, C_t>(f,
+					   ith_element,
+					   0, /* start, this argument for future use with MPI */
+					   n_elements);
 
   /* return all pairs (f(x), x) s.t. there is an x' =/= x and f(x') == f(x), do this for all x */
   auto collisions = extract_collisions(inps_outs, inps_outs);
@@ -214,7 +218,6 @@ auto naive_collisoin_search(Problem& Pb,
  */
 template <typename Problem>
 auto naive_claw_search(Problem &Pb,
-		       void (*ith_element)(typename Problem::A_t &, size_t),
 		       size_t n_elements_A,
 		       size_t n_elements_B
 		       ) -> std::vector<typename Problem::C_t>
@@ -223,16 +226,21 @@ auto naive_claw_search(Problem &Pb,
   using A_t = typename Problem::A_t;
   using B_t = typename Problem::B_t;
   using C_t = typename Problem::C_t;
-  using Dom_C = typename Problem::Dom_C;
 
+  /* since there is this argument to f, and g */
+  std::function<void(const A_t&, C_t&)> f = [&Pb](const A_t& x, C_t& y) { Pb.f(x, y); };
+  std::function<void(const B_t&, C_t&)> g = [&Pb](const B_t& x, C_t& y) { Pb.g(x, y); };
+  std::function<void(A_t &, size_t)> ith_element = [&Pb](const A_t& x, size_t i) { Pb.ith_element(x, i); };
+
+  
   /* get all f(x) where x in A, stored in std::vector<C_t>  */
-  auto f_images = images(Pb.f,
+  auto f_images = images(f,
 			 ith_element,
 			 0, /* start with the 1st element in A */
 			 n_elements_A); /* end with the last element in A */
 
   /* get all f(x) where x in A, stored in std::vector<C_t>  */
-  auto g_images = images(Pb.g,
+  auto g_images = images(g,
 			 ith_element,
 			 0, /* start with the 1st element in A */
 			 n_elements_B); /* end with the last element in A */

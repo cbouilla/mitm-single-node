@@ -8,7 +8,7 @@
 #include <iomanip>
 #include <array>
 #include <vector>
-
+#include<functional>
 /* We would like to call C function defined in `sha256.c` */
 extern "C"{
  void sha256_process(uint32_t state[8], const uint8_t data[], uint32_t length);
@@ -226,8 +226,8 @@ public:
   
   static const int f_eq_g = 0;
   
-  static inline
-  void f(const A_t& x, C_t& y)
+  inline
+  void f(const A_t& x, C_t& y) const
   {
     u32 state[8] = { 0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
 		     0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19};
@@ -254,14 +254,16 @@ public:
   I_t mix_sample(mitm::PRNG& rng) const {return rng.rand();}
 
 
+  void ith_element(A_t const& x, size_t i) {  *((u64*) &x.data[0]) = i; }
+  
   void collect_all_collisions_naive()
   { /* Get all collisions by the naive method. */
+    
     all_collisions = mitm::naive_collisoin_search(*this,
-						  [](SHA2_A_inp_repr& x, u64 i)
-						  {*((u64*) &x.data[0]) = i; },
 						  (1LL<<(NBYTES_A*8))// |A|
 						  );
     all_collisions_collected = true;
+    std::cout << "Number of found collisions by naive method: " <<all_collisions.size() << "\n"; 
   }
 
     /* assuming that f(x0) == f(x1) == y, is (x0, x1) an acceptable outcome? */
