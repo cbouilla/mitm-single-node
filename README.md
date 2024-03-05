@@ -1,3 +1,5 @@
+**Note** Developement for parallel `mitm` moved to [mitm](https://github.com/akaalharbi/mitm). This repository will be freezed to use it as a correctness test against the parallel version.
+
 # Sequential meet in the middle
 
 ```
@@ -13,9 +15,9 @@
                  /             \
 	        /               \
 AbstractClawProblem.hpp     AbstractCollisionProblem.hpp
-              /     ^---+---^    /
-             /          |       /
-            /           |      / 
+              /                  /
+             /                  /
+            /                  / 
            / naive_engien.hpp /
           /     |            /
          /      |           /
