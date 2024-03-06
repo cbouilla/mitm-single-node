@@ -16,13 +16,16 @@ namespace mitm {
 template<typename I, typename A, typename Domain_C>
 class AbstractCollisionProblem {
 public:
-  /* these lines have to be retyped again to use the above 4 types directly */
+  /* these lines have to be retyped again to use the above 3 types directly */
   using I_t = I; 
-  // using A_t = typename Domain_A::t;
   using A_t = A;
-  using Dom_C = Domain_C;
   using C_t = typename Domain_C::t;
-  
+  using Dom_C = Domain_C;
+  Dom_C C;
+
+  /* Initialization, in principle  we don't need to initialize any variable unless a user
+   * wishes to do so.
+   */
   AbstractCollisionProblem() {
     // enforce that C is a subclass of AbstractDomain
     // In fact, we don't need to know **anything** about A
@@ -33,7 +36,6 @@ public:
 
     static_assert(std::is_base_of<AbstractDomain<typename Domain_C::t>, Domain_C>::value,
 		  "C not derived from AbstractDomain");
-    // C does not need to have hash_1_bit
   }
   
   /* 

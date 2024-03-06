@@ -22,9 +22,9 @@ public:
   using I_t = I;
   using A_t = A;
   using B_t = B;
-  using Dom_C = Domain_C;
   using C_t = typename Domain_C::t;
-
+  using Dom_C = Domain_C;
+  Dom_C C;
   
   AbstractClawProblem() {
     static_assert(std::is_base_of<AbstractDomain<typename Domain_C::t>, Domain_C>::value,

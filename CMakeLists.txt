@@ -5,7 +5,7 @@ cmake_minimum_required(VERSION 3.20)
 
 project(mitm_sequential)
 
-set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON) # Compiler command json
 # sorry, for now gcc is the source of truth.
@@ -43,18 +43,21 @@ cmake_print_variables(CMAKE_CXX_COMPILER_ID)
 include_directories(include)
 
 
-# add_executable(speck32_demo
-#                demos/speck32_demo.cpp
-# 	       claw_engine.hpp
-#        	       base_engine.hpp
-# 	       AbstractClawProblem.hpp
-# 	       AbstractDomain.hpp
-# 	       dict.hpp
-# 	       base_engine.hpp
-# 	       include/memory.hpp
-# 	       include/prng.hpp
-# 	       include/timing.hpp
-#                demos/speck32.hpp)
+add_executable(sha2_collision_1collision_demo
+        demos/sha2_collision_1collision_demo.cpp
+	demos/sha256_x86.c # demos/sha256.c
+	mitm.hpp
+	engine.hpp
+	naive_engine.hpp
+	collision_engine.hpp
+	AbstractCollisionProblem.hpp
+	AbstractDomain.hpp
+        dict.hpp
+      	include/memory.hpp
+	include/prng.hpp
+	include/timing.hpp)
+
+
 
 add_executable(sha2_collision_demo
         demos/sha2_collision_demo.cpp
@@ -89,6 +92,7 @@ add_executable(sha2_claw_demo
 
 find_package(OpenMP)
 if(OpenMP_CXX_FOUND)
+  target_link_libraries(sha2_collision_1collision_demo PUBLIC OpenMP::OpenMP_CXX)
   target_link_libraries(sha2_collision_demo PUBLIC OpenMP::OpenMP_CXX)
   target_link_libraries(sha2_claw_demo PUBLIC OpenMP::OpenMP_CXX)
 endif()

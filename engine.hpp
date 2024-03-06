@@ -86,6 +86,10 @@ namespace mitm {
 //}
 
 /******************************************************************************/
+
+inline bool is_distinguished_point(u64 digest, u64 mask)
+{  return (0 == (mask & digest) ); }
+
 template<typename C_t>
 inline void swap_pointers(C_t*& pt1,
                           C_t*& pt2){

@@ -1,17 +1,21 @@
 #include "../mitm.hpp"
-#include <algorithm>
+// #include <algorithm>
+#include <random>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
 #include <iomanip>
-#include <array>
+// #include <array>
+#include <vector>
+// #include<functional>
 
 /* We would like to call C function defined in `sha256.c` */
 extern "C"{
  void sha256_process(uint32_t state[8], const uint8_t data[], uint32_t length);
  }
+
 
 
 
@@ -26,10 +30,10 @@ using i32 = int32_t;
 using i64 = int64_t;
 
 /* Edit the next *three* line to define a new demo! */
-#define NBYTES_A 64 /* A's input length <= 64 bytes  */
-#define NBYTES_B 64 /* B's input length <= 64 bytes */
-#define NBYTES_C 32 /* output length <= 32 bytes */
+#define NBYTES_A 2 /* A's input length <= 64 bytes  */
+#define NBYTES_C 2 /* output length <= 32 bytes */
 /* stop here. */
+
 
 
 /*
@@ -43,6 +47,31 @@ struct SHA2_out_repr {
     for (size_t i = 0; i < NBYTES_C; ++i)
       data[i] = 0;
   }
+
+  /* I. destructor */
+  ~SHA2_out_repr(){}; /* no dynamic memory to be removed */
+  
+  /* II. copy constructor */
+  SHA2_out_repr(SHA2_out_repr const& other) {
+    for (size_t i = 0; i < NBYTES_C; ++i)
+      data[i] = other.data[i];
+  }
+
+  /* III. copy assignement  */
+  SHA2_out_repr& operator=(SHA2_out_repr const& other) {
+    for (size_t i = 0; i < NBYTES_C; ++i)
+      data[i] = other.data[i];
+
+    return *this;
+  }
+
+
+  /****************************************************************************/
+  // For the naive algorithm
+  bool operator<(SHA2_out_repr const& other) const {
+    return (std::memcmp(data, other.data, NBYTES_C) < 0);
+  }
+
 };
 
 
@@ -63,24 +92,28 @@ struct SHA2_A_inp_repr {
 
   }
 
-};
+    /* II. copy constructor */
+  SHA2_A_inp_repr(SHA2_A_inp_repr const& other) {
+    for (size_t i = 0; i < NBYTES_A; ++i)
+      data[i] = other.data[i];
+  }
 
+  /* III. copy assignement  */
+  SHA2_A_inp_repr& operator=(SHA2_A_inp_repr const& other) {
+    for (size_t i = 0; i < NBYTES_A; ++i)
+      data[i] = other.data[i];
 
-struct SHA2_B_inp_repr {
-  /* This is the active input */
-  // u8 data[NBYTES_B]; /* output */
-  /* but for convenience in writing f we make it as  following: */
-  u8 data[64]; /* output */
-  /* Constructor */
-  SHA2_B_inp_repr()  {
-    for (size_t i = 0; i < NBYTES_B; ++i)
-      data[i] = 0;
+    return *this;
+  }
 
-    /* These parts is always zero! */
-    for (size_t i = NBYTES_B; i < 64; ++i)
-      data[i] = 0;
+  /****************************************************************************/
+  // For the naive algorithm
+  bool operator<(SHA2_A_inp_repr const& other) const {
+    return (std::memcmp(data, other.data, NBYTES_A) < 0);
   }
 };
+
+
 
 
 
@@ -95,21 +128,12 @@ std::ostream& operator<<(std::ostream& os, const SHA2_A_inp_repr& x)
 }
 
 
-std::ostream& operator<<(std::ostream& os, const SHA2_B_inp_repr& x)
-{
-  
-  for (size_t i = 0; i < NBYTES_B;++i) {
-    os << "0x" << std::setfill('0') << std::setw(2) <<  std::hex << x.data[i] << ", ";
-  }
-  return os;
-}
-
 
 std::ostream& operator<<(std::ostream& os, const SHA2_out_repr& x)
 {
   os << "0x" ;
   for (size_t i = 0; i < NBYTES_C; ++i) {
-    os << std::setfill('0') << std::setw(2) <<  std::hex << x.data[i] << ", ";
+    os << std::setfill('0') << std::setw(1) <<  std::hex << x.data[i] << ", ";
   }
   return os;
 }
@@ -142,13 +166,13 @@ public:
   
   inline
   bool is_equal(t const& x, t const& y) const
-  {
+  { /* true if all NBYTES_C bytes are equal */
     return ( std::memcmp(x.data, y.data, NBYTES_C) == 0);
   }
 
   inline
   void serialize(const t& in, u8* out) const
-  {
+  { /* A downside of a general mitm, we have unnecessary copies */
     std::memcpy(out, in.data, NBYTES_C);
   }
 
@@ -183,6 +207,7 @@ public:
     return digest;
   }
 
+
   
 };
 
@@ -190,22 +215,22 @@ public:
 ////////////////////////////////////////////////////////////////////////////////
 
 class SHA2_Problem
-  : mitm::AbstractClawProblem<uint64_t, SHA2_A_inp_repr, SHA2_B_inp_repr, SHA2_OUT_DOMAIN>
+  : mitm::AbstractCollisionProblem<uint64_t, SHA2_A_inp_repr, SHA2_OUT_DOMAIN>
 {
 public:
 
-
+  /* Look at `AbstractCollisionProblem.hpp` */
   /* These types shorthand are essential ! */
   using I_t = uint64_t; /* 1st tempalte type */
   using A_t = SHA2_A_inp_repr; /* 2nd template type */
-  using B_t = SHA2_B_inp_repr; /* 3rd template type */
   using C_t = SHA2_out_repr; /* 4th template type */
   using Dom_C = SHA2_OUT_DOMAIN;
-  Dom_C C; /* Output related functions */  
+  SHA2_OUT_DOMAIN C{}; /* Output related functions */
+
+  /* We pick random poins from A_t, and C_t and consider them as the golden
+   * pair. Then, we ask mitm to find it this golden point!
+   */
   
-  static const int f_eq_g = 0;
-
-
   SHA2_Problem()
   {
     std::random_device rd;  // a seed source for the random number engine
@@ -213,108 +238,67 @@ public:
     std::uniform_int_distribution<> distrib(0, 255); /* a random byte value*/
     
     /* Fill golden_input with uniform garbage, truly golden data. */
-    for (int i = 0; i<NBYTES_A; ++i)
-      golden_inpA.data[i] = distrib(gen);
-
-    /* Fill golden_input with uniform garbage, truly golden data. */
-    for (int i = 0; i<NBYTES_B; ++i){
-      golden_inpB.data[i] = distrib(gen);
-      constant.data[i] = 0;
+    for (int i = 0; i<NBYTES_A; ++i){
+      golden_inp0.data[i] = distrib(gen);
+      golden_inp1.data[i] = distrib(gen);
     }
-
-    /* get the constant, C,  that makes them collide */
-    // f(golden_inpA) = g(golden_inpB) xor C
-    f(golden_inpA, golden_out);
-    g(golden_inpB, constant);
-    
     /* our golden output is picked uniformly, can `mitm` find a needle in heystack */
-    for (int i = 0; i<NBYTES_C; ++i)
-      constant.data[i] ^= golden_out.data[i];
-    
-    /* Check our constant work */
-    C_t y0;
-    C_t y1;
-    f(golden_inpA, y0);
-    g(golden_inpB, y1);
-    
-    std::cout << "\n========================================\n"
-	      << "Does the golden pair collide? " << C.is_equal(y0, y1)
-	      << "\n========================================\n";
+    for (int i = 0; i<NBYTES_C; ++i){
+      golden_out.data[i] = distrib(gen);
+    }
+    std::cout << "Golden output = " << golden_out << "\n";
   }
 
   
   inline
   void f(const A_t& x, C_t& y) const
   {
-    u32 data[8] = { 0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
+    u32 state[8] = { 0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
 		     0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19};
-    sha256_process(data, x.data, 64);
-    std::memcpy(y.data, data, NBYTES_C);
 
+    /* edit our function to enforce collision between the golden inputs */
+    if (is_equal_A(x, golden_inp0) or is_equal_A(x, golden_inp1)){
+      std::memcpy(y.data, golden_out.data, NBYTES_C);
+      return;
+    }
+    /* otherwise do normal sha256 truncated */
+    sha256_process(state, x.data, 64);
+    std::memcpy(y.data, state, NBYTES_C);
   }
 
-  inline
-  void g(const B_t& x, C_t& y) const
+  /* assuming that f(x0) == f(x1) == y, is (x0, x1) an acceptable outcome? */
+  bool is_good_pair(C_t const &z,  A_t const &x0,  A_t const &x1) const
   {
-    u32 data[8] = { 0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
-		     0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19};
-
-    u8* data_u8 = (u8*) data; /* a stupid trick to work on bytes */
-    
-    sha256_process(data, x.data, 64);
-    /* Add our magical constant to get collision between:
-     * golden_inpA and golden_inpB, i.e. f(golden_inpA) = g(golden_inpB)
-     */
-    for (int i = 0; i < NBYTES_C; ++i)
-      data_u8[i] ^= constant.data[i];
-
-    std::memcpy(y.data, data, NBYTES_C);
-
+    return (C.is_equal(golden_out, z) and 
+	    (    (is_equal_A(golden_inp0, x0) and  is_equal_A(golden_inp1, x1))
+	      or (is_equal_A(golden_inp0, x1) and  is_equal_A(golden_inp1, x0)))
+	    );
   }
-
 
   inline
   void send_C_to_A(C_t& inp_C, A_t& out_A) const
   {
     /* remove any junk in A */
     std::memset(out_A.data, embedding_n, 64);
-    /* Since domain and range may have different size: */
-    std::memcpy(out_A.data, inp_C.data, std::min(NBYTES_A, NBYTES_C));
+    std::memcpy(out_A.data, inp_C.data, NBYTES_C);
   }
 
-  inline
-  void send_C_to_B(C_t& inp_C, B_t& out_B) const
+
+
+  void mix(const I_t& i, const C_t& x, C_t& y) const
   {
-    /* remove any junk in B */
-    std::memset(out_B.data, embedding_n, 64);
-    /* Since domain and range may have different size: */
-    std::memcpy(out_B.data, inp_C.data, std::min(NBYTES_B, NBYTES_C));
-  }
-
-  
-
-
-  void mix(const I_t& i, const C_t& x, C_t& y) const {
     for (int j = 0; j < NBYTES_C; ++j)
       y.data[j] = x.data[j] ^ (i>>(j*8));
   }
   I_t mix_default() const {return 0;}
   I_t mix_sample(mitm::PRNG& rng) const {return rng.rand();}
 
-  bool is_good_pair(C_t const &z,  A_t const &x,  B_t const &y) const 
-  {
-    return (C.is_equal(golden_out, z)
-	    and is_equal_A(golden_inpA, x)
-	    and is_equal_B(golden_inpB, y));
-  }
 
 private:
-  /* Changes the extra bits in the input to embedding_n */
   int embedding_n = 0;
   C_t golden_out ; /* We look for point that equals this */
-  A_t golden_inpA; /* We will edit f so that */
-  B_t golden_inpB;
-  C_t constant{};
+  A_t golden_inp0; /* We will edit f so that */
+  A_t golden_inp1;
 
   /* A simple equality test for the type A_t, since it's not required by mitm */
   bool is_equal_A(A_t const& inp0, A_t const& inp1) const{
@@ -324,26 +308,14 @@ private:
 
     return (not_equal == 0); /* i.e. return not not_equal */
   }
-
-  /* A simple equality test for the type B_t, since it's not required by mitm */
-  bool is_equal_B(B_t const& inp0, B_t const& inp1) const{
-    int not_equal = 0;
-    for (int i = 0; i < NBYTES_B; ++i)
-      not_equal += (inp0.data[i] != inp1.data[i]);
-
-    return (not_equal == 0); /* i.e. return not not_equal */
-  }
-
-
+  
 };
 
 
 int main()
 {
-  std::cout << "sha2-claw demo! |inp_A| = " << NBYTES_A << "bytes, "
-	    << "|inp_B| = " << NBYTES_B << "bytes, "
-	    << "|out| = " << NBYTES_C << "bytes\n";
+  
   SHA2_Problem Pb;
-  mitm::claw_search(Pb);
+  mitm::collision_search(Pb);
 }
 
