@@ -1,9 +1,12 @@
-**Note** Developement for parallel `mitm` moved to [mitm](https://github.com/akaalharbi/mitm). This repository will be freezed to use it as a correctness test against the parallel version.
+**Note** Developement for parallel `mitm` moved to [mitm](https://github.com/akaalharbi/mitm). 
+
+**Note**: This repository is kept seperated from the parallel implementation to continue testing on various `mitm` scenarios where we need a working version. Most development will be in the `demos` folder.
 
 # Sequential meet in the middle
 
 ```
                 AbstractDomain.hpp
+                        ^
                         |
                         x
                        / \
@@ -11,26 +14,32 @@
                      /     \
                     /       \
                    /         \
-                  /           \
-                 /             \
-	        /               \
 AbstractClawProblem.hpp     AbstractCollisionProblem.hpp
-              /                  /
-             /                  /
-            /                  / 
-           / naive_engien.hpp /
-          /     |            /
-         /      |           /
-claw_egine.hpp  |    collision_engine.hpp 
-         \      |         /
-          \     |        /
-           \    |       /
-            \   |      /
-prng.hpp  <- engine.hpp -> dict.hpp
-                |
-              mitm.hpp
-                |
-            your_code.cpp
- 
+                   \         /
+                    \       /
+                     \     /
+                      \   /
+                       \ /
+                        ^
+                        |
+        prng.hpp  <- engine.hpp -> dict.hpp
+                        ^
+                        |
+                        x
+                       / \
+                      /   \
+                     |     |
+                  +---      --+
+                  |           |
+         claw_egine.hpp    collision_engine.hpp
+                  ^           ^
+                   \         /
+                    --+   +--
+                       \ /
+                        |
+                     mitm.hpp
+                        ^
+                        |
+                   your_code.cpp
 
 ```

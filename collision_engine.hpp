@@ -2,6 +2,7 @@
 #define MITM_COLLISION_ENGINE
 #include "AbstractDomain.hpp"
 #include "AbstractCollisionProblem.hpp"
+#include "engine.hpp"
 //#include "base_engine.hpp"
 
 namespace mitm {
@@ -86,7 +87,6 @@ bool treat_collision(Problem& Pb,
   return Pb.is_good_pair(*out0_pt, inp0_A, inp1_A);
 
 }
-
 
 
 

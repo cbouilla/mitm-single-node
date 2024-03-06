@@ -4,8 +4,9 @@
 #include "AbstractDomain.hpp"
 #include "AbstractClawProblem.hpp"
 #include "AbstractCollisionProblem.hpp"
-
 #include "engine.hpp"
+#include "claw_engine.hpp"
+#include "collision_engine.hpp"
 #include "naive_engine.hpp"
 
 

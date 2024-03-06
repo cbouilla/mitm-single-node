@@ -2,6 +2,7 @@
 #define MITM_CLAW_ENGINE
 #include "AbstractDomain.hpp"
 #include "AbstractClawProblem.hpp"
+#include "engine.hpp"
 #include <vector>
 
 

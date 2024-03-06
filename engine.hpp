@@ -4,8 +4,6 @@
 #include "AbstractDomain.hpp"
 #include "AbstractClawProblem.hpp"
 #include "AbstractCollisionProblem.hpp"
-#include "claw_engine.hpp"
-#include "collision_engine.hpp"
 #include "include/prng.hpp"
 #include "include/timing.hpp"
 #include "include/memory.hpp"
@@ -26,6 +24,13 @@
 
 namespace mitm {
 
+
+
+/******************************************************************************/
+/* The two functions below are implemented in `claw_engine.hpp` and
+ *  `collision_engine.hpp`
+ */
+  
 /*
  * Defines how to walk in a sequence. Use functions overloading to differentiate
  * between a claw's iteration and a collisions's iteration. Specfically:
@@ -78,13 +83,9 @@ namespace mitm {
 // {
 //   std::cerr << "Internal Error: should not use general implementation of if `treate_collision`!\n";
 //   std::terminate(); /* Never use this implementation! */
-// }
+//}
 
-
-inline bool is_distinguished_point(u64 digest, u64 mask)
-{  return (0 == (mask & digest) ); }
-
-
+/******************************************************************************/
 template<typename C_t>
 inline void swap_pointers(C_t*& pt1,
                           C_t*& pt2){
@@ -290,7 +291,7 @@ void search_generic(Problem& Pb,
   is_serialize_inverse_of_unserialize<Problem>(Pb, prng);
 
   /*============================= DICT INIT ==================================*/
-  size_t n_bytes = 0.5*get_available_memory();
+  size_t n_bytes = 0.05*get_available_memory();
   std::cout << "Going to use "
 	    << std::dec << n_bytes << " bytes = 2^"<< std::log2(n_bytes)
 	    << " bytes for dictionary!\n";
