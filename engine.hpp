@@ -235,30 +235,31 @@ bool walk(Problem& Pb,
     swap_pointers(inp1_pt, out1_pt);
   }
 
+
+  
   /*****************************************************************************/
   /* now both inputs have equal amount of steps to reach a distinguished point */
   /* both sequences needs exactly `len` steps to reach distinguished point.    */
-  for (size_t i = 0; i < len; ++i){
+  for (size_t j = 0; j < len; ++j){
     /* walk them together and check each time if their output are equal     */
     /* return as soon equality is found. The equality could be a robinhood. */
-    /* for claw args := inp0B, inp1B */
-    iterate_once(Pb, i, *inp0_pt, *out0_pt, inp_mixed, inpA, args...);
-    iterate_once(Pb, i, *inp1_pt, *out1_pt, inp_mixed, inpA, args...);
-    
+
+    /* First, do the outputs collide? If yes, return true and exit. */
     if(Pb.C.is_equal( *out0_pt, *out1_pt )){
-      /* inp0 & inp1 contain  input before mixing, we need to fix this  */
-      Pb.mix(i, *inp0_pt, inp_mixed);
-      Pb.C.copy(inp_mixed, *inp0_pt);
-
-      Pb.mix(i, *inp1_pt, inp_mixed);
-      Pb.C.copy(inp_mixed, *inp1_pt);
-
+      /* inp0 & inp1 contain  input before mixing, we need to fix this. Maybe yes, maybe no, keep an eye on this comment  */
       return true; /* They are equal */
     }
-      
 
+    /* The next input is the current output, thus let inp_pt points to the
+     * current input data. we don't care what are the data out_pt points to 
+     * since it will be overwritten by `iterate_once`.
+     */
     swap_pointers(inp0_pt, out0_pt);
     swap_pointers(inp1_pt, out1_pt);
+
+    /* move the two inputs one step (for claw args... := inp0B, inp1B) */
+    iterate_once(Pb, i, *inp0_pt, *out0_pt, inp_mixed, inpA, args...);
+    iterate_once(Pb, i, *inp1_pt, *out1_pt, inp_mixed, inpA, args...);
   }
   return false; /* we did not find a common point */
 }

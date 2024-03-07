@@ -8,6 +8,24 @@
 
 namespace mitm {
 
+template <typename Problem>
+void debug_golden_input_A(Problem& Pb,
+			  typename Problem::A_t& inpA)
+{
+  if (Pb.is_equal_A(inpA, Pb.golden_inpA))
+      std::cout << "\nwe hit the golden input of A!\n";
+}
+
+
+template <typename Problem>
+void debug_golden_input_B(Problem& Pb,
+			  typename Problem::B_t& inpB)
+{
+  if (Pb.is_equal_B(inpB, Pb.golden_inpB))
+      std::cout << "\nwe hit the golden input of B!\n";
+}
+
+
 /* args... = inp0B, inp1B*/
 /*
  * Do 1 iteration inp =(f/g)=> out, write the output in the address pointed
@@ -31,11 +49,14 @@ void iterate_once(Problem &Pb,
   int f_or_g = Pb.C.extract_1_bit(inp_mixed);
 
   if (f_or_g == 1){
+    
     Pb.send_C_to_A(inp_mixed, inpA);
+    debug_golden_input_A(Pb, inpA);
     Pb.f(inpA, out);
   }
   else { /* f_or_g == 0 */
     Pb.send_C_to_B(inp_mixed, inpB);
+    debug_golden_input_B(Pb, inpB);
     Pb.g(inpB, out);
   }
 }

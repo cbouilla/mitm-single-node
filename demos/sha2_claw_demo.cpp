@@ -26,9 +26,9 @@ using i32 = int32_t;
 using i64 = int64_t;
 
 /* Edit the next *three* line to define a new demo! */
-#define NBYTES_A 64 /* A's input length <= 64 bytes  */
-#define NBYTES_B 64 /* B's input length <= 64 bytes */
-#define NBYTES_C 32 /* output length <= 32 bytes */
+#define NBYTES_A 2 /* A's input length <= 64 bytes  */
+#define NBYTES_B 2 /* B's input length <= 64 bytes */
+#define NBYTES_C 2 /* output length <= 32 bytes */
 /* stop here. */
 
 
@@ -89,7 +89,8 @@ std::ostream& operator<<(std::ostream& os, const SHA2_A_inp_repr& x)
 {
   
   for (size_t i = 0; i < NBYTES_A;++i) {
-    os << "0x" << std::setfill('0') << std::setw(2) <<  std::hex << x.data[i] << ", ";
+    os << "0x" << std::setfill('0') << std::setw(2)
+       <<  std::hex << static_cast<unsigned int>( x.data[i] ) << ", ";
   }
   return os;
 }
@@ -99,7 +100,8 @@ std::ostream& operator<<(std::ostream& os, const SHA2_B_inp_repr& x)
 {
   
   for (size_t i = 0; i < NBYTES_B;++i) {
-    os << "0x" << std::setfill('0') << std::setw(2) <<  std::hex << x.data[i] << ", ";
+    os << "0x" << std::setfill('0') << std::setw(2)
+       <<  std::hex << static_cast<unsigned int>(x.data[i]) << ", ";
   }
   return os;
 }
@@ -107,9 +109,9 @@ std::ostream& operator<<(std::ostream& os, const SHA2_B_inp_repr& x)
 
 std::ostream& operator<<(std::ostream& os, const SHA2_out_repr& x)
 {
-  os << "0x" ;
   for (size_t i = 0; i < NBYTES_C; ++i) {
-    os << std::setfill('0') << std::setw(2) <<  std::hex << x.data[i] << ", ";
+    os << "0x" << std::setfill('0') << std::setw(2)
+       <<  std::hex << static_cast<unsigned int>( x.data[i]) << ", ";
   }
   return os;
 }
@@ -211,6 +213,7 @@ public:
     std::random_device rd;  // a seed source for the random number engine
     std::mt19937 gen(rd()); // mersenne_twister_engine seeded with rd()
     std::uniform_int_distribution<> distrib(0, 255); /* a random byte value*/
+
     
     /* Fill golden_input with uniform garbage, truly golden data. */
     for (int i = 0; i<NBYTES_A; ++i)
@@ -221,7 +224,7 @@ public:
       golden_inpB.data[i] = distrib(gen);
       constant.data[i] = 0;
     }
-
+    
     /* get the constant, C,  that makes them collide */
     // f(golden_inpA) = g(golden_inpB) xor C
     f(golden_inpA, golden_out);
@@ -230,7 +233,22 @@ public:
     /* our golden output is picked uniformly, can `mitm` find a needle in heystack */
     for (int i = 0; i<NBYTES_C; ++i)
       constant.data[i] ^= golden_out.data[i];
-    
+
+    /***************************************************************************/
+    // TEST values: to be removed later 
+    // golden_inpA = 0x01, 0x69;
+    // golden_inpB = 0x6a, 0x29;
+    // golden_out  = 0x75, 0x28;
+    golden_inpA.data[0] = 0x01;
+    golden_inpA.data[1] = 0x69;
+
+    golden_inpB.data[0] = 0x6a;
+    golden_inpB.data[1] = 0x29;
+
+    golden_out.data[0] = 0x75;
+    golden_out.data[1] = 0x28;
+    /***************************************************************************/
+
     /* Check our constant work */
     C_t y0;
     C_t y1;
@@ -238,8 +256,11 @@ public:
     g(golden_inpB, y1);
     
     std::cout << "\n========================================\n"
-	      << "Does the golden pair collide? " << C.is_equal(y0, y1)
-	      << "\n========================================\n";
+	      << "Does the golden pair collide? " << C.is_equal(y0, y1) << "\n"
+	      << "golden_inpA = " << golden_inpA << "\n"
+      	      << "golden_inpB = " << golden_inpB << "\n"
+	      << "golden_out  = " << golden_out  << "\n"
+	      << "========================================\n";
   }
 
   
@@ -311,6 +332,7 @@ public:
 private:
   /* Changes the extra bits in the input to embedding_n */
   int embedding_n = 0;
+public: /* they are public for debugging */
   C_t golden_out ; /* We look for point that equals this */
   A_t golden_inpA; /* We will edit f so that */
   B_t golden_inpB;
