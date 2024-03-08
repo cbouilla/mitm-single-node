@@ -73,7 +73,7 @@ struct Dict {
 
     uint64_t idx = key % n_slots;
     bool flag = false;
-
+    
     /* Found an empty slot, thus we're adding a new element  */
     if (keys[idx] == 0)
       ++n_elements; 

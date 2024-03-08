@@ -26,6 +26,16 @@ void debug_golden_input_B(Problem& Pb,
 }
 
 
+
+template <typename Problem>
+void debug_golden_output(Problem& Pb,
+			 typename Problem::C_t& out)
+{
+  if (Pb.C.is_equal(out, Pb.golden_out))
+      std::cout << "\nwe hit the golden output!\n";
+}
+
+
 /* args... = inp0B, inp1B*/
 /*
  * Do 1 iteration inp =(f/g)=> out, write the output in the address pointed
@@ -59,6 +69,8 @@ void iterate_once(Problem &Pb,
     debug_golden_input_B(Pb, inpB);
     Pb.g(inpB, out);
   }
+  debug_golden_output(Pb, out);
+  
 }
 
 
@@ -162,9 +174,8 @@ bool treat_collision(Problem& Pb,
     return false; /* don't add this pair */
   
   
-  return Pb.is_good_pair(*out0_pt, inp0_A, inp0_B);
+  return Pb.is_good_pair(*out0_pt, inp0_A, inp1_B);
 }
-
 
 
 }

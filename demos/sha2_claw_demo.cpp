@@ -224,30 +224,40 @@ public:
       golden_inpB.data[i] = distrib(gen);
       constant.data[i] = 0;
     }
+
+    /***************************************************************************/
+    // TEST values: to be removed later
+
+    // Test 1: Hand picked to be found quite fast
+    // golden_inpA.data[0] = 0xf9;
+    // golden_inpA.data[1] = 0x39;
+    // golden_inpB.data[0] = 0x6a;
+    // golden_inpB.data[1] = 0x29;
+
+    // Test 2: takes sometimes but works
+    // golden_inpA.data[0] = 0x01;
+    // golden_inpA.data[1] = 0x69;
+    // golden_inpB.data[0] = 0x6a;
+    // golden_inpB.data[1] = 0x29;
+
+    // Test 3: 0xdecafbad, fails! 
+    golden_inpA.data[0] = 0xde;
+    golden_inpA.data[1] = 0xca;
+    golden_inpB.data[0] = 0xfb;
+    golden_inpB.data[1] = 0xad;
     
+    
+    /***************************************************************************/
+
     /* get the constant, C,  that makes them collide */
     // f(golden_inpA) = g(golden_inpB) xor C
     f(golden_inpA, golden_out);
     g(golden_inpB, constant);
+
     
     /* our golden output is picked uniformly, can `mitm` find a needle in heystack */
-    for (int i = 0; i<NBYTES_C; ++i)
+    for (int i = 0; i < NBYTES_C; ++i)
       constant.data[i] ^= golden_out.data[i];
-
-    /***************************************************************************/
-    // TEST values: to be removed later 
-    // golden_inpA = 0x01, 0x69;
-    // golden_inpB = 0x6a, 0x29;
-    // golden_out  = 0x75, 0x28;
-    golden_inpA.data[0] = 0x01;
-    golden_inpA.data[1] = 0x69;
-
-    golden_inpB.data[0] = 0x6a;
-    golden_inpB.data[1] = 0x29;
-
-    golden_out.data[0] = 0x75;
-    golden_out.data[1] = 0x28;
-    /***************************************************************************/
 
     /* Check our constant work */
     C_t y0;
@@ -256,7 +266,7 @@ public:
     g(golden_inpB, y1);
     
     std::cout << "\n========================================\n"
-	      << "Does the golden pair collide? " << C.is_equal(y0, y1) << "\n"
+	      << "Does the golden pair collide? " << C.is_equal(y0, y1) << "\n"      
 	      << "golden_inpA = " << golden_inpA << "\n"
       	      << "golden_inpB = " << golden_inpB << "\n"
 	      << "golden_out  = " << golden_out  << "\n"

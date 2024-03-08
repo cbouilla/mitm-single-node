@@ -244,22 +244,23 @@ bool walk(Problem& Pb,
     /* walk them together and check each time if their output are equal     */
     /* return as soon equality is found. The equality could be a robinhood. */
 
+    /* get the outputs of the curren inputs (for claw args... := inp0B, inp1B) */
+    iterate_once(Pb, i, *inp0_pt, *out0_pt, inp_mixed, inpA, args...);
+    iterate_once(Pb, i, *inp1_pt, *out1_pt, inp_mixed, inpA, args...);
+
     /* First, do the outputs collide? If yes, return true and exit. */
     if(Pb.C.is_equal( *out0_pt, *out1_pt )){
       /* inp0 & inp1 contain  input before mixing, we need to fix this. Maybe yes, maybe no, keep an eye on this comment  */
       return true; /* They are equal */
     }
 
-    /* The next input is the current output, thus let inp_pt points to the
-     * current input data. we don't care what are the data out_pt points to 
-     * since it will be overwritten by `iterate_once`.
+    /* Move the inputs one step further. The next input is the current output,
+     * thus let inp_pt points to the current input data. we don't care what are
+     * the data out_pt points to since it will be overwritten by `iterate_once`.
      */
     swap_pointers(inp0_pt, out0_pt);
     swap_pointers(inp1_pt, out1_pt);
 
-    /* move the two inputs one step (for claw args... := inp0B, inp1B) */
-    iterate_once(Pb, i, *inp0_pt, *out0_pt, inp_mixed, inpA, args...);
-    iterate_once(Pb, i, *inp1_pt, *out1_pt, inp_mixed, inpA, args...);
   }
   return false; /* we did not find a common point */
 }
@@ -296,7 +297,7 @@ void search_generic(Problem& Pb,
   is_serialize_inverse_of_unserialize<Problem>(Pb, prng);
 
   /*============================= DICT INIT ==================================*/
-  size_t n_bytes = 0.05*get_available_memory();
+  size_t n_bytes = 0.7*get_available_memory();
   std::cout << "Going to use "
 	    << std::dec << n_bytes << " bytes = 2^"<< std::log2(n_bytes)
 	    << " bytes for dictionary!\n";
@@ -381,17 +382,6 @@ void search_generic(Problem& Pb,
       
       if (is_collision_found) [[unlikely]]{
 	++n_collisions;
-
-        /* Move this code to print collision information */
-        // std::cout << "\nA collision is found\n"
-	// 	  << "It took " << (wtime() - collision_timer) << " sec\n"
-	// 	  << "inp0 (starting point) = " << inp_St << "\n"
-	// 	  << "digest0 = 0x" << out0_digest << "\n"
-	// 	  << "chain length0 = " << chain_length0 << "\n"
-	// 	  << "inp1 (starting point) = " << *inp1_pt << "\n"
-	//   	  << "chain length1 = " << std::dec << chain_length1 << "\n"
-	// 	  << "-------\n";
-
 	collision_timer = wtime();
 	/* respect the rule that inp0 doesn't have pointers dancing around it */
 	Pb.C.copy(inp_St, *inp0_pt); /* (*tmp0_ptO) holds the input value  */
