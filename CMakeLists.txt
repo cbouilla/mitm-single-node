@@ -13,11 +13,15 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON) # Compiler command json
 
 # common compiler option (between clang and gcc, not sure about the others)
 # add_compile_options(-ggdb -Wall -Wextra -pedantic -fsanitize=address)
-add_compile_options(-march=native -ggdb -Wall -Wextra -pedantic -O0 -ggdb )
+# from -g -no-pie etc, are flags for boost::backtrace
+add_compile_options(-march=native -ggdb -Wall -Wextra -pedantic -O0 -g -no-pie -fno-pie -rdynamic -DBOOST_STACKTRACE_USE_ADDR2LINE)
 # Needed this, other wise it won't link
 # set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -fsanitize=address")
 set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -ltbb -fsanitize=address")
 
+
+# Boost stacktrace # sudo apt-get install libboost-stacktrace-dev
+set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS}  -no-pie -fno-pie -lboost_stacktrace_backtrace -DBOOST_STACKTRACE_LINK -ldl -DBOOST_STACKTRACE_USE_ADDR2LINE -D BOOST_STACKTRACE_LINK")
 
 # The little bird says clang has a nicer error report than gcc!
 # export CC=/usr/bin/clang
@@ -43,35 +47,35 @@ cmake_print_variables(CMAKE_CXX_COMPILER_ID)
 include_directories(include)
 
 
-add_executable(sha2_collision_1collision_demo
-        demos/sha2_collision_1collision_demo.cpp
-	demos/sha256_x86.c # demos/sha256.c
-	mitm.hpp
-	engine.hpp
-	naive_engine.hpp
-	collision_engine.hpp
-	AbstractCollisionProblem.hpp
-	AbstractDomain.hpp
-        dict.hpp
-      	include/memory.hpp
-	include/prng.hpp
-	include/timing.hpp)
+# add_executable(sha2_collision_1collision_demo
+#         demos/sha2_collision_1collision_demo.cpp
+# 	demos/sha256_x86.c # demos/sha256.c
+# 	mitm.hpp
+# 	engine.hpp
+# 	naive_engine.hpp
+# 	collision_engine.hpp
+# 	AbstractCollisionProblem.hpp
+# 	AbstractDomain.hpp
+#         dict.hpp
+#       	include/memory.hpp
+# 	include/prng.hpp
+# 	include/timing.hpp)
 
 
 
-add_executable(sha2_collision_demo
-        demos/sha2_collision_demo.cpp
-	demos/sha256_x86.c # demos/sha256.c
-	mitm.hpp
-	engine.hpp
-	naive_engine.hpp
-	collision_engine.hpp
-	AbstractCollisionProblem.hpp
-	AbstractDomain.hpp
-        dict.hpp
-      	include/memory.hpp
-	include/prng.hpp
-	include/timing.hpp)
+# add_executable(sha2_collision_demo
+#         demos/sha2_collision_demo.cpp
+# 	demos/sha256_x86.c # demos/sha256.c
+# 	mitm.hpp
+# 	engine.hpp
+# 	naive_engine.hpp
+# 	collision_engine.hpp
+# 	AbstractCollisionProblem.hpp
+# 	AbstractDomain.hpp
+#         dict.hpp
+#       	include/memory.hpp
+# 	include/prng.hpp
+# 	include/timing.hpp)
 
 
 
@@ -92,8 +96,8 @@ add_executable(sha2_claw_demo
 
 find_package(OpenMP)
 if(OpenMP_CXX_FOUND)
-  target_link_libraries(sha2_collision_1collision_demo PUBLIC OpenMP::OpenMP_CXX)
-  target_link_libraries(sha2_collision_demo PUBLIC OpenMP::OpenMP_CXX)
+  # target_link_libraries(sha2_collision_1collision_demo PUBLIC OpenMP::OpenMP_CXX)
+  # target_link_libraries(sha2_collision_demo PUBLIC OpenMP::OpenMP_CXX)
   target_link_libraries(sha2_claw_demo PUBLIC OpenMP::OpenMP_CXX)
 endif()
 
