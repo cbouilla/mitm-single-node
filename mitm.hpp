@@ -154,7 +154,7 @@ void claw_search(Problem& Pb)
   // u8 inp_B_serial[Pb.B.length];
   // u8 out0_bytes[Pb.C.length];
   /****************************************************************************/
-  int difficulty = 0;
+  int difficulty = 4;
   
   search_generic(Pb,
 		 difficulty,
