@@ -8,9 +8,11 @@
 #include "include/timing.hpp"
 #include "include/memory.hpp"
 #include "dict.hpp"
+#include <cstddef>
 #include <exception>
 #include <iostream>
 #include <vector>
+#include <cmath>
 
 /// When a function, func, behavior's depends if the problem is a claw or a
 ///  collision, we use veriadic template to have two different implementation:
@@ -24,7 +26,65 @@
 
 namespace mitm {
 
+/* Non-essential counters but helpful to have, e.g. n_collisions/sec */
+struct Counters {
 
+  size_t const interval = (1LL<<15); // for printing only
+  size_t n_updates = 0; // #times dict were flushed
+  size_t n_collisions = 0;
+  
+  // each entry contains number of distinguished point between tw 
+  std::vector<size_t> n_distinguished_points = {0};
+ 
+  double dist_previous_time;
+  double update_previous_time;
+  double elapsed = 0;
+
+  Counters() : dist_previous_time(wtime()), update_previous_time(wtime()) {}
+
+  Counters(double interval)
+    : interval(interval),
+      dist_previous_time(wtime()),
+      update_previous_time(wtime())
+  {}
+
+  void increment_n_distinguished_points()
+  {
+    ++n_distinguished_points[n_updates];
+    size_t n = n_distinguished_points[n_updates];
+    
+    if ( n_distinguished_points[n_updates] % interval == 0){
+
+      elapsed = wtime() - dist_previous_time;
+      printf("\r%lu=2^%0.2f iter took:"
+	     " %0.2f sec, i.e. %0.2f ≈ 2^%0.2f iter/sec",
+	     n, std::log2(n),
+	     elapsed, n/elapsed, std::log2(n/elapsed) );
+
+      fflush(stdout);
+      dist_previous_time = wtime();
+    }
+  }
+
+  void increment_n_updates()
+  {
+    elapsed = wtime() - update_previous_time;
+
+    /* new entry to */
+    printf("\nUpdating the iteration function.\n"
+	   "the previous iteration:\n"
+	   " - lasted %0.2f sec\n"
+	   " - generated %lu ≈ 2^%0.2f distinguished points\n",
+	   elapsed,
+	   n_distinguished_points[n_updates],
+	   std::log2(n_distinguished_points[n_updates]));
+    
+    ++n_updates;
+    n_distinguished_points.emplace_back(0);
+    update_previous_time = wtime();
+  }
+  void increment_n_collisions() {++n_collisions;}
+};
 
 /******************************************************************************/
 /* The two functions below are implemented in `claw_engine.hpp` and
@@ -142,7 +202,7 @@ bool generate_dist_point(Problem& Pb,
     found_distinguished = is_distinguished_point(digest, mask);
 
     /* no need to continue if a distinguished is found  */
-    if (found_distinguished) [[unlikely]]{ return true; }
+    if (found_distinguished){ return true; }
 
     /* swap inp and out */
     swap_pointers(inp_pt, out_pt);
@@ -297,7 +357,7 @@ void search_generic(Problem& Pb,
   is_serialize_inverse_of_unserialize<Problem>(Pb, prng);
 
   /*============================= DICT INIT ==================================*/
-  size_t n_bytes = 0.7*get_available_memory();
+  size_t n_bytes = 0.005*get_available_memory();
   std::cout << "Going to use "
 	    << std::dec << n_bytes << " bytes = 2^"<< std::log2(n_bytes)
 	    << " bytes for dictionary!\n";
@@ -314,16 +374,12 @@ void search_generic(Problem& Pb,
   /* How many steps does it take to get a distinguished point from  an input */
   size_t chain_length0 = 0;
   size_t chain_length1 = 0;
+  Counters ctr{}; /* various non-essential counters */
   
   bool is_collision_found = false;
-  size_t n_collisions = 0;
-
   
   /* We should have ration 1/3 real collisions and 2/3 false collisions */
   bool found_dist = false;
-  size_t n_distinguished_points = 0;
-  constexpr size_t interval = (1LL<<15);
-  double collision_timer = wtime();
 
   /* variable to generate families of functions f_i: C -> C */
   /* typename Problem::I_t */
@@ -364,14 +420,13 @@ void search_generic(Problem& Pb,
 				       args...);/* for claw args := inp0B, inp1B */
 
       out0_digest = Pb.C.hash(*out0_pt);
-      ++n_distinguished_points;
+
       
-      print_interval_time(n_distinguished_points, interval);
-      
-      if (not found_dist) [[unlikely]]
+      if (not found_dist)
 	continue; /* skip all calculation below and try again  */
       
       ++n_dist_points;
+      ctr.increment_n_distinguished_points();
 
       is_collision_found = dict.pop_insert(out0_digest, /* key */
 					   inp_St, /* value  */
@@ -380,9 +435,9 @@ void search_generic(Problem& Pb,
 					   chain_length1, /* of popped input */
 					   Pb);
       
-      if (is_collision_found) [[unlikely]]{
-	++n_collisions;
-	collision_timer = wtime();
+      if (is_collision_found) {
+	ctr.increment_n_collisions();
+
 	/* respect the rule that inp0 doesn't have pointers dancing around it */
 	Pb.C.copy(inp_St, *inp0_pt); /* (*tmp0_ptO) holds the input value  */
 
@@ -409,22 +464,24 @@ void search_generic(Problem& Pb,
 
 	if (found_golden_pair){
 	  /* todo remove this printing or replace it! */
-	  std::cout << "Found golden Pair !\n"
+	  std::cout << "\n++++++++++++++++++++++++++++++++++++++++\n"
+		    << "Found golden Pair !\n"
 		    << "inp0 = " << *inp0_pt << "\n"
 		    << "out0 = " << *out0_pt << "\n"
 		    << "inp1 = " << *inp1_pt << "\n"
 		    << "out1 = " << *out1_pt << "\n"
 		    << "out0 == out1? " << real_collision  << "\n"
-		    << "\n";
+		    << "++++++++++++++++++++++++++++++++++++++++\n";
 
 	  break; /* exit the for loop which will lead to exiting the while loop */
 	}
       }
     }
-
+    
     /* We need to change to restart calculation with a different function */
     i = Pb.mix_sample(prng); /* Generates new permutation of f */
     dict.flush();
+    ctr.increment_n_updates();
   }
   /* end of work */
   return;// collisions_container; // todo return something useful 
