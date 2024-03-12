@@ -42,7 +42,10 @@ void debug_golden_output(Problem& Pb,
 			 typename Problem::C_t& out)
 {
   if (Pb.C.is_equal(out, Pb.golden_out))
-      std::cout << "\nwe hit the golden output!\n";
+      std::cout << "\nwe hit the golden output!\n"
+		<< boost::stacktrace::stacktrace()
+		<< "============================================\n";
+  
 }
 
 

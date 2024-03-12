@@ -131,7 +131,7 @@ bool generate_dist_point(Problem& Pb,
    * p = (1 - theta)^N =>  let ln(p) <= -k
    */
   constexpr u64 k = 40;
-  for (u64 j = 0; j < k*(1LL<<difficulty); ++i){
+  for (u64 j = 0; j < k*(1LL<<difficulty); ++j){
     /* uses claw's iterate_once if args... is not empty, otherwise collisions'*/
     /* for claw args := inp0B, inp1B */
     iterate_once(Pb, i, *inp_pt, *out_pt, inp_mixed, inpA, args...); 
