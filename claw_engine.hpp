@@ -92,7 +92,7 @@ void iterate_once(Problem &Pb,
  * This function sends the two input to A AND B, if it's not possible, e.g. we can only return 
  */
 template <typename Problem>
-bool send_2_A_and_B(Problem& Pb,
+bool pullback_to_A_B(Problem& Pb,
 		    typename Problem::C_t& inp0_C,
 		    typename Problem::C_t& inp1_C,
 		    typename Problem::A_t& inp_A,
@@ -171,17 +171,19 @@ bool treat_collision(Problem& Pb,
   if ( Pb.C.is_equal(*inp0_pt, *inp1_pt) )
     return false;
 
-  /* when f=/= g the one of the input should an A input while the other is B's */
-  /* If this is not satisfied return */
-  bool is_potential_collision = send_2_A_and_B(Pb,
-					       *inp0_pt,
-					       *inp1_pt,
-					       inp0_A,
-					       inp1_B);
+  /*  f: A -> C, g: B -> C. Can we pullback the inputs *inp0 and *inp1_pt in C
+   *  to inp_A in A and inp_B (the order doesn't matter)? If yes, write the
+   * results to inp0_A and inp0_B. Otherwise, return false
+   */
+  bool is_potential_collision = pullback_to_A_B(Pb,
+						*inp0_pt, // a given input in C 
+						*inp1_pt, // a given inpunt in C
+						inp0_A, // resulted input in A
+						inp1_B);// resulted input in B
   if (not is_potential_collision)
     return false; /* don't add this pair */
   
-  
+  /* */
   return Pb.is_good_pair(*out0_pt, inp0_A, inp1_B);
 }
 
