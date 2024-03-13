@@ -5,13 +5,13 @@
 #ifndef MITM_SEQUENTIAL_DICT_HPP
 #define MITM_SEQUENTIAL_DICT_HPP
 #include <algorithm>
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <sys/types.h>
-#include <unordered_map>
 #include <vector>
 #include <iostream>
-#include <map>
+#include <random>
 
 namespace mitm {
 template <typename K, typename V, typename Problem> 
@@ -19,26 +19,31 @@ struct Dict {
 
 
   const size_t n_slots; /* How many slots a dictionary have */
+  /* How many keys are there? since we may have 1 key with different values */
+  const size_t bucket_size = 8; /* How many elements does a bucket hold */
+  const size_t n_keys; 
   size_t n_elements = 0; /* Number of the actual elements that are in the dict */
-  size_t n_bytes;
-
+  // size_t n_bytes;
+  std::minstd_rand simple_rand;
+  
+  
   /* <value:=input, key:=output>  in this order since value is usually larger */
   std::vector<K> keys;
   std::vector<V> values;
   std::vector<uint64_t> chain_lengths;
   
-  Dict(size_t n_bytes) :
-    n_slots( n_bytes / ( sizeof(K) + sizeof(V) + sizeof(uint64_t)) )
+  Dict(size_t n_bytes, size_t bucket_size) :
+    n_slots( n_bytes / ( sizeof(K) + bucket_size*sizeof(V) + sizeof(uint64_t)) ),
+    bucket_size(bucket_size),
+    n_keys(n_slots/bucket_size)
   {
+    
     /*
      * Create a dictionary that takes approximately n_bytes
      */
 
-
     /* we don't care about the value of the first element */
-
-
-    keys.resize(n_slots);
+    keys.resize(n_keys);
     std::cout << "Done resizing keys\n";
     
     values.resize(n_slots);
@@ -59,12 +64,47 @@ struct Dict {
     std::fill(chain_lengths.begin(), chain_lengths.end(), 0);
     n_elements = 0;
   }
+
+  /* return a random number between 0 and bucket_size - 1 */
+  inline int random_index() {   return simple_rand() % bucket_size;  }
+
+  /* Copy `n_elements` consecutive values from the bucket that its beginning
+   * is found at `start_idx` except the value that have the index = `hole_index`
+   * EXAMPLE:
+   * hole_idx = 2, n_elements = 3, imagine the bucket we are looking at is
+   * [x, x, o, x, y, y], we will copy all the x elements, o is the hole element,
+   * and we don't care about the y values.
+   */
+  void copy_holed_bucket(std::vector<V>& out_values, /* popped input element */
+			 std::vector<uint64_t>& out_chain_lengths,
+			 size_t start_idx,
+			 size_t hole_idx,
+			 size_t n_elements, /* to be copied */
+			 Problem& Pb
+			  ) const
+  {
+
+    /* assert n_elements <= bucket_size */
+    assert(n_elements <= bucket_size);
+    
+    /* copy elements left to the hole */
+    for (int j = 0; j < hole_idx; ++j){
+      Pb.C.copy(values[j + start_idx], out_values[j] ); // values[idx] = value;
+      out_chain_lengths[j] = chain_lengths[j + start_idx];
+    }
+    /* copy elements right to the hole */
+    for (int j = hole_idx + 1; j <= n_elements; ++j) {
+      Pb.C.copy(values[j + start_idx], out_values[j] ); // values[idx] = value;
+      out_chain_lengths[j] = chain_lengths[j + start_idx];
+    }
+  }
   
-  bool pop_insert(const K& key, /* output of f or g */
+  /* Return how many values were found with the same inquired key */
+  int pop_insert(const K& key, /* output of f or g */
 		  const V& value, /* input */
-		  uint64_t const chain_length0,
-		  V& out, /* popped input element */
-		  uint64_t& chain_length1,
+		  uint64_t const chain_length,
+		  std::vector<V>& out_values, /* popped input element */
+		  std::vector<uint64_t>& out_chain_lengths,
 		  Problem& Pb)
   {
     
@@ -72,98 +112,52 @@ struct Dict {
     /// another pair from the dictionary (Because they have the same index)
     /// write the removed key to out and return true.
 
-    uint64_t idx = key % n_slots;
-    bool flag = false;
+    /* How many elements in a bucket */
+    int n_values_in_bucket = 0;
     
-    /* Found an empty slot, thus we're adding a new element  */
-    if (keys[idx] == 0)
-      ++n_elements; 
+    uint64_t idx = key % n_keys; /* where to look in the dictionary? */
+    /* it will change as soon as we found an empty slot in a bucket*/
+    bool bucket_was_full = true;
     
-    if (keys[idx] == key) [[unlikely]]
-      flag = true; /* found a collision */
+    /* Find an empty slot in the bucket. Count how many elements are there */
+    for (int j = 0; j < bucket_size; ++j){
+      /* Found an empty slot */
+      if (chain_lengths[j + idx*bucket_size] == 0){
+	bucket_was_full = false;
+	chain_lengths[j + idx*bucket_size] = chain_length;
+	Pb.C.copy(value, values[j + idx*bucket_size]); // values[idx] = value;
+	break; /* no need to continue */
+      }
+      ++n_values_in_bucket;
+    }
 
-    if (keys[idx] == Pb.C.hash(Pb.golden_out))
-      std::cout << "Inside dict: inp = " << value << " maps to the golden_out!\n";
+    /* where the element was stored in the bucket. If the bucket was full, then
+     * the hole is outside the bucket. */
+    size_t hole_idx = n_values_in_bucket;
 
-    /* RECALL: */
-    /* <value:=input, key:=output>  in this order since value is usually larger */
-    /* popped elements */
-    Pb.C.copy(values[idx], out); // out = values[idx];
-    Pb.C.copy(value, values[idx]); // values[idx] = value;
-    chain_length1 = chain_lengths[idx];
-    /* write the new entries */
-    keys[idx] = key;
-    chain_lengths[idx] = chain_length0;
+    /* Copy exactly the values that already exist in bucket except the hole */
+    copy_holed_bucket(out_values,
+		      out_chain_lengths,
+		      idx*bucket_size,
+		      hole_idx,
+		      n_values_in_bucket,
+		      Pb);
 
-    return flag; /* flag  == 1, if we pop a pair and its value match with the key value */
+    /* if the element was not inserted since the bucket was full. Pick a
+     * random element in the bucket to kicked out. */
+    if (bucket_was_full){
+      hole_idx = random_index();
+      chain_lengths[hole_idx + idx*bucket_size] = chain_length;
+      Pb.C.copy(value, values[hole_idx + idx*bucket_size]); // values[idx] = value;
+    }
+
+    /* number of elements we've extracted from the dictionary to:
+     * out_values and out_chain_lenths. */
+    return n_values_in_bucket;
   }
 };
 
 
-// /* A wrapper over std::unordered_map used only for debugging */
-// template <typename K, typename V, typename Problem> 
-// struct Dict_unorderd_map {
-
-
-//   const size_t n_slots; /* How many slots a dictionary have */
-//   size_t n_elements = 0; /* Number of the actual elements that are in the dict */
-//   size_t n_bytes;
-
-//   /* <value:=input, key:=output>  in this order since value is usually larger */
-//   /* uint64_t for the chain length */
-//   std::unordered_map<K, std::pair<V, uint64_t> > dict;
-
-  
-//   Dict_unorderd_map(size_t n_bytes) :
-//     n_slots( n_bytes / ( sizeof(K) + sizeof(V) + sizeof(uint64_t)) )
-//   {}
-
-//   /*
-//    * Reset keys, and counters.
-//    */
-//   void flush()
-//   {
-//     dict.clear();
-//     n_elements = 0;
-//   }
-  
-//   bool pop_insert(const K& key, /* output of f or g */
-// 		  const V& value, /* input */
-// 		  uint64_t const chain_length0,
-// 		  V& out, /* popped input element */
-// 		  uint64_t& chain_length1,
-// 		  Problem& Pb)
-//   {
-    
-
-//     /// Add (key, some bits of value) to dictionary. If the pair removes
-//     /// another pair from the dictionary (Because they have the same index)
-//     /// write the removed key to out and return true.
-
-//     // uint64_t idx = key % n_slots;
-//     bool flag = false;
-    
-//     /* Found an empty slot, thus we're adding a new element  */
-//     if (dict[key] == 0)
-//       ++n_elements; 
-    
-//     if (keys[idx] == key) [[unlikely]]
-//       flag = true; /* found a collision */
-
-
-//     /* RECALL: */
-//     /* <value:=input, key:=output>  in this order since value is usually larger */
-//     /* popped elements */
-//     Pb.C.copy(values[idx], out); // out = values[idx];
-//     Pb.C.copy(value, values[idx]); // values[idx] = value;
-//     chain_length1 = chain_lengths[idx];
-//     /* write the new entries */
-//     keys[idx] = key;
-//     chain_lengths[idx] = chain_length0;
-
-//     return flag; /* flag  == 1, if we pop a pair and its value match with the key value */
-//   }
-// };
 }    
 
 #endif //MITM_SEQUENTIAL_DICT_HPP

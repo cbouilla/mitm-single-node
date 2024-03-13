@@ -33,7 +33,8 @@ struct Counters {
   size_t n_updates = 0; // #times dict were flushed
   size_t n_collisions = 0;
   
-  // each entry contains number of distinguished point between tw 
+  // each entry contains number of distinguished point between
+  size_t n_dist_points_previous = 0;
   std::vector<size_t> n_distinguished_points = {0};
  
   double dist_previous_time;
@@ -51,7 +52,7 @@ struct Counters {
   void increment_n_distinguished_points()
   {
     ++n_distinguished_points[n_updates];
-    size_t n = n_distinguished_points[n_updates];
+    size_t n = n_distinguished_points[n_updates] - n_dist_points_previous;
     
     if ( n_distinguished_points[n_updates] % interval == 0){
 
@@ -62,6 +63,7 @@ struct Counters {
 	     elapsed, n/elapsed, std::log2(n/elapsed) );
 
       fflush(stdout);
+      n_dist_points_previous = n_distinguished_points[n_updates];
       dist_previous_time = wtime();
     }
   }
