@@ -228,23 +228,23 @@ public:
     /***************************************************************************/
     // TEST values: to be removed later
 
-    // Test 1: works!
-    // golden_inpA.data[0] = 0xf9;
-    // golden_inpA.data[1] = 0x39;
-    // golden_inpB.data[0] = 0x6a;
-    // golden_inpB.data[1] = 0x29;
+    // Test 1: works! works in buckets!
+    golden_inpA.data[0] = 0xf9;
+    golden_inpA.data[1] = 0x39;
+    golden_inpB.data[0] = 0x6a;
+    golden_inpB.data[1] = 0x29;
 
-    // Test 2: works!
+    // Test 2: works! works in buckets!
     // golden_inpA.data[0] = 0x01;
     // golden_inpA.data[1] = 0x69;
     // golden_inpB.data[0] = 0x6a;
     // golden_inpB.data[1] = 0x29;
 
     // Test 3: 0xdecafbad, fails! 
-    golden_inpA.data[0] = 0xde;
-    golden_inpA.data[1] = 0xca;
-    golden_inpB.data[0] = 0xfb;
-    golden_inpB.data[1] = 0xad;
+    // golden_inpA.data[0] = 0xde;
+    // golden_inpA.data[1] = 0xca;
+    // golden_inpB.data[0] = 0xfb;
+    // golden_inpB.data[1] = 0xad;
     
     
     /***************************************************************************/
