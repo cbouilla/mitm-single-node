@@ -10,7 +10,10 @@
 #include "dict.hpp"
 #include <cstddef>
 #include <exception>
+#include <fstream>
 #include <iostream>
+#include <numeric>
+#include <string>
 #include <vector>
 #include <cmath>
 
@@ -86,6 +89,38 @@ struct Counters {
     update_previous_time = wtime();
   }
   void increment_collisions(size_t n) {n_collisions += n;}
+
+  void save_summary_stats(std::string problem_type,
+			  size_t A_size,
+			  size_t B_size,
+			  size_t C_size,
+			  size_t bucket_size,
+			  int difficulty)
+  {
+    std::ofstream summary;
+    std::string f_name = "data/summary.csv";
+    summary.open(f_name, std::ios::app);
+    
+    size_t total_distinguished_points  = std::accumulate(n_distinguished_points.begin(),
+							 n_distinguished_points.end(),
+							 static_cast<size_t>(0));
+    
+    summary << problem_type << ", "
+	    << std::to_string(C_size) << ", "
+	    << std::to_string(A_size) << ", "
+	    << std::to_string(B_size) << ", "
+	    << std::to_string(difficulty) << ", "
+	    << std::to_string(total_distinguished_points) << ", "
+      	    << std::to_string(bucket_size) << ", "
+      	    << std::to_string(n_collisions) << ", "
+      	    << std::to_string(n_updates) << ", "
+	    << "\n";
+
+
+    summary.close();
+    
+
+  }
 };
 
 /******************************************************************************/
@@ -342,6 +377,18 @@ void print_collision_information(typename Problem::C_t& inp0,
 }
 
 
+/* return a string that says "claw" or "collision" based on the number of
+ * arguments */
+template <typename... Types>
+std::string is_claw_or_collision_problem(Types... args)
+{
+  if (sizeof...(args) == 2)
+    return std::string("collision");
+
+  if (sizeof...(args) == 4)
+    return std::string("claw");
+  
+}
 
 /* The basic search finds collision(s) of
  * iterate_once: C -> C, these collisions can be converted into a solution
@@ -492,12 +539,30 @@ void search_generic(Problem& Pb,
 					      args...); /* for claw args := inp0B, inp1B */
 	  if (not found_golden_pair)
 	    continue; /* nothing to do, test the next one!  */
-	  else {
+	  else { /* Found the golden pair */
 	    print_collision_information(*inp0_pt,
 					*inp1_pt,
 					*out0_pt,
 					*out1_pt,
 					Pb);
+
+	    /* todo think about a sensible way to pass |A|, |C|,  */
+	    if (sizeof...(args) == 2) 
+	      ctr.save_summary_stats("collision",
+				     0,/* = |A| */
+				     0,/* = |A| since it's a collision */
+				     Pb.C.length,
+				     bucket_size,
+				     difficulty);
+
+	    if (sizeof...(args) == 4) 
+	      ctr.save_summary_stats("collision",
+				     0,/* = |A| */
+				     0,/* = |B| */
+				     Pb.C.length,
+				     bucket_size, difficulty);
+	    
+
 	    return; /* we're done! */
 	  }
 	}
