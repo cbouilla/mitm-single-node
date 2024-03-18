@@ -229,10 +229,10 @@ public:
     // TEST values: to be removed later
 
     // Test 1: works! works in buckets!
-    golden_inpA.data[0] = 0xf9;
-    golden_inpA.data[1] = 0x39;
-    golden_inpB.data[0] = 0x6a;
-    golden_inpB.data[1] = 0x29;
+    // golden_inpA.data[0] = 0xf9;
+    // golden_inpA.data[1] = 0x39;
+    // golden_inpB.data[0] = 0x6a;
+    // golden_inpB.data[1] = 0x29;
 
     // Test 2: works! works in buckets!
     // golden_inpA.data[0] = 0x01;
@@ -372,6 +372,11 @@ public: /* they are public for debugging */
 
 int main()
 {
+
+  mitm::nbytes_A = NBYTES_A;
+  mitm::nbytes_B = NBYTES_B;
+
+  
   std::cout << "sha2-claw demo! |inp_A| = " << NBYTES_A << "bytes, "
 	    << "|inp_B| = " << NBYTES_B << "bytes, "
 	    << "|out| = " << NBYTES_C << "bytes\n";

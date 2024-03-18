@@ -3,7 +3,9 @@
 
 #include "AbstractDomain.hpp"
 #include "AbstractClawProblem.hpp"
+
 #include "AbstractCollisionProblem.hpp"
+
 #include "include/prng.hpp"
 #include "include/timing.hpp"
 #include "include/memory.hpp"
@@ -28,6 +30,14 @@
 /// 1) `iterate_once` claw_engine.hpp introduces 2 more arguments.
 
 namespace mitm {
+/*----------------------------------------------------------------------------*/
+// Global variables to register program performance. To be removed later.
+
+/* these initial value never happened in real world, thus we can detect them */
+inline size_t  nbytes_A = 0; 
+inline size_t  nbytes_B = 0;
+
+/*----------------------------------------------------------------------------*/
 
 /* Non-essential counters but helpful to have, e.g. n_collisions/sec */
 struct Counters {
@@ -98,7 +108,7 @@ struct Counters {
 			  int difficulty)
   {
     std::ofstream summary;
-    std::string f_name = "data/summary.csv";
+    std::string f_name = "data/" + problem_type + "_summary.csv";
     summary.open(f_name, std::ios::app);
     
     size_t total_distinguished_points  = std::accumulate(n_distinguished_points.begin(),
@@ -547,18 +557,18 @@ void search_generic(Problem& Pb,
 					Pb);
 
 	    /* todo think about a sensible way to pass |A|, |C|,  */
-	    if (sizeof...(args) == 2) 
+	    if (sizeof...(args) == 0) 
 	      ctr.save_summary_stats("collision",
-				     0,/* = |A| */
-				     0,/* = |A| since it's a collision */
+				     nbytes_A,/* = |A| */
+				     nbytes_A,/* = |A| since it's a collision */
 				     Pb.C.length,
 				     bucket_size,
 				     difficulty);
 
-	    if (sizeof...(args) == 4) 
-	      ctr.save_summary_stats("collision",
-				     0,/* = |A| */
-				     0,/* = |B| */
+	    if (sizeof...(args) == 2) 
+	      ctr.save_summary_stats("claw",
+				     nbytes_A,/* = |A| */
+				     nbytes_B,/* = |B| */
 				     Pb.C.length,
 				     bucket_size, difficulty);
 	    
