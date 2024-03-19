@@ -1,9 +1,11 @@
 #include "../mitm.hpp"
+#include "../include/AES.hpp"
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <functional>
 #include <iostream>
 #include <iomanip>
 #include <array>
@@ -198,12 +200,14 @@ public:
 
 
   /* These types shorthand are essential ! */
-  using I_t = uint64_t; /* 1st tempalte type */
+
   using A_t = SHA2_A_inp_repr; /* 2nd template type */
   using B_t = SHA2_B_inp_repr; /* 3rd template type */
   using C_t = SHA2_out_repr; /* 4th template type */
   using Dom_C = SHA2_OUT_DOMAIN;
   Dom_C C; /* Output related functions */  
+  using I_t = std::function<void(C_t const&, C_t&)>; /* 1st tempalte type */
+
   
   static const int f_eq_g = 0;
 
@@ -246,6 +250,22 @@ public:
     // golden_inpB.data[0] = 0xfb;
     // golden_inpB.data[1] = 0xad;
     
+    // ========================================
+    // these values only hit the golden input of B! 
+    // Does the golden pair collide? 1
+    // golden_inpA = 0x4c, 0xce, 
+    // golden_inpB = 0x46, 0xc0, 
+    // golden_out  = 0x71, 0xec, 
+    //  ========================================
+    // those only hit the glolden input of A
+    //  ========================================
+    // Does the golden pair collide? 1
+    // golden_inpA = 0x4c, 0xce, 
+    // golden_inpB = 0x46, 0xc0, 
+    // golden_out  = 0x71, 0xec, 
+    // ========================================
+
+
     
     /***************************************************************************/
 
@@ -308,7 +328,7 @@ public:
   void send_C_to_A(C_t& inp_C, A_t& out_A) const
   {
     /* remove any junk in A */
-    std::memset(out_A.data, embedding_n, 64);
+    std::memset(out_A.data, 0, 64);
     /* Since domain and range may have different size: */
     std::memcpy(out_A.data, inp_C.data, std::min(NBYTES_A, NBYTES_C));
   }
@@ -317,20 +337,46 @@ public:
   void send_C_to_B(C_t& inp_C, B_t& out_B) const
   {
     /* remove any junk in B */
-    std::memset(out_B.data, embedding_n, 64);
+    std::memset(out_B.data, 0, 64);
     /* Since domain and range may have different size: */
     std::memcpy(out_B.data, inp_C.data, std::min(NBYTES_B, NBYTES_C));
   }
 
   
 
-
-  void mix(const I_t& i, const C_t& x, C_t& y) const {
-    for (int j = 0; j < NBYTES_C; ++j)
-      y.data[j] = x.data[j] ^ (i>>(j*8));
+  /* mix a value lives in C_t using i function scrambling. */
+  void mix(I_t const& i, C_t const& x, C_t& y) const { i(x, y);  }
+  
+  I_t mix_default() const
+  {
+    /* return a lambda function */
+    return [](C_t const& x, C_t& y)
+    { /* y := x, identity mixing*/
+      std::memcpy(y.data, x.data, NBYTES_C);
+    };
   }
-  I_t mix_default() const {return 0;}
-  I_t mix_sample(mitm::PRNG& rng) const {return rng.rand();}
+  
+  I_t mix_sample(mitm::PRNG& rng) const
+  {
+    unsigned char key_static[16] = {0};
+    /* get a "random" key */
+    for (int k = 0; k<16; ++k) 
+      key_static[k] = rng.rand();
+
+    /* lambda(x, y):  y := aes(x), identity mixing */
+    return [&key_static](C_t const& x, C_t& y)  {
+      
+      char unsigned data[16] = {0};
+      unsigned char key[16] = {0};
+
+      std::memcpy(key, key_static, 16);
+      std::memcpy(data, x.data, NBYTES_C);
+      
+      Cipher::Aes<128> aes(key);
+      aes.encrypt_block(data);
+      std::memcpy(y.data, data, NBYTES_C);
+    };
+  }
 
   bool is_good_pair(C_t const &z,  A_t const &x,  B_t const &y) const 
   {
@@ -340,8 +386,7 @@ public:
   }
 
 private:
-  /* Changes the extra bits in the input to embedding_n */
-  int embedding_n = 0;
+
 public: /* they are public for debugging */
   C_t golden_out ; /* We look for point that equals this */
   A_t golden_inpA; /* We will edit f so that */

@@ -3,7 +3,6 @@
 
 #include "AbstractDomain.hpp"
 #include "AbstractClawProblem.hpp"
-
 #include "AbstractCollisionProblem.hpp"
 
 #include "include/prng.hpp"
@@ -432,7 +431,10 @@ void search_generic(Problem& Pb,
   
   
   /*============================= DICT INIT ==================================*/
-  size_t n_bytes = 0.005*get_available_memory();
+  size_t n_bytes = get_available_memory();
+  size_t output_max_bytes = 40*(1LL<<(8*Pb.C.length));
+  std::cout << "output_max_bytes = " << output_max_bytes << "\n";
+  n_bytes = std::min(n_bytes, output_max_bytes);
   size_t bucket_size = 8;
   
   std::cout << "Going to use "
@@ -579,7 +581,9 @@ void search_generic(Problem& Pb,
       }
     }
     /* We need to change to restart calculation with a different function */
+    prng.update_seed(); /* new seed for generatign a mixing function */
     i = Pb.mix_sample(prng); /* Generates new permutation of f */
+    prng.update_seed(); /* new seed to getting a random value in C_t */
     dict.flush();
     ctr.increment_n_updates();
   }

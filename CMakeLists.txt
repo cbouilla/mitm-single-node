@@ -8,6 +8,12 @@ project(mitm_sequential)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON) # Compiler command json
+
+# for AES header
+set(AES_IMPL "aesni" CACHE STRING "Choose an AES Implementation")
+set_property(CACHE AES_IMPL PROPERTY STRINGS auto portable aesni neon)
+
+
 # sorry, for now gcc is the source of truth.
 
 
@@ -109,3 +115,19 @@ endif()
 #         dict.hpp
 #         dict.hpp
 #         demos/basic_demo.cpp)]]
+
+
+# add this block to after `add_executable(...)`
+if("${AES_IMPL}" STREQUAL "aesni")
+    target_compile_definitions(sha2_claw_demo PUBLIC USE_INTEL_AESNI)
+    if(MSVC)
+        target_compile_options(sha2_claw_demo PRIVATE /arch:SSE2)
+    else()
+        target_compile_options(sha2_claw_demo PRIVATE -maes)
+    endif()
+elseif("${AES_IMPL}" STREQUAL "neon")
+    target_compile_definitions(sha2_claw_demo PUBLIC USE_NEON_AES)
+    target_compile_options(sha2_claw_demo PRIVATE -march=armv8-a+crypto)
+elseif("${AES_IMPL}" STREQUAL "portable")
+    target_compile_definitions(sha2_claw_demo PUBLIC USE_CXX_AES)
+endif()

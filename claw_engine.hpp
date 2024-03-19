@@ -14,8 +14,8 @@ template <typename Problem>
 void debug_golden_input_A(Problem& Pb,
 			  typename Problem::A_t& inpA)
 {
-  // if (Pb.is_equal_A(inpA, Pb.golden_inpA))
-  //     std::cout << "\nwe hit the golden input of A!\n"
+  if (Pb.is_equal_A(inpA, Pb.golden_inpA))
+    std::cout << "\nwe hit the golden input of A!\n";
   // 		<< boost::stacktrace::stacktrace()
   // 		<< "============================================\n";
 }
@@ -25,8 +25,8 @@ template <typename Problem>
 void debug_golden_input_B(Problem& Pb,
 			  typename Problem::B_t& inpB)
 {
-  // if (Pb.is_equal_B(inpB, Pb.golden_inpB))
-  //     std::cout << "\nwe hit the golden input of B!\n"
+  if (Pb.is_equal_B(inpB, Pb.golden_inpB))
+    std::cout << "\nwe hit the golden input of B!\n";
   // 		<< boost::stacktrace::stacktrace()
   // 		<< "============================================\n";
 }
