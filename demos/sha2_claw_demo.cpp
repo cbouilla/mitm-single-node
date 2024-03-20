@@ -260,8 +260,10 @@ public:
     // those only hit the glolden input of A
     //  ========================================
     // Does the golden pair collide? 1
-    // golden_inpA = 0x4c, 0xce, 
-    // golden_inpB = 0x46, 0xc0, 
+    golden_inpA.data[0] = 0x4c;
+    golden_inpA.data[1] = 0xce;
+    golden_inpB.data[0] = 0x46;
+    golden_inpB.data[1] = 0xc0;
     // golden_out  = 0x71, 0xec, 
     // ========================================
 
@@ -411,6 +413,11 @@ public: /* they are public for debugging */
     return (not_equal == 0); /* i.e. return not not_equal */
   }
 
+  /* print if the value in C equals the golden input in A or B */
+  void test_C_eq_golden_inp(C_t&)
+  {
+    
+  }
 
 };
 

@@ -65,8 +65,8 @@ struct Counters {
   {
     ++n_distinguished_points[n_updates];
     size_t n = n_distinguished_points[n_updates] - n_dist_points_previous;
-    
-    if ( n_distinguished_points[n_updates] % interval == 0){
+    /* todo remove false */
+    if (false && n_distinguished_points[n_updates] % interval == 0){
 
       elapsed = wtime() - dist_previous_time;
       printf("\r%lu=2^%0.2f iter took:"
@@ -493,6 +493,28 @@ void search_generic(Problem& Pb,
       /* fill the input with a fresh random value. */
       Pb.C.randomize(inp_St, prng); /* todo rng should be reviewed */
 
+      /************************************************************************/
+      /* TODO REMOVE ME THIS IS AN ERROR */
+      bool is_equal_gold_A = true;
+      for (size_t k = 0; k < nbytes_A; ++k){
+	if(inp_St.data[k] != Pb.golden_inpA.data[k])
+	  is_equal_gold_A = false;
+      }
+      if (is_equal_gold_A)
+	 std::cout << "we hit the golden input of A from C!\n";
+
+
+      bool is_equal_gold_B = true;
+      for (size_t k = 0; k < nbytes_B; ++k){
+	if(inp_St.data[k] != Pb.golden_inpB.data[k])
+	  is_equal_gold_B = false;
+      }
+      if (is_equal_gold_B)
+	 std::cout << "we hit the golden input of B from C!\n";
+
+       /*------------------------------------------*/
+      /************************************************************************/
+      
       Pb.C.copy(inp_St, *inp0_pt);
       chain_length0 = 0;
 

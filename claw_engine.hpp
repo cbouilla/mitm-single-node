@@ -14,8 +14,8 @@ template <typename Problem>
 void debug_golden_input_A(Problem& Pb,
 			  typename Problem::A_t& inpA)
 {
-  if (Pb.is_equal_A(inpA, Pb.golden_inpA))
-    std::cout << "\nwe hit the golden input of A!\n";
+  // if (Pb.is_equal_A(inpA, Pb.golden_inpA))
+  //   std::cout << "\nwe hit the golden input of A!\n"
   // 		<< boost::stacktrace::stacktrace()
   // 		<< "============================================\n";
 }
@@ -25,8 +25,8 @@ template <typename Problem>
 void debug_golden_input_B(Problem& Pb,
 			  typename Problem::B_t& inpB)
 {
-  if (Pb.is_equal_B(inpB, Pb.golden_inpB))
-    std::cout << "\nwe hit the golden input of B!\n";
+  // if (Pb.is_equal_B(inpB, Pb.golden_inpB))
+  //   std::cout << "\nwe hit the golden input of B!\n";
   // 		<< boost::stacktrace::stacktrace()
   // 		<< "============================================\n";
 }
@@ -65,6 +65,29 @@ void iterate_once(Problem &Pb,
   Pb.mix(i, inp, inp_mixed);
   int f_or_g = Pb.C.extract_1_bit(inp_mixed);
 
+  
+  /************************************************************************/
+  /* TODO REMOVE ME THIS IS AN ERROR */
+  bool is_equal_gold_A = true;
+  for (size_t k = 0; k < nbytes_A; ++k){
+    if(inp_mixed.data[k] != Pb.golden_inpA.data[k])
+      is_equal_gold_A = false;
+  }
+  if (is_equal_gold_A)
+    std::cout << "we hit the golden input of A after mixing!\n";
+
+
+  bool is_equal_gold_B = true;
+  for (size_t k = 0; k < nbytes_B; ++k){
+    if(inp_mixed.data[k] != Pb.golden_inpB.data[k])
+      is_equal_gold_B = false;
+  }
+  if (is_equal_gold_B)
+    std::cout << "we hit the golden input of B after mixing!\n";
+
+  /*------------------------------------------*/
+  /************************************************************************/
+  
   if (f_or_g == 1){
     
     Pb.send_C_to_A(inp_mixed, inpA);
