@@ -40,8 +40,6 @@ public:
   void unserialize(const u8 *in, t &x) const;        /* read this from in */
   void copy(const t& inp, t& out) const; /* deepcopy inp to out */
 
-  /* debatable: we only need it in the claw case */
-  int extract_1_bit(const t &inp) const;
 
   u64 hash(const t &x) const;                /* return some bits from this */
   u64 hash_extra(const t &x) const ;         /* return more bits from this */

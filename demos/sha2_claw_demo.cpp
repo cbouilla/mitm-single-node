@@ -170,12 +170,6 @@ public:
   }
 
   inline
-  int extract_1_bit(const t& inp) const
-  {
-    return (1&inp.data[0]);
-  }
-
-  inline
   u64 hash(const t& x) const
   {
     /* Take into account all bytes of the output */
@@ -260,11 +254,17 @@ public:
     // those only hit the glolden input of A
     //  ========================================
     // Does the golden pair collide? 1
-    golden_inpA.data[0] = 0x4c;
+    // golden_inpA.data[0] = 0x4c;
+    // golden_inpA.data[1] = 0xce;
+    // golden_inpB.data[0] = 0x46;
+    // golden_inpB.data[1] = 0xc0;
+    // golden_out  = 0x71, 0xec,
+
+    golden_inpA.data[0] = 0x4b;
     golden_inpA.data[1] = 0xce;
     golden_inpB.data[0] = 0x46;
     golden_inpB.data[1] = 0xc0;
-    // golden_out  = 0x71, 0xec, 
+
     // ========================================
 
 

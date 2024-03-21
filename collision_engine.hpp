@@ -3,6 +3,7 @@
 #include "AbstractDomain.hpp"
 #include "AbstractCollisionProblem.hpp"
 #include "engine.hpp"
+#include "prng.hpp"
 //#include "base_engine.hpp"
 
 namespace mitm {
@@ -24,6 +25,7 @@ namespace mitm {
  */
 template <typename Problem>
 void iterate_once(Problem &Pb,
+		  PearsonHash& byte_hasher, /* only used for claw */
 		  typename Problem::I_t& i, /* permutation number of f's input */
 		  typename Problem::C_t& inp,
                   typename Problem::C_t& out,
@@ -46,6 +48,7 @@ void iterate_once(Problem &Pb,
  */ // todo: the pair type looks ugly, rethink the solution.
 template <typename Problem> /* PAIR_T = std::pair<A_t, B_t> */
 bool treat_collision(Problem& Pb,
+		     PearsonHash& byte_hasher,
 		     typename Problem::I_t& i,
 		     typename Problem::C_t*& inp0_pt,
 		     typename Problem::C_t*& out0_pt, /* inp0 calculation buffer */
@@ -61,6 +64,7 @@ bool treat_collision(Problem& Pb,
   /* i.e. iterate_once(inp0) = iterate_once(inp1) */
   /* return false when walking the two inputs don't collide */
   bool found_collision = walk<Problem>(Pb,
+				       byte_hasher,
 				       i,
 				       inp0_chain_len,
 				       inp0_pt,

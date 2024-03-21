@@ -38,6 +38,7 @@ inline size_t  nbytes_B = 0;
 
 /*----------------------------------------------------------------------------*/
 
+
 /* Non-essential counters but helpful to have, e.g. n_collisions/sec */
 struct Counters {
 
@@ -213,6 +214,7 @@ inline void swap_pointers(C_t*& pt1,
  */
 template<typename Problem, typename... Types>
 bool generate_dist_point(Problem& Pb,
+			 PearsonHash& byte_hasher,
 			 typename Problem::I_t& i,
 			 u64& chain_length, /* write chain lenght here */
 			 const i64 difficulty, /* #bits are zero at the beginning */
@@ -235,7 +237,7 @@ bool generate_dist_point(Problem& Pb,
   for (u64 j = 0; j < k*(1LL<<difficulty); ++j){
     /* uses claw's iterate_once if args... is not empty, otherwise collisions'*/
     /* for claw args := inp0B, inp1B */
-    iterate_once(Pb, i, *inp_pt, *out_pt, inp_mixed, inpA, args...); 
+    iterate_once(Pb, byte_hasher,i, *inp_pt, *out_pt, inp_mixed, inpA, args...); 
     ++chain_length;
 
     /* we may get a dist point here */
@@ -293,6 +295,7 @@ bool is_serialize_inverse_of_unserialize(Problem Pb, PRNG& prng)
  */
 template<typename Problem, typename... Types>
 bool walk(Problem& Pb,
+	  PearsonHash& byte_hasher,
 	  typename Problem::I_t& i,
 	  u64 inp0_chain_len,
 	  typename Problem::C_t*& inp0_pt,
@@ -325,13 +328,13 @@ bool walk(Problem& Pb,
   /* to the shortest sequence. */
   for (; inp0_chain_len > inp1_chain_len; --inp0_chain_len){
     /* for claw args := inp0B, inp1B */
-    iterate_once(Pb, i, *inp0_pt, *out0_pt, inp_mixed, inpA, args...);
+    iterate_once(Pb, byte_hasher, i, *inp0_pt, *out0_pt, inp_mixed, inpA, args...);
     swap_pointers(inp0_pt, out0_pt);
   }
   
   for (; inp0_chain_len < inp1_chain_len; --inp1_chain_len){
     /* for claw args := inp0B, inp1B */
-    iterate_once(Pb, i, *inp1_pt, *out1_pt, inp_mixed, inpA, args...);
+    iterate_once(Pb, byte_hasher, i, *inp1_pt, *out1_pt, inp_mixed, inpA, args...);
     swap_pointers(inp1_pt, out1_pt);
   }
 
@@ -345,8 +348,8 @@ bool walk(Problem& Pb,
     /* return as soon equality is found. The equality could be a robinhood. */
 
     /* get the outputs of the curren inputs (for claw args... := inp0B, inp1B) */
-    iterate_once(Pb, i, *inp0_pt, *out0_pt, inp_mixed, inpA, args...);
-    iterate_once(Pb, i, *inp1_pt, *out1_pt, inp_mixed, inpA, args...);
+    iterate_once(Pb, byte_hasher, i, *inp0_pt, *out0_pt, inp_mixed, inpA, args...);
+    iterate_once(Pb, byte_hasher, i, *inp1_pt, *out1_pt, inp_mixed, inpA, args...);
 
     /* First, do the outputs collide? If yes, return true and exit. */
     if(Pb.C.is_equal( *out0_pt, *out1_pt )){
@@ -419,13 +422,17 @@ void search_generic(Problem& Pb,
 				    * 1) inp0B passed as a reference
 				    * 2) inp1B passed as a reference */
 {
-  PRNG prng;
+  /* Pseudo-random number generators for elements */
+  PRNG prng_elm;
+  PRNG prng_mix; /* for mixing function */
+  PearsonHash byte_hasher{};
+  
 
   using C_t = typename Problem::C_t;
   // using A_t = typename Problem::A_t;
   
   /* Sanity Test:  */
-  is_serialize_inverse_of_unserialize<Problem>(Pb, prng);
+  is_serialize_inverse_of_unserialize<Problem>(Pb, prng_elm);
 
   
   
@@ -459,7 +466,7 @@ void search_generic(Problem& Pb,
   /*=========================== Collisions counters ==========================*/
   /* How many steps does it take to get a distinguished point from  an input */
   size_t chain_length0 = 0;
-  size_t chain_length1 = 0;
+
   Counters ctr{}; /* various non-essential counters */
   
   int n_collisions_found = 0;
@@ -491,7 +498,7 @@ void search_generic(Problem& Pb,
       
       n_collisions_found = 0;
       /* fill the input with a fresh random value. */
-      Pb.C.randomize(inp_St, prng); /* todo rng should be reviewed */
+      Pb.C.randomize(inp_St, prng_elm); /* todo rng should be reviewed */
 
       /************************************************************************/
       /* TODO REMOVE ME THIS IS AN ERROR */
@@ -519,6 +526,7 @@ void search_generic(Problem& Pb,
       chain_length0 = 0;
 
       found_dist = generate_dist_point(Pb,
+				       byte_hasher,
 				       i, /* permutation number of f's input */
 				       chain_length0,
 				       difficulty,
@@ -560,6 +568,7 @@ void search_generic(Problem& Pb,
 	   * 2) inpB
 	   */
 	  found_golden_pair = treat_collision(Pb,
+					      byte_hasher,
 					      i,
 					      inp0_pt,
 					      out0_pt,
@@ -603,9 +612,15 @@ void search_generic(Problem& Pb,
       }
     }
     /* We need to change to restart calculation with a different function */
-    prng.update_seed(); /* new seed for generatign a mixing function */
-    i = Pb.mix_sample(prng); /* Generates new permutation of f */
-    prng.update_seed(); /* new seed to getting a random value in C_t */
+    prng_elm.update_seed(); /* new seed for generatign a mixing function */
+    prng_mix.update_seed();
+    byte_hasher.update_table();
+    
+    i = Pb.mix_sample(prng_elm); /* Generates new permutation of f */
+    prng_elm.update_seed(); /* new seed to getting a random value in C_t */
+    /* Only for claw: switch the choice between f and g */
+
+    
     dict.flush();
     ctr.increment_n_updates();
   }

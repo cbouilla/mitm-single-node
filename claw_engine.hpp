@@ -3,6 +3,7 @@
 #include "AbstractDomain.hpp"
 #include "AbstractClawProblem.hpp"
 #include "engine.hpp"
+#include "prng.hpp"
 #include <boost/stacktrace/stacktrace_fwd.hpp>
 #include <stack>
 #include <vector>
@@ -50,6 +51,7 @@ void debug_golden_output(Problem& Pb,
  */
 template <typename Problem>
 void iterate_once(Problem &Pb,
+		  PearsonHash& byte_hasher,
 		  typename Problem::I_t& i, /*permutation number of f's input*/
 		  typename Problem::C_t& inp,
                   typename Problem::C_t& out,
@@ -62,8 +64,10 @@ void iterate_once(Problem &Pb,
    * in collision_engine.hpp. Also, args... will be always passed as two inputs at once
    */
 
+  
   Pb.mix(i, inp, inp_mixed);
-  int f_or_g = Pb.C.extract_1_bit(inp_mixed);
+  u64 digest = Pb.C.hash(inp_mixed);
+  u8 f_or_g = byte_hasher(digest)&1;
 
   
   /************************************************************************/
@@ -115,6 +119,7 @@ void iterate_once(Problem &Pb,
  */
 template <typename Problem>
 bool pullback_to_A_B(Problem& Pb,
+		     PearsonHash& byte_hasher,
 		    typename Problem::C_t& inp0_C,
 		    typename Problem::C_t& inp1_C,
 		    typename Problem::A_t& inp_A,
@@ -124,14 +129,16 @@ bool pullback_to_A_B(Problem& Pb,
   /* the two functions. */
   
   /* otherwise, the collision has to be between f and g */
-  int f_or_g = Pb.C.extract_1_bit(inp0_C);
+  
+  int f_or_g = byte_hasher( Pb.C.hash(inp0_C) );
+  
   if (f_or_g == 1){ 
-    if (Pb.C.extract_1_bit(inp1_C) == 0){ /* a sensible case*/
+    if (byte_hasher( Pb.C.hash(inp1_C) )  == 0){ /* a sensible case*/
       Pb.send_C_to_A(inp0_C, inp_A);
       Pb.send_C_to_B(inp1_C, inp_B);
     }
-  } else { /* Pb.C.extract_1_bit(inp0_C) == 0*/
-    if (Pb.C.extract_1_bit(inp1_C) == 1){ /* a sensible case*/
+  } else { 
+    if ( byte_hasher( Pb.C.hash(inp1_C) ) == 1){ /* a sensible case*/
       // good case
       Pb.send_C_to_A(inp1_C, inp_A);
       Pb.send_C_to_B(inp0_C, inp_B);
@@ -151,6 +158,7 @@ bool pullback_to_A_B(Problem& Pb,
  */ 
 template <typename Problem>  
 bool treat_collision(Problem& Pb,
+		     PearsonHash& byte_hasher,
 		     typename Problem::I_t& i,
 		     typename Problem::C_t*& inp0_pt,
 		     typename Problem::C_t*& out0_pt, /* inp0 calculation buffer */
@@ -173,6 +181,7 @@ bool treat_collision(Problem& Pb,
   /* i.e. iterate_once(inp0) = iterate_once(inp1) */
   /* return false when walking the two inputs don't collide */
   bool found_collision = walk<Problem>(Pb,
+				       byte_hasher,
 				       i,
 				       inp0_chain_len,
 				       inp0_pt,
@@ -198,6 +207,7 @@ bool treat_collision(Problem& Pb,
    * results to inp0_A and inp0_B. Otherwise, return false
    */
   bool is_potential_collision = pullback_to_A_B(Pb,
+						byte_hasher,
 						*inp0_pt, // a given input in C 
 						*inp1_pt, // a given inpunt in C
 						inp0_A, // resulted input in A
