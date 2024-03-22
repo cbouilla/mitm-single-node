@@ -98,13 +98,12 @@ struct Counters {
     n_distinguished_points.emplace_back(0);
     update_previous_time = wtime();
   }
-  void increment_collisions(size_t n) {n_collisions += n;}
+  void increment_collisions(size_t n = 1) {n_collisions += n;}
 
   void save_summary_stats(std::string problem_type,
 			  size_t A_size,
 			  size_t B_size,
 			  size_t C_size,
-			  size_t bucket_size,
 			  int difficulty)
   {
     std::ofstream summary;
@@ -121,7 +120,6 @@ struct Counters {
 	    << std::to_string(B_size) << ", "
 	    << std::to_string(difficulty) << ", "
 	    << std::to_string(total_distinguished_points) << ", "
-      	    << std::to_string(bucket_size) << ", "
       	    << std::to_string(n_collisions) << ", "
       	    << std::to_string(n_updates) << ", "
 	    << "\n";
@@ -442,34 +440,34 @@ void search_generic(Problem& Pb,
   size_t output_max_bytes = 40*(1LL<<(8*Pb.C.length));
   std::cout << "output_max_bytes = " << output_max_bytes << "\n";
   n_bytes = std::min(n_bytes, output_max_bytes);
-  size_t bucket_size = 8;
+
   
   std::cout << "Going to use "
 	    << std::dec << n_bytes << " bytes = 2^"<< std::log2(n_bytes)
 	    << " bytes for dictionary!\n";
   
 
-  Dict<u64, C_t, Problem> dict{n_bytes, bucket_size};
+  Dict<u64, C_t, Problem> dict{n_bytes};
   u64 out0_digest = 0;
   
   
   std::cout << "Initialized a dict with " << dict.n_slots << " slots = 2^"
 	    << std::log2(dict.n_slots) << " slots\n";
   /*=============== data extracted from dictionarry ==========================*/
-  std::vector<C_t> popped_inputs;
-  popped_inputs.resize(bucket_size);
 
-  std::vector<u64> popped_chain_lengths;
-  popped_chain_lengths.resize(bucket_size);
 
+
+
+  
   
   /*=========================== Collisions counters ==========================*/
   /* How many steps does it take to get a distinguished point from  an input */
   size_t chain_length0 = 0;
+  size_t chain_length1 = 0;
 
   Counters ctr{}; /* various non-essential counters */
   
-  int n_collisions_found = 0;
+  bool found_a_collisions = false;
   
   /* We should have ration 1/3 real collisions and 2/3 false collisions */
   bool found_dist = false;
@@ -496,7 +494,7 @@ void search_generic(Problem& Pb,
 	 ++n_dist_points)
       {
       
-      n_collisions_found = 0;
+      found_a_collisions = false; /* initially we have not seen anything yet */
       /* fill the input with a fresh random value. */
       Pb.C.randomize(inp_St, prng_elm); /* todo rng should be reviewed */
 
@@ -545,44 +543,41 @@ void search_generic(Problem& Pb,
       ++n_dist_points;
       ctr.increment_n_distinguished_points();
 
-      n_collisions_found = dict.pop_insert(out0_digest, /* key */
+      found_a_collisions = dict.pop_insert(out0_digest, /* key */
 					   inp_St, /* value  */
 					   chain_length0,
-					   popped_inputs,
-					   popped_chain_lengths,
+					   *inp1_pt,
+					   chain_length1,
 					   Pb);
       
-      if (n_collisions_found > 0) {
-	ctr.increment_collisions(n_collisions_found);
+      if (found_a_collisions) {
+	ctr.increment_collisions();
 	/* respect the rule that inp0 doesn't have pointers dancing around it */
 	Pb.C.copy(inp_St, *inp0_pt); /* (*tmp0_ptO) holds the input value  */
 
+	/*
+	 * In case of claw, two extra additional arguments:
+	 * (passed as references):
+	 * 1) inpA 
+	 * 2) inpB
+	 */
+	found_golden_pair = treat_collision(Pb,
+					    byte_hasher,
+					    i,
+					    inp0_pt,
+					    out0_pt,
+					    chain_length0,
+					    inp1_pt, /* todo fix this */
+					    out1_pt,
+					    chain_length1,
+					    inp_mixed,
+					    inp0A, 
+					    inp1A,
+					    args...); /* for claw args := inp0B, inp1B */
 
-	/* Test each popped input again inp_St */
-	for (int j = 0; j < n_collisions_found; ++j){
-	  Pb.C.copy(popped_inputs[j], *inp1_pt);
-	  /*
-	   * In case of claw, two extra additional arguments:
-	   * (passed as references):
-	   * 1) inpA 
-	   * 2) inpB
-	   */
-	  found_golden_pair = treat_collision(Pb,
-					      byte_hasher,
-					      i,
-					      inp0_pt,
-					      out0_pt,
-					      chain_length0,
-					      inp1_pt, /* todo fix this */
-					      out1_pt,
-					      popped_chain_lengths[j],
-					      inp_mixed,
-					      inp0A, 
-					      inp1A,
-					      args...); /* for claw args := inp0B, inp1B */
-	  if (not found_golden_pair)
+	if (not found_golden_pair)
 	    continue; /* nothing to do, test the next one!  */
-	  else { /* Found the golden pair */
+	else { /* Found the golden pair */
 	    print_collision_information(*inp0_pt,
 					*inp1_pt,
 					*out0_pt,
@@ -595,7 +590,6 @@ void search_generic(Problem& Pb,
 				     nbytes_A,/* = |A| */
 				     nbytes_A,/* = |A| since it's a collision */
 				     Pb.C.length,
-				     bucket_size,
 				     difficulty);
 
 	    if (sizeof...(args) == 2) 
@@ -603,11 +597,9 @@ void search_generic(Problem& Pb,
 				     nbytes_A,/* = |A| */
 				     nbytes_B,/* = |B| */
 				     Pb.C.length,
-				     bucket_size, difficulty);
-	    
+				     difficulty);
 
-	    return; /* we're done! */
-	  }
+	    return; /* nothing more to do */
 	}
       }
     }
