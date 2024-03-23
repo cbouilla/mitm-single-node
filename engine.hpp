@@ -478,6 +478,17 @@ void search_generic(Problem& Pb,
 
   /* we found a pair of inputs that lead to the golden collisoin or golden claw! */
   bool found_golden_pair = false;
+
+  /*--------------------------debug random -----------------------------------*/
+  /* We need to change to restart calculation with a different function */
+  prng_elm.update_seed(); /* new seed for generatign a mixing function */
+  prng_mix.update_seed();
+  byte_hasher.update_table();
+    
+  i = Pb.mix_sample(prng_elm); /* Generates new permutation of f */
+  prng_elm.update_seed(); /* new seed to getting a random value in C_t */
+  /* Only for claw: switch the choice between f and g */
+
   /*----------------------------MAIN COMPUTATION------------------------------*/
   /*=================== Generate Distinguished Points ========================*/
 

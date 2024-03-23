@@ -78,6 +78,15 @@ class PearsonHash{
   std::random_device rd{};
   std::mt19937 g;
 
+  /* given a byte b0b1b2b3...b7 return (b0 xor b1 xor ... xor b7)*/
+  uint8_t fold_byte(uint8_t byte) const {
+    byte ^= byte >> 4;
+    byte ^= byte >> 2;
+    byte ^= byte >> 1;
+    // Return the least significant bit
+    return byte & 1;
+}
+  
 public:
   PearsonHash()
   {
@@ -92,6 +101,7 @@ public:
     std::shuffle(T.begin(), T.end(), rd);
   }
 
+  /* returns 1 bit after hashing n to an */
   uint8_t operator()(uint64_t n)
   {
     uint8_t result = 0;
@@ -102,7 +112,7 @@ public:
 
       result ^= T[result ^ ((n>>(i*8))&mask) ];
 
-    return result;
+    return (result&1);
   }
 };
 

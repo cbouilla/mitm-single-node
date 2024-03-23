@@ -15,10 +15,10 @@ template <typename Problem>
 void debug_golden_input_A(Problem& Pb,
 			  typename Problem::A_t& inpA)
 {
-  // if (Pb.is_equal_A(inpA, Pb.golden_inpA))
-  //   std::cout << "\nwe hit the golden input of A!\n"
-  // 		<< boost::stacktrace::stacktrace()
-  // 		<< "============================================\n";
+  if (Pb.is_equal_A(inpA, Pb.golden_inpA))
+    std::cout << "\nwe hit the golden input of A!\n"
+		// << boost::stacktrace::stacktrace()
+		<< "============================================\n";
 }
 
 
@@ -26,10 +26,10 @@ template <typename Problem>
 void debug_golden_input_B(Problem& Pb,
 			  typename Problem::B_t& inpB)
 {
-  // if (Pb.is_equal_B(inpB, Pb.golden_inpB))
-  //   std::cout << "\nwe hit the golden input of B!\n";
-  // 		<< boost::stacktrace::stacktrace()
-  // 		<< "============================================\n";
+  if (Pb.is_equal_B(inpB, Pb.golden_inpB))
+    std::cout << "\nwe hit the golden input of B!\n"
+		// << boost::stacktrace::stacktrace()
+		<< "============================================\n";
 }
 
 
@@ -37,11 +37,41 @@ template <typename Problem>
 void debug_golden_output(Problem& Pb,
 			 typename Problem::C_t& out)
 {
-  // if (Pb.C.is_equal(out, Pb.golden_out))
-  //     std::cout << "\nwe hit the golden output!\n"
-  // 		<< boost::stacktrace::stacktrace()
-  // 		<< "============================================\n";
+  if (Pb.C.is_equal(out, Pb.golden_out))
+      std::cout << "\nwe hit the golden output!\n"
+		// << boost::stacktrace::stacktrace()
+		<< "============================================\n";
 }
+
+
+template <typename Problem>
+bool debug_golden_input_A_as_C(Problem& Pb,
+			       typename Problem::C_t& out)
+{
+  bool is_equal_gold_A = true;
+  for (size_t k = 0; k < nbytes_A; ++k){
+    if(out.data[k] != Pb.golden_inpA.data[k])
+      is_equal_gold_A = false;
+  }
+  if (is_equal_gold_A)
+    return true;
+  return false;
+}
+
+template <typename Problem>
+bool debug_golden_input_B_as_C(Problem& Pb,
+			       typename Problem::C_t& out)
+{
+  bool is_equal_gold_B = true;
+  for (size_t k = 0; k < nbytes_B; ++k){
+    if(out.data[k] != Pb.golden_inpB.data[k])
+      is_equal_gold_B = false;
+  }
+  if (is_equal_gold_B)
+    return true;
+  return false;
+}
+
 
 
 /* args... = inp0B, inp1B*/
@@ -67,26 +97,18 @@ void iterate_once(Problem &Pb,
   
   Pb.mix(i, inp, inp_mixed);
   u64 digest = Pb.C.hash(inp_mixed);
-  u8 f_or_g = byte_hasher(digest)&1;
+  u8 f_or_g = byte_hasher(digest);
 
   
   /************************************************************************/
   /* TODO REMOVE ME THIS IS AN ERROR */
-  bool is_equal_gold_A = true;
-  for (size_t k = 0; k < nbytes_A; ++k){
-    if(inp_mixed.data[k] != Pb.golden_inpA.data[k])
-      is_equal_gold_A = false;
-  }
-  if (is_equal_gold_A)
+  
+  bool is_equal_gold_A = debug_golden_input_A_as_C(Pb, inp_mixed);
+  if (is_equal_gold_A && (byte_hasher(Pb.C.hash(inp_mixed)) == 1))
     std::cout << "we hit the golden input of A after mixing!\n";
 
-
-  bool is_equal_gold_B = true;
-  for (size_t k = 0; k < nbytes_B; ++k){
-    if(inp_mixed.data[k] != Pb.golden_inpB.data[k])
-      is_equal_gold_B = false;
-  }
-  if (is_equal_gold_B)
+  bool is_equal_gold_B = debug_golden_input_B_as_C(Pb, inp_mixed);
+  if (is_equal_gold_B && (byte_hasher(Pb.C.hash(inp_mixed)) == 0))
     std::cout << "we hit the golden input of B after mixing!\n";
 
   /*------------------------------------------*/
@@ -120,10 +142,12 @@ void iterate_once(Problem &Pb,
 template <typename Problem>
 bool pullback_to_A_B(Problem& Pb,
 		     PearsonHash& byte_hasher,
-		    typename Problem::C_t& inp0_C,
-		    typename Problem::C_t& inp1_C,
-		    typename Problem::A_t& inp_A,
-		    typename Problem::B_t& inp_B)
+		     typename Problem::I_t& i, /*permutation number of f's input*/
+		     typename Problem::C_t& inp0_C,
+		     typename Problem::C_t& inp1_C,
+		     typename Problem::C_t& inp_mixed,
+		     typename Problem::A_t& inp_A,
+		     typename Problem::B_t& inp_B)
 {
   /* when f is same as g, then there is no point in distinguishingg between */
   /* the two functions. */
@@ -133,15 +157,22 @@ bool pullback_to_A_B(Problem& Pb,
   int f_or_g = byte_hasher( Pb.C.hash(inp0_C) );
   
   if (f_or_g == 1){ 
-    if (byte_hasher( Pb.C.hash(inp1_C) )  == 0){ /* a sensible case*/
-      Pb.send_C_to_A(inp0_C, inp_A);
-      Pb.send_C_to_B(inp1_C, inp_B);
+    if (byte_hasher( Pb.C.hash(inp1_C) )  == 0){
+      /* inp0 -> A, inp1 -> B */
+      Pb.mix(i, inp0_C, inp_mixed);
+      Pb.send_C_to_A(inp_mixed, inp_A);
+
+      Pb.mix(i, inp1_C, inp_mixed);
+      Pb.send_C_to_B(inp_mixed, inp_B);
     }
   } else { 
     if ( byte_hasher( Pb.C.hash(inp1_C) ) == 1){ /* a sensible case*/
-      // good case
-      Pb.send_C_to_A(inp1_C, inp_A);
-      Pb.send_C_to_B(inp0_C, inp_B);
+      /* inp0 -> B, inp1 -> A */
+      Pb.mix(i, inp1_C, inp_mixed);
+      Pb.send_C_to_A(inp_mixed, inp_A);
+
+      Pb.mix(i, inp0_C, inp_mixed);
+      Pb.send_C_to_B(inp_mixed, inp_B);
       return true;
     }
   }
@@ -206,10 +237,13 @@ bool treat_collision(Problem& Pb,
    *  to inp_A in A and inp_B (the order doesn't matter)? If yes, write the
    * results to inp0_A and inp0_B. Otherwise, return false
    */
+
   bool is_potential_collision = pullback_to_A_B(Pb,
 						byte_hasher,
+						i,
 						*inp0_pt, // a given input in C 
 						*inp1_pt, // a given inpunt in C
+						inp_mixed,
 						inp0_A, // resulted input in A
 						inp1_B);// resulted input in B
   if (not is_potential_collision)
