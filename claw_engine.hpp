@@ -44,33 +44,33 @@ void debug_golden_output(Problem& Pb,
 }
 
 
-template <typename Problem>
-bool debug_golden_input_A_as_C(Problem& Pb,
-			       typename Problem::C_t& out)
-{
-  bool is_equal_gold_A = true;
-  for (size_t k = 0; k < nbytes_A; ++k){
-    if(out.data[k] != Pb.golden_inpA.data[k])
-      is_equal_gold_A = false;
-  }
-  if (is_equal_gold_A)
-    return true;
-  return false;
-}
+// template <typename Problem>
+// bool debug_golden_input_A_as_C(Problem& Pb,
+// 			       typename Problem::C_t& out)
+// {
+//   bool is_equal_gold_A = true;
+//   for (size_t k = 0; k < nbytes_A; ++k){
+//     if(out.data[k] != Pb.golden_inpA.data[k])
+//       is_equal_gold_A = false;
+//   }
+//   if (is_equal_gold_A)
+//     return true;
+//   return false;
+// }
 
-template <typename Problem>
-bool debug_golden_input_B_as_C(Problem& Pb,
-			       typename Problem::C_t& out)
-{
-  bool is_equal_gold_B = true;
-  for (size_t k = 0; k < nbytes_B; ++k){
-    if(out.data[k] != Pb.golden_inpB.data[k])
-      is_equal_gold_B = false;
-  }
-  if (is_equal_gold_B)
-    return true;
-  return false;
-}
+// template <typename Problem>
+// bool debug_golden_input_B_as_C(Problem& Pb,
+// 			       typename Problem::C_t& out)
+// {
+//   bool is_equal_gold_B = true;
+//   for (size_t k = 0; k < nbytes_B; ++k){
+//     if(out.data[k] != Pb.golden_inpB.data[k])
+//       is_equal_gold_B = false;
+//   }
+//   if (is_equal_gold_B)
+//     return true;
+//   return false;
+// }
 
 
 
@@ -103,13 +103,13 @@ void iterate_once(Problem &Pb,
   /************************************************************************/
   /* TODO REMOVE ME THIS IS AN ERROR */
   
-  bool is_equal_gold_A = debug_golden_input_A_as_C(Pb, inp_mixed);
-  if (is_equal_gold_A && (byte_hasher(Pb.C.hash(inp_mixed)) == 1))
-    std::cout << "we hit the golden input of A after mixing!\n";
+  // bool is_equal_gold_A = debug_golden_input_A_as_C(Pb, inp_mixed);
+  // if (is_equal_gold_A && (byte_hasher(Pb.C.hash(inp_mixed)) == 1))
+  //   std::cout << "we hit the golden input of A after mixing!\n";
 
-  bool is_equal_gold_B = debug_golden_input_B_as_C(Pb, inp_mixed);
-  if (is_equal_gold_B && (byte_hasher(Pb.C.hash(inp_mixed)) == 0))
-    std::cout << "we hit the golden input of B after mixing!\n";
+  // bool is_equal_gold_B = debug_golden_input_B_as_C(Pb, inp_mixed);
+  // if (is_equal_gold_B && (byte_hasher(Pb.C.hash(inp_mixed)) == 0))
+  //   std::cout << "we hit the golden input of B after mixing!\n";
 
   /*------------------------------------------*/
   /************************************************************************/

@@ -200,7 +200,7 @@ public:
   using C_t = SHA2_out_repr; /* 4th template type */
   using Dom_C = SHA2_OUT_DOMAIN;
   Dom_C C; /* Output related functions */  
-  using I_t = std::function<void(C_t const&, C_t&)>; /* 1st tempalte type */
+  using I_t = std::array<u8, 16>;//std::function<void(C_t const&, C_t&)>; /* 1st tempalte type */
 
   
   static const int f_eq_g = 0;
@@ -233,10 +233,10 @@ public:
     // golden_inpB.data[1] = 0x29;
 
     // Test 2: works! works in buckets!
-    // golden_inpA.data[0] = 0x01;
-    // golden_inpA.data[1] = 0x69;
-    // golden_inpB.data[0] = 0x6a;
-    // golden_inpB.data[1] = 0x29;
+    golden_inpA.data[0] = 0x01;
+    golden_inpA.data[1] = 0x69;
+    golden_inpB.data[0] = 0x6a;
+    golden_inpB.data[1] = 0x29;
 
     // Test 3: 0xdecafbad, fails! 
     // golden_inpA.data[0] = 0xde;
@@ -254,10 +254,10 @@ public:
     // those only hit the glolden input of A
     //  ========================================
     // Does the golden pair collide? 1
-    golden_inpA.data[0] = 0x4c;
-    golden_inpA.data[1] = 0xce;
-    golden_inpB.data[0] = 0x46;
-    golden_inpB.data[1] = 0xc0;
+    // golden_inpA.data[0] = 0x4c;
+    // golden_inpA.data[1] = 0xce;
+    // golden_inpB.data[0] = 0x46;
+    // golden_inpB.data[1] = 0xc0;
     // golden_out  = 0x71, 0xec,
 
     // golden_inpA.data[0] = 0x4b;
@@ -347,37 +347,39 @@ public:
   
 
   /* mix a value lives in C_t using i function scrambling. */
-  void mix(I_t const& i, C_t const& x, C_t& y) const { i(x, y);  }
+  void mix(I_t const& key_static, C_t const& x, C_t& y) const
+  {
+    // std::cout << "before mix x = " << x << ", "
+    // 	      << "y = " << y << "\n";
+
+    char unsigned data[16] = {0};
+    unsigned char key[16] = {0};
+
+    std::memcpy(key, key_static.data(), 16);
+    std::memcpy(data, x.data, NBYTES_C);
+
+    Cipher::Aes<128> aes(key);
+    aes.encrypt_block(data);
+    std::memcpy(y.data, data, NBYTES_C);
+  
+    // std::cout << "after mix x = " << x << ", "
+    // 	      << "y = " << y << "\n";
+  }
   
   I_t mix_default() const
   {
-    /* return a lambda function */
-    return [](C_t const& x, C_t& y)
-    { /* y := x, identity mixing*/
-      std::memcpy(y.data, x.data, NBYTES_C);
-    };
+    return I_t {0};
   }
   
   I_t mix_sample(mitm::PRNG& rng) const
   {
-    unsigned char key_static[16] = {0};
+
+    I_t key_static{};
     /* get a "random" key */
-    for (int k = 0; k<16; ++k) 
+    for (int k = 0; k <  16; ++k) 
       key_static[k] = rng.rand();
 
-    /* lambda(x, y):  y := aes(x), identity mixing */
-    return [&key_static](C_t const& x, C_t& y)  {
-      
-      char unsigned data[16] = {0};
-      unsigned char key[16] = {0};
-
-      std::memcpy(key, key_static, 16);
-      std::memcpy(data, x.data, NBYTES_C);
-      
-      Cipher::Aes<128> aes(key);
-      aes.encrypt_block(data);
-      std::memcpy(y.data, data, NBYTES_C);
-    };
+    return key_static;    
   }
 
   bool is_good_pair(C_t const &z,  A_t const &x,  B_t const &y) const 
@@ -427,12 +429,14 @@ int main()
 
   mitm::nbytes_A = NBYTES_A;
   mitm::nbytes_B = NBYTES_B;
-
+  SHA2_Problem Pb;
   
   std::cout << "sha2-claw demo! |inp_A| = " << NBYTES_A << "bytes, "
 	    << "|inp_B| = " << NBYTES_B << "bytes, "
 	    << "|out| = " << NBYTES_C << "bytes\n";
-  SHA2_Problem Pb;
+
+
+
   mitm::claw_search(Pb);
 }
 

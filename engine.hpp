@@ -39,6 +39,40 @@ inline size_t  nbytes_B = 0;
 /*----------------------------------------------------------------------------*/
 
 
+/*----------------------------------------------------------------------------*/
+// DEBUG
+
+template <typename Problem>
+bool debug_golden_input_A_as_C(Problem& Pb,
+			       typename Problem::C_t& out)
+{
+  bool is_equal_gold_A = true;
+  for (size_t k = 0; k < nbytes_A; ++k){
+    if(out.data[k] != Pb.golden_inpA.data[k])
+      is_equal_gold_A = false;
+  }
+  if (is_equal_gold_A)
+    return true;
+  return false;
+}
+
+template <typename Problem>
+bool debug_golden_input_B_as_C(Problem& Pb,
+			       typename Problem::C_t& out)
+{
+  bool is_equal_gold_B = true;
+  for (size_t k = 0; k < nbytes_B; ++k){
+    if(out.data[k] != Pb.golden_inpB.data[k])
+      is_equal_gold_B = false;
+  }
+  if (is_equal_gold_B)
+    return true;
+  return false;
+}
+
+ 
+/*----------------------------------------------------------------------------*/
+
 /* Non-essential counters but helpful to have, e.g. n_collisions/sec */
 struct Counters {
 
@@ -437,7 +471,7 @@ void search_generic(Problem& Pb,
   
   /*============================= DICT INIT ==================================*/
   size_t n_bytes = get_available_memory();
-  size_t output_max_bytes = 40*(1LL<<(8*Pb.C.length));
+  size_t output_max_bytes = 4*(1LL<<(8*Pb.C.length));
   std::cout << "output_max_bytes = " << output_max_bytes << "\n";
   n_bytes = std::min(n_bytes, output_max_bytes);
 
@@ -480,13 +514,13 @@ void search_generic(Problem& Pb,
   bool found_golden_pair = false;
 
   /*--------------------------debug random -----------------------------------*/
-  /* We need to change to restart calculation with a different function */
-  prng_elm.update_seed(); /* new seed for generatign a mixing function */
-  prng_mix.update_seed();
-  byte_hasher.update_table();
+  // /* We need to change to restart calculation with a different function */
+  // prng_elm.update_seed(); /* new seed for generatign a mixing function */
+  // prng_mix.update_seed();
+  // byte_hasher.update_table();
     
-  i = Pb.mix_sample(prng_elm); /* Generates new permutation of f */
-  prng_elm.update_seed(); /* new seed to getting a random value in C_t */
+  // i = Pb.mix_sample(prng_elm); /* Generates new permutation of f */
+  // prng_elm.update_seed(); /* new seed to getting a random value in C_t */
   /* Only for claw: switch the choice between f and g */
 
   /*----------------------------MAIN COMPUTATION------------------------------*/
@@ -510,25 +544,25 @@ void search_generic(Problem& Pb,
       Pb.C.randomize(inp_St, prng_elm); /* todo rng should be reviewed */
 
       /************************************************************************/
+      // DEBUGGING 
+      /************************************************************************/
       /* TODO REMOVE ME THIS IS AN ERROR */
-      bool is_equal_gold_A = true;
-      for (size_t k = 0; k < nbytes_A; ++k){
-	if(inp_St.data[k] != Pb.golden_inpA.data[k])
-	  is_equal_gold_A = false;
-      }
-      if (is_equal_gold_A)
-	 std::cout << "we hit the golden input of A from C!\n";
+  
+      C_t inp_mixed_debug_A{};
+      Pb.mix(i, inp_St, inp_mixed_debug_A);
 
+      
+      bool is_equal_gold_A = debug_golden_input_A_as_C(Pb, inp_mixed_debug_A);
+      if (is_equal_gold_A && (byte_hasher(Pb.C.hash(inp_mixed_debug_A)) == 1))
+	std::cout << "we'll hit the golden input of A after mixing!\n";
+      
+      C_t inp_mixed_debug_B{};
+      Pb.mix(i, inp_St, inp_mixed_debug_B);
+      bool is_equal_gold_B = debug_golden_input_B_as_C(Pb, inp_mixed_debug_B);
+      if (is_equal_gold_B && (byte_hasher(Pb.C.hash(inp_mixed_debug_B)) == 0))
+	std::cout << "we'll hit the golden input of B after mixing!\n";
 
-      bool is_equal_gold_B = true;
-      for (size_t k = 0; k < nbytes_B; ++k){
-	if(inp_St.data[k] != Pb.golden_inpB.data[k])
-	  is_equal_gold_B = false;
-      }
-      if (is_equal_gold_B)
-	 std::cout << "we hit the golden input of B from C!\n";
-
-       /*------------------------------------------*/
+      /*------------------------------------------*/
       /************************************************************************/
       
       Pb.C.copy(inp_St, *inp0_pt);

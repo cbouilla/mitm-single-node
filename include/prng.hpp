@@ -103,7 +103,10 @@ public:
 
   /* returns 1 bit after hashing n to an */
   uint8_t operator()(uint64_t n)
+
   {
+    // return n&1;
+    
     uint8_t result = 0;
     uint8_t const mask = 0xFF;
 
