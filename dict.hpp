@@ -82,9 +82,6 @@ struct Dict {
     if (keys[idx] == key) [[unlikely]]
       flag = true; /* found a collision */
 
-    if (keys[idx] == Pb.C.hash(Pb.golden_out))
-      std::cout << "Inside dict: inp = " << value << " maps to the golden_out!\n";
-
     /* RECALL: */
     /* <value:=input, key:=output>  in this order since value is usually larger */
     /* popped elements */

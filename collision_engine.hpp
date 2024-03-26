@@ -8,6 +8,28 @@
 
 namespace mitm {
 
+template <typename Problem>
+void print_collision_information(Problem& Pb,
+				 typename Problem::C_t& out0,
+				 typename Problem::C_t& out1,
+				 typename Problem::A_t& inp0A,
+				 typename Problem::A_t& inp1A)
+				 
+				 
+{
+  bool real_collision = Pb.C.is_equal(out0, out1);
+  std::cout << "\n++++++++++++++++++++++++++++++++++++++++\n"
+	    << "Found golden Pair !\n"
+	    << "inp0 = " << inp0A << "\n"
+	    << "inp1 = " << inp1A << "\n"
+    	    << "----------------------------------------\n"
+	    << "out0 = " << out0 << "\n"
+	    << "out1 = " << out1 << "\n"
+	    << "out0 == out1? " << real_collision  << "\n"
+	    << "++++++++++++++++++++++++++++++++++++++++\n";
+}
+
+
   /***************************************************************/
   /* when generating a distinguished point we have:              */
   /*  1)   inp0           =f/g=> out0                            */

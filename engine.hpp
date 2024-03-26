@@ -35,47 +35,11 @@ namespace mitm {
 /* these initial value never happened in real world, thus we can detect them */
 inline size_t  nbytes_A = 0; 
 inline size_t  nbytes_B = 0;
-
 /*----------------------------------------------------------------------------*/
 
-
-/*----------------------------------------------------------------------------*/
-// DEBUG
-
-template <typename Problem>
-bool debug_golden_input_A_as_C(Problem& Pb,
-			       typename Problem::C_t& out)
-{
-  bool is_equal_gold_A = true;
-  for (size_t k = 0; k < nbytes_A; ++k){
-    if(out.data[k] != Pb.golden_inpA.data[k])
-      is_equal_gold_A = false;
-  }
-  if (is_equal_gold_A)
-    return true;
-  return false;
-}
-
-template <typename Problem>
-bool debug_golden_input_B_as_C(Problem& Pb,
-			       typename Problem::C_t& out)
-{
-  bool is_equal_gold_B = true;
-  for (size_t k = 0; k < nbytes_B; ++k){
-    if(out.data[k] != Pb.golden_inpB.data[k])
-      is_equal_gold_B = false;
-  }
-  if (is_equal_gold_B)
-    return true;
-  return false;
-}
-
- 
-/*----------------------------------------------------------------------------*/
 
 /* Non-essential counters but helpful to have, e.g. n_collisions/sec */
 struct Counters {
-
   size_t const interval = (1LL<<15); // for printing only
   size_t n_updates = 0; // #times dict were flushed
   size_t n_collisions = 0;
@@ -144,9 +108,10 @@ struct Counters {
     std::string f_name = "data/" + problem_type + "_summary.csv";
     summary.open(f_name, std::ios::app);
     
-    size_t total_distinguished_points  = std::accumulate(n_distinguished_points.begin(),
-							 n_distinguished_points.end(),
-							 static_cast<size_t>(0));
+    size_t total_distinguished_points
+      = std::accumulate(n_distinguished_points.begin(),
+			n_distinguished_points.end(),
+			static_cast<size_t>(0)); // starting value.
     
     summary << problem_type << ", "
 	    << std::to_string(C_size) << ", "
@@ -401,24 +366,24 @@ bool walk(Problem& Pb,
 }
 
 
-template <typename Problem>
-void print_collision_information(typename Problem::C_t& inp0,
-				 typename Problem::C_t& inp1,
-				 typename Problem::C_t& out0,
-				 typename Problem::C_t& out1,
-				 Problem& Pb)
-{
-  bool real_collision = Pb.C.is_equal(out0, out1);
-  std::cout << "\n++++++++++++++++++++++++++++++++++++++++\n"
-	    << "Found golden Pair !\n"
-	    << "inp0 = " << inp0 << "\n"
-	    << "out0 = " << out0 << "\n"
-	    << "inp1 = " << inp1 << "\n"
-	    << "out1 = " << out1 << "\n"
-	    << "out0 == out1? " << real_collision  << "\n"
-	    << "++++++++++++++++++++++++++++++++++++++++\n";
+// template <typename Problem>
+// void print_collision_information(typename Problem::C_t& inp0,
+// 				 typename Problem::C_t& inp1,
+// 				 typename Problem::C_t& out0,
+// 				 typename Problem::C_t& out1,
+// 				 Problem& Pb)
+// {
+//   bool real_collision = Pb.C.is_equal(out0, out1);
+//   std::cout << "\n++++++++++++++++++++++++++++++++++++++++\n"
+// 	    << "Found golden Pair !\n"
+// 	    << "inp0 = " << inp0 << "\n"
+// 	    << "out0 = " << out0 << "\n"
+// 	    << "inp1 = " << inp1 << "\n"
+// 	    << "out1 = " << out1 << "\n"
+// 	    << "out0 == out1? " << real_collision  << "\n"
+// 	    << "++++++++++++++++++++++++++++++++++++++++\n";
 
-}
+// }
 
 
 /* return a string that says "claw" or "collision" based on the number of
@@ -542,28 +507,6 @@ void search_generic(Problem& Pb,
       found_a_collisions = false; /* initially we have not seen anything yet */
       /* fill the input with a fresh random value. */
       Pb.C.randomize(inp_St, prng_elm); /* todo rng should be reviewed */
-
-      /************************************************************************/
-      // DEBUGGING 
-      /************************************************************************/
-      /* TODO REMOVE ME THIS IS AN ERROR */
-  
-      C_t inp_mixed_debug_A{};
-      Pb.mix(i, inp_St, inp_mixed_debug_A);
-
-      
-      bool is_equal_gold_A = debug_golden_input_A_as_C(Pb, inp_mixed_debug_A);
-      if (is_equal_gold_A && (byte_hasher(Pb.C.hash(inp_mixed_debug_A)) == 1))
-	std::cout << "we'll hit the golden input of A after mixing!\n";
-      
-      C_t inp_mixed_debug_B{};
-      Pb.mix(i, inp_St, inp_mixed_debug_B);
-      bool is_equal_gold_B = debug_golden_input_B_as_C(Pb, inp_mixed_debug_B);
-      if (is_equal_gold_B && (byte_hasher(Pb.C.hash(inp_mixed_debug_B)) == 0))
-	std::cout << "we'll hit the golden input of B after mixing!\n";
-
-      /*------------------------------------------*/
-      /************************************************************************/
       
       Pb.C.copy(inp_St, *inp0_pt);
       chain_length0 = 0;
@@ -623,28 +566,31 @@ void search_generic(Problem& Pb,
 	if (not found_golden_pair)
 	    continue; /* nothing to do, test the next one!  */
 	else { /* Found the golden pair */
-	    print_collision_information(*inp0_pt,
-					*inp1_pt,
-					*out0_pt,
-					*out1_pt,
-					Pb);
+	  print_collision_information(Pb,
+				      *out0_pt,
+				      *out1_pt,
+				      inp0A,
+				      inp1A,
+				      args... /* inp0B, inp1B*/
+				      );
+				      
 
-	    /* todo think about a sensible way to pass |A|, |C|,  */
-	    if (sizeof...(args) == 0) 
-	      ctr.save_summary_stats("collision",
-				     nbytes_A,/* = |A| */
-				     nbytes_A,/* = |A| since it's a collision */
-				     Pb.C.length,
-				     difficulty);
+	  /* todo think about a sensible way to pass |A|, |C|,  */
+	  if (sizeof...(args) == 0) 
+	    ctr.save_summary_stats("collision",
+				   nbytes_A,/* = |A| */
+				   nbytes_A,/* = |A| since it's a collision */
+				   Pb.C.length,
+				   difficulty);
 
-	    if (sizeof...(args) == 2) 
-	      ctr.save_summary_stats("claw",
-				     nbytes_A,/* = |A| */
-				     nbytes_B,/* = |B| */
-				     Pb.C.length,
-				     difficulty);
+	  if (sizeof...(args) == 2) 
+	    ctr.save_summary_stats("claw",
+				   nbytes_A,/* = |A| */
+				   nbytes_B,/* = |B| */
+				   Pb.C.length,
+				   difficulty);
 
-	    return; /* nothing more to do */
+	  return; /* nothing more to do */
 	}
       }
     }

@@ -200,10 +200,7 @@ public:
   using C_t = SHA2_out_repr; /* 4th template type */
   using Dom_C = SHA2_OUT_DOMAIN;
   Dom_C C; /* Output related functions */  
-  using I_t = std::array<u8, 16>;//std::function<void(C_t const&, C_t&)>; /* 1st tempalte type */
-
-  
-  static const int f_eq_g = 0;
+  using I_t = std::array<u8, 16>;
 
 
   SHA2_Problem()
@@ -223,53 +220,6 @@ public:
       constant.data[i] = 0;
     }
 
-    /***************************************************************************/
-    // TEST values: to be removed later
-
-    // Test 1: works! works in buckets!
-    // golden_inpA.data[0] = 0xf9;
-    // golden_inpA.data[1] = 0x39;
-    // golden_inpB.data[0] = 0x6a;
-    // golden_inpB.data[1] = 0x29;
-
-    // Test 2: works! works in buckets!
-    golden_inpA.data[0] = 0x01;
-    golden_inpA.data[1] = 0x69;
-    golden_inpB.data[0] = 0x6a;
-    golden_inpB.data[1] = 0x29;
-
-    // Test 3: 0xdecafbad, fails! 
-    // golden_inpA.data[0] = 0xde;
-    // golden_inpA.data[1] = 0xca;
-    // golden_inpB.data[0] = 0xfb;
-    // golden_inpB.data[1] = 0xad;
-    
-    // ========================================
-    // these values only hit the golden input of B! 
-    // Does the golden pair collide? 1
-    // golden_inpA = 0x4c, 0xce, 
-    // golden_inpB = 0x46, 0xc0, 
-    // golden_out  = 0x71, 0xec, 
-    //  ========================================
-    // those only hit the glolden input of A
-    //  ========================================
-    // Does the golden pair collide? 1
-    // golden_inpA.data[0] = 0x4c;
-    // golden_inpA.data[1] = 0xce;
-    // golden_inpB.data[0] = 0x46;
-    // golden_inpB.data[1] = 0xc0;
-    // golden_out  = 0x71, 0xec,
-
-    // golden_inpA.data[0] = 0x4b;
-    // golden_inpA.data[1] = 0xce;
-    // golden_inpB.data[0] = 0x46;
-    // golden_inpB.data[1] = 0xc0;
-
-    // ========================================
-
-
-    
-    /***************************************************************************/
 
     /* get the constant, C,  that makes them collide */
     // f(golden_inpA) = g(golden_inpB) xor C
@@ -277,7 +227,8 @@ public:
     g(golden_inpB, constant);
 
     
-    /* our golden output is picked uniformly, can `mitm` find a needle in heystack */
+    /* our golden output is picked uniformly. Can `mitm` find a needle in
+     * heystack? */
     for (int i = 0; i < NBYTES_C; ++i)
       constant.data[i] ^= golden_out.data[i];
 

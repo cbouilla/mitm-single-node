@@ -10,7 +10,7 @@
 
 #include <boost/stacktrace.hpp>
 namespace mitm {
-
+/*****************************************************************************/
 template <typename Problem>
 void debug_golden_input_A(Problem& Pb,
 			  typename Problem::A_t& inpA)
@@ -42,6 +42,31 @@ void debug_golden_output(Problem& Pb,
 		// << boost::stacktrace::stacktrace()
 		<< "============================================\n";
 }
+/*****************************************************************************/
+  
+ 
+template <typename Problem>
+void print_collision_information(Problem& Pb,
+				 typename Problem::C_t& out0,
+				 typename Problem::C_t& out1,
+				 typename Problem::A_t& inpA,
+				 typename Problem::A_t& inpA_dummy,
+				 typename Problem::B_t& inpB_dummy,
+				 typename Problem::B_t& inpB)
+{
+  bool real_collision = Pb.C.is_equal(out0, out1);
+  std::cout << "\n++++++++++++++++++++++++++++++++++++++++\n"
+	    << "Found golden Pair !\n"
+	    << "inpA = " << inpA << "\n"
+	    << "inpB = " << inpB << "\n"
+	    << "----------------------------------------\n"
+	    << "out0 = " << out0 << "\n"
+	    << "out1 = " << out1 << "\n"
+	    << "out0 == out1? " << real_collision  << "\n"
+	    << "++++++++++++++++++++++++++++++++++++++++\n";
+
+}
+
 
 
 // template <typename Problem>
@@ -98,37 +123,21 @@ void iterate_once(Problem &Pb,
   Pb.mix(i, inp, inp_mixed);
   u64 digest = Pb.C.hash(inp_mixed);
   u8 f_or_g = byte_hasher(digest);
-
-  
-  /************************************************************************/
-  /* TODO REMOVE ME THIS IS AN ERROR */
-  
-  // bool is_equal_gold_A = debug_golden_input_A_as_C(Pb, inp_mixed);
-  // if (is_equal_gold_A && (byte_hasher(Pb.C.hash(inp_mixed)) == 1))
-  //   std::cout << "we hit the golden input of A after mixing!\n";
-
-  // bool is_equal_gold_B = debug_golden_input_B_as_C(Pb, inp_mixed);
-  // if (is_equal_gold_B && (byte_hasher(Pb.C.hash(inp_mixed)) == 0))
-  //   std::cout << "we hit the golden input of B after mixing!\n";
-
-  /*------------------------------------------*/
-  /************************************************************************/
   
   if (f_or_g == 1){
     
     Pb.send_C_to_A(inp_mixed, inpA);
-    debug_golden_input_A(Pb, inpA);
+    // debug_golden_input_A(Pb, inpA);
     Pb.f(inpA, out);
   }
   else { /* f_or_g == 0 */
     Pb.send_C_to_B(inp_mixed, inpB);
-    debug_golden_input_B(Pb, inpB);
+    // debug_golden_input_B(Pb, inpB);
     Pb.g(inpB, out);
   }
-  debug_golden_output(Pb, out);
+  // debug_golden_output(Pb, out);
   
 }
-
 
 
 
