@@ -47,12 +47,17 @@ struct Counters {
   // each entry contains number of distinguished point between
   size_t n_dist_points_previous = 0;
   std::vector<size_t> n_distinguished_points = {0};
- 
+
+  double start_time;
+  double end_time;
   double dist_previous_time;
   double update_previous_time;
   double elapsed = 0;
 
-  Counters() : dist_previous_time(wtime()), update_previous_time(wtime()) {}
+  Counters()
+      : start_time(wtime()), dist_previous_time(wtime()),
+        update_previous_time(wtime())
+        {}
 
   Counters(double interval)
     : interval(interval),
@@ -104,6 +109,12 @@ struct Counters {
 			  size_t C_size,
 			  int difficulty)
   {
+    end_time = wtime();
+    printf("----------------------------------------\n"
+	   "Took %0.2f sec to find the golden inputs.\n"
+	   "Saving the counters ...\n",
+	   end_time - start_time);
+    
     std::ofstream summary;
     std::string f_name = "data/" + problem_type + "_summary.csv";
     summary.open(f_name, std::ios::app);
@@ -125,8 +136,19 @@ struct Counters {
 
 
     summary.close();
-    
 
+    std::cout << "Successfully saved stats in " << f_name << "\n"
+	      << "Format:\n"
+	      << "C_size, A_size, B_size, difficulty, #distinguished_points, #collisions, #updates"
+	      << "\n" /* This should be the end */
+	      << std::to_string(C_size) << ", "
+	      << std::to_string(A_size) << ", "
+	      << std::to_string(B_size) << ", "
+	      << std::to_string(difficulty) << ", "
+	      << std::to_string(total_distinguished_points) << ", "
+	      << std::to_string(n_collisions) << ", "
+	      << std::to_string(n_updates) << ", "
+	      << "\n";
   }
 };
 
