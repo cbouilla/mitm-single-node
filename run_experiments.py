@@ -16,7 +16,7 @@ nruns = 100  # How many times we run the code for the same triple value
 
 def edit_claw_demo(triple):
     """Replace the nbytes_c, nbytes_b, nbytes_a from."""
-    keywords = ["NBYTES_A", "NBYTES_A", "NBYTES_C"]
+    keywords = ["NBYTES_A", "NBYTES_B", "NBYTES_C"]
 
     with open("demos/sha2_claw_demo.cpp", "r") as claw,\
          open("demos/tmp.cpp", "w") as tmp:
@@ -50,26 +50,32 @@ def compile_project():
     print_errors_if_any(result)
 
 
-def run_project():
+def run_project(difficulty):
     """Run the code."""
-    run_cmd = "./sha2_claw_demo"
+    run_cmd = f"./sha2_claw_demo {difficulty}"
     result = subprocess.run(run_cmd, shell=True,
                             stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
     print_errors_if_any(result)
 
 
 try:  # if tqdm was installed.
-    for triple in tqdm(all_triples):
+    for triple in all_triples:
+        print(f"Triple: {triple}")
         edit_claw_demo(triple)
         compile_project()
-        for _ in tqdm(range(nruns)):
-            run_project()
+        for difficulty in range(8):
+            print(f"difficulty={difficulty}, triple={triple}")
+            for _ in tqdm(range(10)):
+                run_project(difficulty)
 
 except ImportError:
     print("Consider installing `tqdm` for a nicer visuals "
           "via  pip install tqdm")
-    for triple in tqdm(all_triples):
+    for triple in all_triples:
+        print(f"Triple: {triple}")
         edit_claw_demo(triple)
         compile_project()
-        for _ in tqdm(range(nruns)):
-            run_project()
+        for difficulty in range(8):
+            print(f"difficulty={difficulty}, triple={triple}")
+            for _ in range(10):
+                run_project(difficulty)

@@ -9,6 +9,7 @@
 #include <iostream>
 #include <iomanip>
 #include <array>
+#include <string>
 
 /* We would like to call C function defined in `sha256.c` */
 extern "C"{
@@ -29,7 +30,7 @@ using i64 = int64_t;
 
 /* Edit the next *three* line to define a new demo! */
 #define NBYTES_A 1 
-#define NBYTES_B 3 
+#define NBYTES_B 1 
 #define NBYTES_C 1 
 /* stop here. */
 
@@ -375,7 +376,7 @@ public: /* they are public for debugging */
 };
 
 
-int main()
+int main(int argc, char* argv[])
 {
 
   mitm::nbytes_A = NBYTES_A;
@@ -387,7 +388,14 @@ int main()
 	    << "|out| = " << NBYTES_C << "bytes\n";
 
 
-
-  mitm::claw_search(Pb);
+  if (argc < 2) /* we have not provided difficulty */
+    mitm::claw_search(Pb);
+  if (argc == 2){
+    /*  Get the value of difficulty as a string */
+    std::string d_str = argv[1];
+    int difficulty = std::stoi(d_str);
+    mitm::claw_search(Pb, difficulty);
+  }
+    
 }
 

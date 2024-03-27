@@ -100,12 +100,11 @@ void collision_search(Problem& Pb)
  * a claw between f and g.
  */
 template <typename Problem>
-void claw_search(Problem& Pb)
+void claw_search(Problem& Pb, int difficulty = 2)
 {
   using A_t = typename Problem::A_t;
   using B_t = typename Problem::B_t;
   using C_t = typename Problem::C_t;
-
 
 
   /* ============================= BUFFERS ================================== */
@@ -154,7 +153,7 @@ void claw_search(Problem& Pb)
   // u8 inp_B_serial[Pb.B.length];
   // u8 out0_bytes[Pb.C.length];
   /****************************************************************************/
-  int difficulty = 2;
+
   
   search_generic(Pb,
 		 difficulty,
