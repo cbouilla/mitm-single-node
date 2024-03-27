@@ -8,6 +8,7 @@
 #include "include/prng.hpp"
 #include "include/timing.hpp"
 #include "include/memory.hpp"
+#include "include/util_file_system.hpp"
 #include "dict.hpp"
 #include <cstddef>
 #include <exception>
@@ -110,13 +111,19 @@ struct Counters {
 			  int difficulty)
   {
     end_time = wtime();
+    double total_time = end_time - start_time;
     printf("----------------------------------------\n"
 	   "Took %0.2f sec to find the golden inputs.\n"
 	   "Saving the counters ...\n",
-	   end_time - start_time);
+	   total_time);
     
     std::ofstream summary;
-    std::string f_name = "data/" + problem_type + "_summary.csv";
+    std::string d_name = "data/";
+    std::string f_name = d_name + problem_type + "_summary.csv";
+    
+    create_folder_if_not_exist(d_name);
+    create_file_if_not_exist  (f_name);
+    /* open the summary file */
     summary.open(f_name, std::ios::app);
     
     size_t total_distinguished_points
@@ -132,6 +139,7 @@ struct Counters {
 	    << std::to_string(total_distinguished_points) << ", "
       	    << std::to_string(n_collisions) << ", "
       	    << std::to_string(n_updates) << ", "
+	    << total_time
 	    << "\n";
 
 
@@ -139,7 +147,7 @@ struct Counters {
 
     std::cout << "Successfully saved stats in " << f_name << "\n"
 	      << "Format:\n"
-	      << "C_size, A_size, B_size, difficulty, #distinguished_points, #collisions, #updates"
+	      << "C_size, A_size, B_size, difficulty, #distinguished_points, #collisions, #updates, time(sec)"
 	      << "\n" /* This should be the end */
 	      << std::to_string(C_size) << ", "
 	      << std::to_string(A_size) << ", "
@@ -148,6 +156,7 @@ struct Counters {
 	      << std::to_string(total_distinguished_points) << ", "
 	      << std::to_string(n_collisions) << ", "
 	      << std::to_string(n_updates) << ", "
+	      << total_time
 	      << "\n";
   }
 };
