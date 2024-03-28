@@ -95,9 +95,9 @@ public:
     std::shuffle(T.begin(), T.end(), g);
   }
 
-  void update_table()
+  void update_table(uint64_t seed)
   {
-    g.seed(rd());
+    g.seed(seed);
     std::shuffle(T.begin(), T.end(), rd);
   }
 

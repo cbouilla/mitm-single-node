@@ -11,7 +11,7 @@ import subprocess
 
 bytes_range = list(range(1, 5))
 all_triples = itr.product(bytes_range, repeat=3)
-nruns = 100  # How many times we run the code for the same triple value
+nruns = 10  # How many times we run the code for the same triple value
 
 
 def edit_claw_demo(triple):
@@ -50,12 +50,21 @@ def compile_project():
     print_errors_if_any(result)
 
 
-def run_project(difficulty):
+def run_project(difficulty, timeout=3600):
     """Run the code."""
     run_cmd = f"./sha2_claw_demo {difficulty}"
-    result = subprocess.run(run_cmd, shell=True,
-                            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-    print_errors_if_any(result)
+    try:
+        
+        result = subprocess.run(run_cmd, shell=True, timeout=timeout,
+                                stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+
+    except subprocess.TimeoutExpired:
+        print("Command timed out after 1 hour.")
+
+    else:
+        print_errors_if_any(result)
+
+
 
 
 try:  # if tqdm was installed.
@@ -63,9 +72,9 @@ try:  # if tqdm was installed.
         print(f"Triple: {triple}")
         edit_claw_demo(triple)
         compile_project()
-        for difficulty in range(8):
-            print(f"difficulty={difficulty}, triple={triple}")
-            for _ in tqdm(range(10)):
+        for difficulty in range(4):
+            print(f"difficulty={difficulty}, (|C|, |A|, |B|)={triple}")
+            for _ in tqdm(range(nruns)):
                 run_project(difficulty)
 
 except ImportError:
@@ -75,7 +84,7 @@ except ImportError:
         print(f"Triple: {triple}")
         edit_claw_demo(triple)
         compile_project()
-        for difficulty in range(8):
-            print(f"difficulty={difficulty}, triple={triple}")
-            for _ in range(10):
+        for difficulty in range(4):
+            print(f"difficulty={difficulty}, (|C|, |A|, |B|)={triple}")
+            for _ in range(nruns):
                 run_project(difficulty)

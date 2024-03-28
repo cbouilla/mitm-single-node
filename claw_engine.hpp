@@ -99,6 +99,26 @@ void print_collision_information(Problem& Pb,
 
 
 
+template <typename Problem>
+struct Func_indices_claw
+{
+  typename Problem::I_t& mix_c_idx{};
+  typename Problem::I_t& c2a_idx{};
+  typename Problem::I_t& c2b_idx{};
+
+  Func_indices_claw(Problem const& Pb)
+  {
+    /* init all variables above. */
+  }
+  
+  void update(u64 seed_A_mixer, u64 seed_B_mixer, u64 seed_C_mixer)
+  {
+    /* update all the variables. it should include */
+  }
+  
+};   
+
+
 /* args... = inp0B, inp1B*/
 /*
  * Do 1 iteration inp =(f/g)=> out, write the output in the address pointed
@@ -107,7 +127,7 @@ void print_collision_information(Problem& Pb,
 template <typename Problem>
 void iterate_once(Problem &Pb,
 		  PearsonHash& byte_hasher,
-		  typename Problem::I_t& i, /*permutation number of f's input*/
+		  Func_indices_claw<Problem> const& I,
 		  typename Problem::C_t& inp,
                   typename Problem::C_t& out,
 		  typename Problem::C_t& inp_mixed,
@@ -120,18 +140,18 @@ void iterate_once(Problem &Pb,
    */
 
   
-  Pb.mix(i, inp, inp_mixed);
+  Pb.mix(inp, inp_mixed, I.mix_c_idx);
   u64 digest = Pb.C.hash(inp_mixed);
   u8 f_or_g = byte_hasher(digest);
   
   if (f_or_g == 1){
     
-    Pb.send_C_to_A(inp_mixed, inpA);
+    Pb.send_C_to_A(inp_mixed, inpA, I.c2a_idx);
     // debug_golden_input_A(Pb, inpA);
     Pb.f(inpA, out);
   }
   else { /* f_or_g == 0 */
-    Pb.send_C_to_B(inp_mixed, inpB);
+    Pb.send_C_to_B(inp_mixed, inpB, I.c2b_idx);
     // debug_golden_input_B(Pb, inpB);
     Pb.g(inpB, out);
   }
@@ -151,7 +171,7 @@ void iterate_once(Problem &Pb,
 template <typename Problem>
 bool pullback_to_A_B(Problem& Pb,
 		     PearsonHash& byte_hasher,
-		     typename Problem::I_t& i, /*permutation number of f's input*/
+		     Func_indices_claw<Problem> const& I,
 		     typename Problem::C_t& inp0_C,
 		     typename Problem::C_t& inp1_C,
 		     typename Problem::C_t& inp_mixed,
@@ -168,20 +188,22 @@ bool pullback_to_A_B(Problem& Pb,
   if (f_or_g == 1){ 
     if (byte_hasher( Pb.C.hash(inp1_C) )  == 0){
       /* inp0 -> A, inp1 -> B */
-      Pb.mix(i, inp0_C, inp_mixed);
-      Pb.send_C_to_A(inp_mixed, inp_A);
+      Pb.mix(inp0_C, inp_mixed, I.mix_c_idx);
+      Pb.send_C_to_A(inp_mixed, inp_A, I.c2a_idx);
 
-      Pb.mix(i, inp1_C, inp_mixed);
-      Pb.send_C_to_B(inp_mixed, inp_B);
+      Pb.mix(inp1_C, inp_mixed, I.mix_c_idx);
+      Pb.send_C_to_B(inp_mixed, inp_B, I.c2b_idx);
     }
+
   } else { 
     if ( byte_hasher( Pb.C.hash(inp1_C) ) == 1){ /* a sensible case*/
       /* inp0 -> B, inp1 -> A */
-      Pb.mix(i, inp1_C, inp_mixed);
-      Pb.send_C_to_A(inp_mixed, inp_A);
+      Pb.mix(inp1_C, inp_mixed, I.mix_c_idx);
+      Pb.send_C_to_A(inp_mixed, inp_A, I.c2a_idx);
 
-      Pb.mix(i, inp0_C, inp_mixed);
-      Pb.send_C_to_B(inp_mixed, inp_B);
+      Pb.mix(inp0_C, inp_mixed, I.mix_c_idx);
+      Pb.send_C_to_B(inp_mixed, inp_B, I.c2b_idx);
+      
       return true;
     }
   }
@@ -199,12 +221,12 @@ bool pullback_to_A_B(Problem& Pb,
 template <typename Problem>  
 bool treat_collision(Problem& Pb,
 		     PearsonHash& byte_hasher,
-		     typename Problem::I_t& i,
+		     Func_indices_claw<Problem> const& I,
 		     typename Problem::C_t*& inp0_pt,
-		     typename Problem::C_t*& out0_pt, /* inp0 calculation buffer */
+		     typename Problem::C_t*& out0_pt, // inp0 calculation buffer.
 		     const u64 inp0_chain_len,
 		     typename Problem::C_t*& inp1_pt,
-		     typename Problem::C_t*& out1_pt, /* inp1 calculation buffer */
+		     typename Problem::C_t*& out1_pt, // inp1 calculation buffer.
 		     const u64 inp1_chain_len,
 		     typename Problem::C_t& inp_mixed,
 		     typename Problem::A_t& inp0_A,
@@ -222,7 +244,7 @@ bool treat_collision(Problem& Pb,
   /* return false when walking the two inputs don't collide */
   bool found_collision = walk<Problem>(Pb,
 				       byte_hasher,
-				       i,
+				       I,
 				       inp0_chain_len,
 				       inp0_pt,
 				       out0_pt,
@@ -249,7 +271,7 @@ bool treat_collision(Problem& Pb,
 
   bool is_potential_collision = pullback_to_A_B(Pb,
 						byte_hasher,
-						i,
+						I,
 						*inp0_pt, // a given input in C 
 						*inp1_pt, // a given inpunt in C
 						inp_mixed,

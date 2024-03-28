@@ -240,10 +240,10 @@ inline void swap_pointers(C_t*& pt1,
  * is found, save the distinguished point in out_pt and output_bytes
  * Then return `true`. If the iterations limit is passed, returns `false`.
  */
-template<typename Problem, typename... Types>
+template<typename Problem, typename FUNC_INDICES, typename... Types>
 bool generate_dist_point(Problem& Pb,
 			 PearsonHash& byte_hasher,
-			 typename Problem::I_t& i,
+			 FUNC_INDICES const& I,
 			 u64& chain_length, /* write chain lenght here */
 			 const i64 difficulty, /* #bits are zero at the beginning */
 			 typename Problem::C_t*& inp_pt,
@@ -265,7 +265,7 @@ bool generate_dist_point(Problem& Pb,
   for (u64 j = 0; j < k*(1LL<<difficulty); ++j){
     /* uses claw's iterate_once if args... is not empty, otherwise collisions'*/
     /* for claw args := inp0B, inp1B */
-    iterate_once(Pb, byte_hasher,i, *inp_pt, *out_pt, inp_mixed, inpA, args...); 
+    iterate_once(Pb, byte_hasher, I, *inp_pt, *out_pt, inp_mixed, inpA, args...); 
     ++chain_length;
 
     /* we may get a dist point here */
@@ -321,10 +321,10 @@ bool is_serialize_inverse_of_unserialize(Problem Pb, PRNG& prng)
  * find the earliest collision in the sequence before the distinguished point
  * add a drawing to illustrate this.
  */
-template<typename Problem, typename... Types>
+template<typename Problem, typename FUNC_INDICES ,typename... Types>
 bool walk(Problem& Pb,
 	  PearsonHash& byte_hasher,
-	  typename Problem::I_t& i,
+	  FUNC_INDICES const& I, // { mix_c_idx, c2a_idx, c2b_idx(if claw) }
 	  u64 inp0_chain_len,
 	  typename Problem::C_t*& inp0_pt,
 	  typename Problem::C_t*& out0_pt, /* inp0 calculation buffer */
@@ -356,13 +356,13 @@ bool walk(Problem& Pb,
   /* to the shortest sequence. */
   for (; inp0_chain_len > inp1_chain_len; --inp0_chain_len){
     /* for claw args := inp0B, inp1B */
-    iterate_once(Pb, byte_hasher, i, *inp0_pt, *out0_pt, inp_mixed, inpA, args...);
+    iterate_once(Pb, byte_hasher, I, *inp0_pt, *out0_pt, inp_mixed, inpA, args...);
     swap_pointers(inp0_pt, out0_pt);
   }
   
   for (; inp0_chain_len < inp1_chain_len; --inp1_chain_len){
     /* for claw args := inp0B, inp1B */
-    iterate_once(Pb, byte_hasher, i, *inp1_pt, *out1_pt, inp_mixed, inpA, args...);
+    iterate_once(Pb, byte_hasher, I, *inp1_pt, *out1_pt, inp_mixed, inpA, args...);
     swap_pointers(inp1_pt, out1_pt);
   }
 
@@ -376,8 +376,8 @@ bool walk(Problem& Pb,
     /* return as soon equality is found. The equality could be a robinhood. */
 
     /* get the outputs of the curren inputs (for claw args... := inp0B, inp1B) */
-    iterate_once(Pb, byte_hasher, i, *inp0_pt, *out0_pt, inp_mixed, inpA, args...);
-    iterate_once(Pb, byte_hasher, i, *inp1_pt, *out1_pt, inp_mixed, inpA, args...);
+    iterate_once(Pb, byte_hasher, I, *inp0_pt, *out0_pt, inp_mixed, inpA, args...);
+    iterate_once(Pb, byte_hasher, I, *inp1_pt, *out1_pt, inp_mixed, inpA, args...);
 
     /* First, do the outputs collide? If yes, return true and exit. */
     if(Pb.C.is_equal( *out0_pt, *out1_pt )){
@@ -397,24 +397,6 @@ bool walk(Problem& Pb,
 }
 
 
-// template <typename Problem>
-// void print_collision_information(typename Problem::C_t& inp0,
-// 				 typename Problem::C_t& inp1,
-// 				 typename Problem::C_t& out0,
-// 				 typename Problem::C_t& out1,
-// 				 Problem& Pb)
-// {
-//   bool real_collision = Pb.C.is_equal(out0, out1);
-//   std::cout << "\n++++++++++++++++++++++++++++++++++++++++\n"
-// 	    << "Found golden Pair !\n"
-// 	    << "inp0 = " << inp0 << "\n"
-// 	    << "out0 = " << out0 << "\n"
-// 	    << "inp1 = " << inp1 << "\n"
-// 	    << "out1 = " << out1 << "\n"
-// 	    << "out0 == out1? " << real_collision  << "\n"
-// 	    << "++++++++++++++++++++++++++++++++++++++++\n";
-
-// }
 
 
 /* return a string that says "claw" or "collision" based on the number of
@@ -430,13 +412,15 @@ std::string is_claw_or_collision_problem(Types... args)
   
 }
 
+
 /* The basic search finds collision(s) of
  * iterate_once: C -> C, these collisions can be converted into a solution
  * to the problem we are treating, claw or a collision.
  *  
  */
-template<typename Problem,  typename... Types>
+template<typename Problem, typename FUNC_INDICES,  typename... Types>
 void search_generic(Problem& Pb,
+		    FUNC_INDICES I, /* mix_c_idx, c2a_idx, c2b_idx(if claw)  */
 		    int difficulty,
 		    typename Problem::C_t& inp_St, // Startign point in chain
 		    typename Problem::C_t* inp0_pt,
@@ -454,15 +438,10 @@ void search_generic(Problem& Pb,
   PRNG prng_elm;
   PRNG prng_mix; /* for mixing function */
   PearsonHash byte_hasher{};
-  
-
   using C_t = typename Problem::C_t;
-  // using A_t = typename Problem::A_t;
-  
-  /* Sanity Test:  */
-  is_serialize_inverse_of_unserialize<Problem>(Pb, prng_elm);
 
-  
+  /*============================ SANITY TEST =================================*/
+  is_serialize_inverse_of_unserialize<Problem>(Pb, prng_elm);
   
   
   /*============================= DICT INIT ==================================*/
@@ -470,57 +449,40 @@ void search_generic(Problem& Pb,
   size_t output_max_bytes = 4*(1LL<<(8*Pb.C.length));
   std::cout << "output_max_bytes = " << output_max_bytes << "\n";
   n_bytes = std::min(n_bytes, output_max_bytes);
-
   
   std::cout << "Going to use "
 	    << std::dec << n_bytes << " bytes = 2^"<< std::log2(n_bytes)
 	    << " bytes for dictionary!\n";
   
-
   Dict<u64, C_t, Problem> dict{n_bytes};
-  u64 out0_digest = 0;
-  
+  /* Regardless of the output type C_t, we always hash it to u64 */
+  u64 out0_digest = 0; 
   
   std::cout << "Initialized a dict with " << dict.n_slots << " slots = 2^"
 	    << std::log2(dict.n_slots) << " slots\n";
-  /*=============== data extracted from dictionarry ==========================*/
-
-
-
-
+  
+  /*======================== Coordination Variables  =========================*/
+  // These variables helps to make the run between multiple processors synced.
+  u64 seed_bytes_hasher = 314159265359;
+  u64 seed_C_mixer      = 271828182846;
+  u64 seed_A_mixer      = 161803398875;
+  u64 seed_B_mixer      = 120205690317;
   
   
   /*=========================== Collisions counters ==========================*/
+
   /* How many steps does it take to get a distinguished point from  an input */
   size_t chain_length0 = 0;
   size_t chain_length1 = 0;
-
   Counters ctr{}; /* various non-essential counters */
-  
   bool found_a_collisions = false;
-  
-  /* We should have ration 1/3 real collisions and 2/3 false collisions */
   bool found_dist = false;
-
-  /* variable to generate families of functions f_i: C -> C */
-  /* typename Problem::I_t */
-  auto i = Pb.mix_default();
-
   /* we found a pair of inputs that lead to the golden collisoin or golden claw! */
   bool found_golden_pair = false;
 
-  /*--------------------------debug random -----------------------------------*/
-  // /* We need to change to restart calculation with a different function */
-  // prng_elm.update_seed(); /* new seed for generatign a mixing function */
-  // prng_mix.update_seed();
-  // byte_hasher.update_table();
-    
-  // i = Pb.mix_sample(prng_elm); /* Generates new permutation of f */
-  // prng_elm.update_seed(); /* new seed to getting a random value in C_t */
-  /* Only for claw: switch the choice between f and g */
 
-  /*----------------------------MAIN COMPUTATION------------------------------*/
-  /*=================== Generate Distinguished Points ========================*/
+  /*=========================== MAIN COMPUTATION =============================*/
+  /*------------------- Generate Distinguished Points ------------------------*/
 
   while (not found_golden_pair){
 
@@ -544,7 +506,7 @@ void search_generic(Problem& Pb,
 
       found_dist = generate_dist_point(Pb,
 				       byte_hasher,
-				       i, /* permutation number of f's input */
+				       I, /* permutation number of f's input */
 				       chain_length0,
 				       difficulty,
 				       inp0_pt,
@@ -582,7 +544,7 @@ void search_generic(Problem& Pb,
 	 */
 	found_golden_pair = treat_collision(Pb,
 					    byte_hasher,
-					    i,
+					    I,
 					    inp0_pt,
 					    out0_pt,
 					    chain_length0,
@@ -627,16 +589,16 @@ void search_generic(Problem& Pb,
     }
     /* We need to change to restart calculation with a different function */
     prng_elm.update_seed(); /* new seed for generatign a mixing function */
-    prng_mix.update_seed();
-    byte_hasher.update_table();
-    
-    i = Pb.mix_sample(prng_elm); /* Generates new permutation of f */
-    prng_elm.update_seed(); /* new seed to getting a random value in C_t */
-    /* Only for claw: switch the choice between f and g */
+
+    /* If there are mutliple processors then the seed should be shared! */
+    byte_hasher.update_table(seed_bytes_hasher);
+
+    /* In collision we omit seed_B_mixer, but it doesn't hurt to have it! */
+    I.update(seed_A_mixer, seed_B_mixer, seed_C_mixer);
 
     
-    dict.flush();
     ctr.increment_n_updates();
+    dict.flush();
   }
 }
 
