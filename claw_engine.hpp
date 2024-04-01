@@ -102,18 +102,28 @@ void print_collision_information(Problem& Pb,
 template <typename Problem>
 struct Func_indices_claw
 {
-  typename Problem::I_t& mix_c_idx{};
-  typename Problem::I_t& c2a_idx{};
-  typename Problem::I_t& c2b_idx{};
+  typename Problem::I_t mix_c_idx;
+  typename Problem::I_t c2a_idx;
+  typename Problem::I_t c2b_idx;
 
   Func_indices_claw(Problem const& Pb)
   {
     /* init all variables above. */
+    mix_c_idx = Pb.mix_default();
+    c2a_idx = Pb.mix_default();
+    c2b_idx = Pb.mix_default();
   }
   
-  void update(u64 seed_A_mixer, u64 seed_B_mixer, u64 seed_C_mixer)
+  void update(Problem& Pb, PRNG& prng)
   {
-    /* update all the variables. it should include */
+    prng.update_seed();
+    mix_c_idx = Pb.mix_sample(prng);
+
+    prng.update_seed();
+    c2a_idx   = Pb.mix_sample(prng);
+
+    prng.update_seed();
+    c2b_idx   = Pb.mix_sample(prng);
   }
   
 };   

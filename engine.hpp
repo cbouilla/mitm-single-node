@@ -464,9 +464,6 @@ void search_generic(Problem& Pb,
   /*======================== Coordination Variables  =========================*/
   // These variables helps to make the run between multiple processors synced.
   u64 seed_bytes_hasher = 314159265359;
-  u64 seed_C_mixer      = 271828182846;
-  u64 seed_A_mixer      = 161803398875;
-  u64 seed_B_mixer      = 120205690317;
   
   
   /*=========================== Collisions counters ==========================*/
@@ -594,7 +591,7 @@ void search_generic(Problem& Pb,
     byte_hasher.update_table(seed_bytes_hasher);
 
     /* In collision we omit seed_B_mixer, but it doesn't hurt to have it! */
-    I.update(seed_A_mixer, seed_B_mixer, seed_C_mixer);
+    I.update(Pb, prng_mix);
 
     
     ctr.increment_n_updates();

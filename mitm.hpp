@@ -145,6 +145,10 @@ void claw_search(Problem& Pb, int difficulty = 2)
   A_t inp1A{};
   B_t inp1B{};
 
+
+  /* Mixing functions indices */
+  Func_indices_claw<Problem> I{Pb};
+  
   /****************************** EXPERIMENTAL ********************************/
   /* Think about these two varaibles, todo */
   // u64  out0_digest = 0; /* hashed value of the output0 */
@@ -156,6 +160,7 @@ void claw_search(Problem& Pb, int difficulty = 2)
 
   
   search_generic(Pb,
+		 I,
 		 difficulty,
 		 inp0_st, /* starting point in the chain, not a pointer! */
 		 inp0_pt,/* pointer to the inp0 s.t. f(inp0) = out0 or using g*/

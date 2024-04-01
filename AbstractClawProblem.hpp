@@ -45,17 +45,16 @@ public:
   /* embedding and randomization */
 
   /*
-   * TODO: we need to formalize what we expect from these two functions.
-   * It seems reasonable to ask that there must exist a subset D of C 
-   * such that these two, when their domain is restricted to D, are injective. 
+   * Sending an element from C to A or B. The send function changes
+   * when the index `c2a_idx` or `c2b_idx` change.
    */
-  void send_C_to_A(const C_t &inp_C, A_t &out_A) const;
-  void send_C_to_B(const C_t &inp_C, B_t &out_B) const;
+  void send_C_to_A(const C_t &inp_C, A_t &out_A, I_t c2a_idx) const;
+  void send_C_to_B(const C_t &inp_C, B_t &out_B, I_t c2b_idx) const;
 
   /*
    * Family of permutations acting on the output domain.
    */
-  void mix(const I &i, const C_t& x, C_t& y) const;   /* y <--- σ_i(x) */
+  void mix(const C_t& x, C_t& y, const I &i) const;   /* y <--- σ_i(x) */
 
   /* Generate a default permutation of C (e.g. the identity) */
   I mix_default() const; 

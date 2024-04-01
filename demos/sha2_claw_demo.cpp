@@ -5,7 +5,6 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
-#include <functional>
 #include <iostream>
 #include <iomanip>
 #include <array>
@@ -29,9 +28,9 @@ using i32 = int32_t;
 using i64 = int64_t;
 
 /* Edit the next *three* line to define a new demo! */
-#define NBYTES_A 1 
+#define NBYTES_A 2
 #define NBYTES_B 2 
-#define NBYTES_C 1 
+#define NBYTES_C 2 
 /* stop here. */
 
 
@@ -47,7 +46,6 @@ struct SHA2_out_repr {
       data[i] = 0;
   }
 };
-
 
 
 struct SHA2_A_inp_repr {
@@ -279,27 +277,31 @@ public:
 
 
   inline
-  void send_C_to_A(C_t& inp_C, A_t& out_A) const
+  void send_C_to_A(C_t& inp_C, A_t& out_A, I_t const& c2a_idx) const
   {
     /* remove any junk in A */
     std::memset(out_A.data, 0, 64);
     /* Since domain and range may have different size: */
     std::memcpy(out_A.data, inp_C.data, std::min(NBYTES_A, NBYTES_C));
+    mix_A(c2a_idx, out_A);
+
+
   }
 
   inline
-  void send_C_to_B(C_t& inp_C, B_t& out_B) const
+  void send_C_to_B(C_t& inp_C, B_t& out_B, I_t const& c2b_idx) const
   {
     /* remove any junk in B */
     std::memset(out_B.data, 0, 64);
     /* Since domain and range may have different size: */
     std::memcpy(out_B.data, inp_C.data, std::min(NBYTES_B, NBYTES_C));
+    mix_B(c2b_idx, out_B);
   }
 
   
 
   /* mix a value lives in C_t using i function scrambling. */
-  void mix(I_t const& key_static, C_t const& x, C_t& y) const
+  void mix(C_t const& x, C_t& y, I_t const& key_static) const
   {
     // std::cout << "before mix x = " << x << ", "
     // 	      << "y = " << y << "\n";
@@ -372,6 +374,46 @@ public: /* they are public for debugging */
   {
     
   }
+
+  /* mix a value lives in C_t using i function scrambling. */
+  void mix_A(I_t const& key_static, A_t& x) const
+  {
+    // std::cout << "before mix x = " << x << ", "
+    // 	      << "y = " << y << "\n";
+
+    char unsigned data[16] = {0};
+    unsigned char key[16] = {0};
+
+    std::memcpy(key, key_static.data(), 16);
+    std::memcpy(data, x.data, NBYTES_A);
+
+    Cipher::Aes<128> aes(key);
+    aes.encrypt_block(data);
+    std::memcpy(x.data, data, NBYTES_A);
+  
+    // std::cout << "after mix x = " << x << ", "
+    // 	      << "y = " << y << "\n";
+  }
+
+  void mix_B(I_t const& key_static, B_t& x) const
+  {
+    // std::cout << "before mix x = " << x << ", "
+    // 	      << "y = " << y << "\n";
+
+    char unsigned data[16] = {0};
+    unsigned char key[16] = {0};
+
+    std::memcpy(key, key_static.data(), 16);
+    std::memcpy(data, x.data, NBYTES_B);
+
+    Cipher::Aes<128> aes(key);
+    aes.encrypt_block(data);
+    std::memcpy(x.data, data, NBYTES_B);
+  
+    // std::cout << "after mix x = " << x << ", "
+    // 	      << "y = " << y << "\n";
+  }
+
 
 };
 
