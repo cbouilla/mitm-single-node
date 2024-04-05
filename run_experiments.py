@@ -10,8 +10,10 @@ from tqdm import tqdm
 import subprocess
 
 bytes_range = list(range(1, 5))
-all_triples = itr.product(bytes_range, repeat=3)
-nruns = 10  # How many times we run the code for the same triple value
+# let's focus when they are equal
+all_triples = [(i, i, i) for i in bytes_range]  # itr.product(bytes_range, repeat=3)
+nruns = 30  # How many times we run the code for the same triple value
+difficulty_range = 3  # i.e. difficulty between 0 and difficulty_range included
 
 
 def edit_claw_demo(triple):
@@ -54,17 +56,17 @@ def run_project(difficulty, timeout=3600):
     """Run the code."""
     run_cmd = f"./sha2_claw_demo {difficulty}"
     try:
-        
-        result = subprocess.run(run_cmd, shell=True, timeout=timeout,
-                                stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        result = subprocess.run(run_cmd,
+                                shell=True,
+                                timeout=timeout,
+                                stdout=subprocess.DEVNULL,
+                                stderr=subprocess.PIPE)
 
     except subprocess.TimeoutExpired:
         print("Command timed out after 1 hour.")
 
     else:
         print_errors_if_any(result)
-
-
 
 
 try:  # if tqdm was installed.
@@ -77,7 +79,7 @@ try:  # if tqdm was installed.
             for _ in tqdm(range(nruns)):
                 run_project(difficulty)
 
-except ImportError:
+except:
     print("Consider installing `tqdm` for a nicer visuals "
           "via  pip install tqdm")
     for triple in all_triples:

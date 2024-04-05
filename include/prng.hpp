@@ -35,7 +35,6 @@ public:
   };
 
   void update_seed() { gen64.seed(rd());  }
-  void update_seed(uint64_t seed) { gen64.seed(seed);  }
 
   uint64_t rand(){ return gen64(); };
 };
@@ -96,9 +95,9 @@ public:
     std::shuffle(T.begin(), T.end(), g);
   }
 
-  void update_table(uint64_t seed)
+  void update_table()
   {
-    g.seed(seed);
+    g.seed(rd());
     std::shuffle(T.begin(), T.end(), rd);
   }
 
@@ -111,7 +110,7 @@ public:
     uint8_t result = 0;
     uint8_t const mask = 0xFF;
 
-    for (size_t i = 0; i < sizeof(uint64_t); ++i)
+    for (int i = 0; i < sizeof(uint64_t); ++i)
       /* result = T[result xor  8-bit of n] */
 
       result ^= T[result ^ ((n>>(i*8))&mask) ];
