@@ -1,6 +1,19 @@
 #ifndef MITM_ENGINE
 #define MITM_ENGINE
 
+/*****************************************************************************/
+// GLOBAL VARIABLES FOR DEBUGGING THE NUMBER OF COLLISIONS BEFORE THE GOLDEN
+// 0xdeadbeef tag for debugging 
+/* we saw the golden input, and in the chain C -f/g-> C it uses f: A -> C */
+bool found_golden_A_and_use_f = false;
+/* we saw the golden input, and in the chain C -f/g-> C it uses g: B -> C */
+bool found_golden_B_and_use_g = false;
+/**/
+
+
+/*****************************************************************************/
+
+
 #include "AbstractDomain.hpp"
 #include "AbstractClawProblem.hpp"
 #include "AbstractCollisionProblem.hpp"
@@ -70,8 +83,8 @@ struct Counters {
   {
     ++n_distinguished_points[n_updates];
     size_t n = n_distinguished_points[n_updates] - n_dist_points_previous;
-    /* todo remove false */
-    if (false && n_distinguished_points[n_updates] % interval == 0){
+
+    if (n_distinguished_points[n_updates] % interval == 0){
 
       elapsed = wtime() - dist_previous_time;
       printf("\r%lu=2^%0.2f iter took:"
@@ -562,13 +575,26 @@ void search_generic(Problem& Pb,
       ++n_dist_points;
       ctr.increment_n_distinguished_points();
 
+      
       found_a_collisions = dict.pop_insert(out0_digest, /* key */
 					   inp_St, /* value  */
 					   chain_length0,
 					   *inp1_pt,
 					   chain_length1,
 					   Pb);
+
+
+      /**************************************************************************/
+      // GLOBAL VARIABLES FOR DEBUGGING THE NUMBER OF COLLISIONS BEFORE THE GOLDEN
+      // 0xdeadbeef tag for debugging
       
+      if (found_golden_A_and_use_f && found_golden_B_and_use_g){
+	found_a_collisions = true;
+	found_golden_pair = true;
+      }
+	
+
+      /**************************************************************************/
       if (found_a_collisions) {
 	ctr.increment_collisions();
 	/* respect the rule that inp0 doesn't have pointers dancing around it */
@@ -593,6 +619,17 @@ void search_generic(Problem& Pb,
 					    inp0A, 
 					    inp1A,
 					    args...); /* for claw args := inp0B, inp1B */
+
+
+	   /**************************************************************************/
+      // GLOBAL VARIABLES FOR DEBUGGING THE NUMBER OF COLLISIONS BEFORE THE GOLDEN
+      if (found_golden_A_and_use_f && found_golden_B_and_use_g){
+	found_a_collisions = true;
+	found_golden_pair = true;
+      }
+	
+
+      /**************************************************************************/
 
 	if (not found_golden_pair)
 	    continue; /* nothing to do, test the next one!  */
@@ -637,6 +674,11 @@ void search_generic(Problem& Pb,
     
     dict.flush();
     ctr.increment_n_updates();
+
+    // 0xdeadbeef tag for debugging
+    // reset global variables with each dictionary flush
+    found_golden_A_and_use_f = false;
+    found_golden_B_and_use_g = false;
   }
 }
 

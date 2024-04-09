@@ -29,9 +29,9 @@ using i32 = int32_t;
 using i64 = int64_t;
 
 /* Edit the next *three* line to define a new demo! */
-#define NBYTES_A 1 
-#define NBYTES_B 1 
-#define NBYTES_C 1 
+#define NBYTES_A 2 
+#define NBYTES_B 2 
+#define NBYTES_C 2 
 /* stop here. */
 
 

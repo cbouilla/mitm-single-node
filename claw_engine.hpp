@@ -69,34 +69,6 @@ void print_collision_information(Problem& Pb,
 
 
 
-// template <typename Problem>
-// bool debug_golden_input_A_as_C(Problem& Pb,
-// 			       typename Problem::C_t& out)
-// {
-//   bool is_equal_gold_A = true;
-//   for (size_t k = 0; k < nbytes_A; ++k){
-//     if(out.data[k] != Pb.golden_inpA.data[k])
-//       is_equal_gold_A = false;
-//   }
-//   if (is_equal_gold_A)
-//     return true;
-//   return false;
-// }
-
-// template <typename Problem>
-// bool debug_golden_input_B_as_C(Problem& Pb,
-// 			       typename Problem::C_t& out)
-// {
-//   bool is_equal_gold_B = true;
-//   for (size_t k = 0; k < nbytes_B; ++k){
-//     if(out.data[k] != Pb.golden_inpB.data[k])
-//       is_equal_gold_B = false;
-//   }
-//   if (is_equal_gold_B)
-//     return true;
-//   return false;
-// }
-
 
 
 /* args... = inp0B, inp1B*/
@@ -125,14 +97,23 @@ void iterate_once(Problem &Pb,
   u8 f_or_g = byte_hasher(digest);
   
   if (f_or_g == 1){
-    
     Pb.send_C_to_A(inp_mixed, inpA);
     // debug_golden_input_A(Pb, inpA);
+    // 0xdeadbeef tag for debugging
+    if (Pb.is_equal_A(inpA, Pb.golden_inpA))
+      found_golden_A_and_use_f = true;
+    //end 
     Pb.f(inpA, out);
   }
   else { /* f_or_g == 0 */
     Pb.send_C_to_B(inp_mixed, inpB);
+
     // debug_golden_input_B(Pb, inpB);
+    // 0xdeadbeef tag for debugging 
+    if (Pb.is_equal_B(inpB, Pb.golden_inpB))
+      found_golden_B_and_use_g = true;
+    //end
+    
     Pb.g(inpB, out);
   }
   // debug_golden_output(Pb, out);
