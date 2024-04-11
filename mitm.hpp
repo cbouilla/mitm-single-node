@@ -100,7 +100,7 @@ void collision_search(Problem& Pb)
  * a claw between f and g.
  */
 template <typename Problem>
-void claw_search(Problem& Pb, int difficulty = 2)
+void claw_search(Problem& Pb, int difficulty = 0)
 {
   using A_t = typename Problem::A_t;
   using B_t = typename Problem::B_t;

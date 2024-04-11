@@ -20,7 +20,7 @@ set_property(CACHE AES_IMPL PROPERTY STRINGS auto portable aesni neon)
 # common compiler option (between clang and gcc, not sure about the others)
 # add_compile_options(-ggdb -Wall -Wextra -pedantic -fsanitize=address)
 # from -g -no-pie etc, are flags for boost::backtrace
-add_compile_options(-march=native -ggdb -Wall -Wextra -pedantic -O0 -g -no-pie -fno-pie -rdynamic -DBOOST_STACKTRACE_USE_ADDR2LINE)
+add_compile_options(-march=native -ggdb -Wall -Wextra -pedantic -O3 -flto -g -no-pie -fno-pie -rdynamic -DBOOST_STACKTRACE_USE_ADDR2LINE)
 # Needed this, other wise it won't link
 # set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -fsanitize=address")
 set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -ltbb -fsanitize=address")

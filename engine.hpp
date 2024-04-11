@@ -51,7 +51,7 @@ inline size_t  nbytes_A = 0;
 inline size_t  nbytes_B = 0;
 /*----------------------------------------------------------------------------*/
 
-
+// todo move struct `Counters` to another file.
 /* Non-essential counters but helpful to have, e.g. n_collisions/sec */
 struct Counters {
   size_t const interval = (1LL<<15); // for printing only
@@ -143,13 +143,14 @@ struct Counters {
       = std::accumulate(n_distinguished_points.begin(),
 			n_distinguished_points.end(),
 			static_cast<size_t>(0)); // starting value.
+    double log2_n_distinguished_points = std::log2(total_distinguished_points);
     
-    summary << problem_type << ", "
-	    << std::to_string(C_size) << ", "
+    summary << std::to_string(C_size) << ", "
 	    << std::to_string(A_size) << ", "
 	    << std::to_string(B_size) << ", "
 	    << std::to_string(difficulty) << ", "
 	    << std::to_string(total_distinguished_points) << ", "
+      	    << std::to_string(log2_n_distinguished_points) << ", "
       	    << std::to_string(n_collisions) << ", "
       	    << std::to_string(n_updates) << ", "
 	    << total_time
@@ -160,13 +161,14 @@ struct Counters {
 
     std::cout << "Successfully saved stats in " << f_name << "\n"
 	      << "Format:\n"
-	      << "C_size, A_size, B_size, difficulty, #distinguished_points, #collisions, #updates, time(sec)"
+	      << "C_size,A_size,B_size,difficulty,#distinguished_points,#distinguished_points_log2,#collisions,#updates,time(sec)"
 	      << "\n" /* This should be the end */
 	      << std::to_string(C_size) << ", "
 	      << std::to_string(A_size) << ", "
 	      << std::to_string(B_size) << ", "
 	      << std::to_string(difficulty) << ", "
 	      << std::to_string(total_distinguished_points) << ", "
+	      << std::to_string(log2_n_distinguished_points) << ", "
 	      << std::to_string(n_collisions) << ", "
 	      << std::to_string(n_updates) << ", "
 	      << total_time
@@ -566,6 +568,19 @@ void search_generic(Problem& Pb,
 				       inp0A,
 				       args...);/* for claw args := inp0B, inp1B */
 
+      /**************************************************************************/
+      // GLOBAL VARIABLES FOR DEBUGGING THE NUMBER OF COLLISIONS BEFORE THE GOLDEN
+      // 0xdeadbeef tag for debugging
+      if (found_golden_A_and_use_f || found_golden_B_and_use_g){
+	found_a_collisions = true;
+	// found_golden_pair = true;
+      } else if (Pb.C.is_equal(*out0_pt, Pb.golden_out)){
+	/* bad collision, skip it! */
+	continue;
+      }
+      /**************************************************************************/
+
+
       out0_digest = Pb.C.hash(*out0_pt);
 
       
@@ -583,18 +598,6 @@ void search_generic(Problem& Pb,
 					   chain_length1,
 					   Pb);
 
-
-      /**************************************************************************/
-      // GLOBAL VARIABLES FOR DEBUGGING THE NUMBER OF COLLISIONS BEFORE THE GOLDEN
-      // 0xdeadbeef tag for debugging
-      
-      if (found_golden_A_and_use_f && found_golden_B_and_use_g){
-	found_a_collisions = true;
-	found_golden_pair = true;
-      }
-	
-
-      /**************************************************************************/
       if (found_a_collisions) {
 	ctr.increment_collisions();
 	/* respect the rule that inp0 doesn't have pointers dancing around it */
@@ -619,18 +622,13 @@ void search_generic(Problem& Pb,
 					    inp0A, 
 					    inp1A,
 					    args...); /* for claw args := inp0B, inp1B */
-
-
-	   /**************************************************************************/
-      // GLOBAL VARIABLES FOR DEBUGGING THE NUMBER OF COLLISIONS BEFORE THE GOLDEN
-      if (found_golden_A_and_use_f && found_golden_B_and_use_g){
-	found_a_collisions = true;
-	found_golden_pair = true;
-      }
+     
+	// // 0xdeadbeef tag for debugging
+	// if (found_golden_A_and_use_f && found_golden_B_and_use_g){
+	//   //found_a_collisions = true;
+	//   found_golden_pair = true;
+	// }
 	
-
-      /**************************************************************************/
-
 	if (not found_golden_pair)
 	    continue; /* nothing to do, test the next one!  */
 	else { /* Found the golden pair */
