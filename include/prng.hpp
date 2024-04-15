@@ -110,7 +110,7 @@ public:
     uint8_t result = 0;
     uint8_t const mask = 0xFF;
 
-    for (int i = 0; i < sizeof(uint64_t); ++i)
+    for (size_t i = 0; i < sizeof(uint64_t); ++i)
       /* result = T[result xor  8-bit of n] */
 
       result ^= T[result ^ ((n>>(i*8))&mask) ];

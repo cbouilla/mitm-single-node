@@ -26,7 +26,7 @@ namespace mitm {
  * f: A -> C
  */
 template <typename Problem>
-void collision_search(Problem& Pb)
+void collision_search(Problem& Pb, int difficulty = 0)
 {
   using A_t = typename Problem::A_t;
   using C_t = typename Problem::C_t;
@@ -73,8 +73,7 @@ void collision_search(Problem& Pb)
   // u8 inp_A_serial[Pb.A.length];
   // u8 out0_bytes[Pb.C.length];
   /****************************************************************************/
-  int difficulty = 0;
-  
+
   
   /* note the search_engine has different arguments than claw_search */
   search_generic(Pb,
@@ -169,6 +168,10 @@ void claw_search(Problem& Pb, int difficulty = 0)
 		 inp1B);
 }
 
+
+//=============================================================================+
+//----------------------------- NAIVE ENGINES ---------------------------------|
+//
 
 /*
  * Given a problem that follows AbstractDomain, and AbstractCollisionProblem.

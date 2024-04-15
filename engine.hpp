@@ -569,6 +569,7 @@ void search_generic(Problem& Pb,
 				       args...);/* for claw args := inp0B, inp1B */
 
       /**************************************************************************/
+      #ifdef CLAW_DEBUG
       // GLOBAL VARIABLES FOR DEBUGGING THE NUMBER OF COLLISIONS BEFORE THE GOLDEN
       // 0xdeadbeef tag for debugging
       if (found_golden_A_and_use_f || found_golden_B_and_use_g){
@@ -578,6 +579,7 @@ void search_generic(Problem& Pb,
 	/* bad collision, skip it! */
 	continue;
       }
+      #endif
       /**************************************************************************/
 
 
@@ -622,12 +624,13 @@ void search_generic(Problem& Pb,
 					    inp0A, 
 					    inp1A,
 					    args...); /* for claw args := inp0B, inp1B */
-     
-	// // 0xdeadbeef tag for debugging
-	// if (found_golden_A_and_use_f && found_golden_B_and_use_g){
-	//   //found_a_collisions = true;
-	//   found_golden_pair = true;
-	// }
+        #ifdef CLAW_DEBUG
+	// 0xdeadbeef tag for debugging
+	if (found_golden_A_and_use_f && found_golden_B_and_use_g){
+	  //found_a_collisions = true;
+	  found_golden_pair = true;
+	}
+	#endif
 	
 	if (not found_golden_pair)
 	    continue; /* nothing to do, test the next one!  */

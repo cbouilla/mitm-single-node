@@ -212,14 +212,14 @@ bool treat_collision(Problem& Pb,
 				       out1_pt,
 				       inp_mixed,
 				       inp0_A,
-				       inp0_B,
-				       inp1_B);
+				       inp0_B, // this arg and one below allows
+				       inp1_B); // us to call walk for claw.
 
   /* The two inputs don't lead to the same output */
   if (not found_collision) 
     return false;
 
-  /* If found a robinhood, don't  */
+  /* useless collision  */
   if ( Pb.C.is_equal(*inp0_pt, *inp1_pt) )
     return false;
 
@@ -227,7 +227,6 @@ bool treat_collision(Problem& Pb,
    *  to inp_A in A and inp_B (the order doesn't matter)? If yes, write the
    * results to inp0_A and inp0_B. Otherwise, return false
    */
-
   bool is_potential_collision = pullback_to_A_B(Pb,
 						byte_hasher,
 						i,

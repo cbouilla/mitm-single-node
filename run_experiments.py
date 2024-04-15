@@ -13,7 +13,7 @@ bytes_range = list(range(1, 5))
 # let's focus when they are equal
 all_triples = [(i, i, i) for i in bytes_range]  # itr.product(bytes_range, repeat=3)
 nruns = 30  # How many times we run the code for the same triple value
-difficulty_range = 0  # i.e. difficulty between 0 and difficulty_range included
+difficulty_range = 4  # i.e. difficulty between 0 and difficulty_range included
 
 
 def edit_claw_demo(triple):

@@ -105,13 +105,14 @@ bool treat_collision(Problem& Pb,
   if ( Pb.C.is_equal(*inp0_pt, *inp1_pt) )
     return false; 
 
-  /* send inputs from C -> A */
-  Pb.send_C_to_A(*inp0_pt, inp0_A);
-  Pb.send_C_to_A(*inp1_pt, inp1_A);
-  
+  /* send inputs from C to A */
+  Pb.mix(i, *inp0_pt, inp_mixed);
+  Pb.send_C_to_A(inp_mixed, inp0_A);
+
+  Pb.mix(i, *inp1_pt, inp_mixed);
+  Pb.send_C_to_A(inp_mixed, inp0_A);
 
   return Pb.is_good_pair(*out0_pt, inp0_A, inp1_A);
-
 }
 
 
