@@ -170,6 +170,7 @@ public:
     std::memcpy(out.data, in.data, NBYTES_C);
   }
 
+  
   inline
   u64 hash(const t& x) const
   {
@@ -187,9 +188,12 @@ public:
 
 
 ////////////////////////////////////////////////////////////////////////////////
-
+// AbstractClawProblem <I, A_t, B_t, C_t>
 class SHA2_Problem
-  : mitm::AbstractClawProblem<uint64_t, SHA2_A_inp_repr, SHA2_B_inp_repr, SHA2_OUT_DOMAIN>
+  : mitm::AbstractClawProblem<std::array<u8, 16>,
+			      SHA2_A_inp_repr,
+			      SHA2_B_inp_repr,
+			      SHA2_OUT_DOMAIN>
 {
 public:
 
@@ -203,7 +207,8 @@ public:
   Dom_C C; /* Output related functions */  
   using I_t = std::array<u8, 16>;
 
-
+  /****************************************************************************/
+  // Initialization
   SHA2_Problem()
   {
     std::random_device rd;  // a seed source for the random number engine
@@ -246,6 +251,7 @@ public:
 	      << "golden_out  = " << golden_out  << "\n"
 	      << "========================================\n";
   }
+  /****************************************************************************/
 
   
   inline
@@ -274,7 +280,6 @@ public:
       data_u8[i] ^= constant.data[i];
 
     std::memcpy(y.data, data, NBYTES_C);
-
   }
 
 
@@ -296,7 +301,6 @@ public:
     std::memcpy(out_B.data, inp_C.data, std::min(NBYTES_B, NBYTES_C));
   }
 
-  
 
   /* mix a value lives in C_t using i function scrambling. */
   void mix(I_t const& key_static, C_t const& x, C_t& y) const
