@@ -4,9 +4,41 @@
 #include "AbstractCollisionProblem.hpp"
 #include "engine.hpp"
 #include "prng.hpp"
-//#include "base_engine.hpp"
+#include <boost/stacktrace.hpp>
 
 namespace mitm {
+
+  
+/*****************************************************************************/
+#ifdef COLLISION_DEBUG
+template <typename Problem>
+void debug_golden_input(Problem& Pb,
+			  typename Problem::A_t& inpA)
+{
+  if (Pb.is_equal_A(inpA, Pb.golden_inp0) )
+    std::cout << "\nwe hit the 1st golden input of A!\n"
+		// << boost::stacktrace::stacktrace()
+		<< "============================================\n";
+
+  if (Pb.is_equal_A(inpA, Pb.golden_inp1) )
+    std::cout << "\nwe hit the 2nd golden input of A!\n"
+      // << boost::stacktrace::stacktrace()
+	      << "============================================\n";
+}
+
+
+
+template <typename Problem>
+void debug_golden_output(Problem& Pb,
+			 typename Problem::C_t& out)
+{
+  if (Pb.C.is_equal(out, Pb.golden_out))
+      std::cout << "\nwe hit the golden output!\n"
+		// << boost::stacktrace::stacktrace()
+		<< "============================================\n";
+}
+#endif 
+/*****************************************************************************/
 
 template <typename Problem>
 void print_collision_information(Problem& Pb,
@@ -57,6 +89,16 @@ void iterate_once(Problem &Pb,
   	Pb.mix(i, inp, inp_mixed);
         Pb.send_C_to_A(inp_mixed, inpA);
         Pb.f(inpA, out);
+
+	#ifdef COLLISION_DEBUG
+	debug_golden_input(Pb, inpA);
+	debug_golden_output(Pb, out);
+	if (Pb.is_equal_A(inpA, Pb.golden_inp0) )
+	  found_1st_golden_inp = true;
+
+        if (Pb.is_equal_A(inpA, Pb.golden_inp1) )
+	  found_2nd_golden_inp = true;
+	#endif
 }
 
 

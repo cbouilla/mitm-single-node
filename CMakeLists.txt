@@ -84,9 +84,6 @@ add_executable(sha2_collision_demo
 	include/prng.hpp
 	include/timing.hpp)
 
-
-
-
 target_compile_definitions(sha2_collision_demo PUBLIC COLLISION_DEBUG)
 
 
@@ -103,7 +100,6 @@ add_executable(sha2_claw_demo
       	include/memory.hpp
 	include/prng.hpp
 	include/timing.hpp)
-
 
 # Debugging the execution if the results don't add up
 target_compile_definitions(sha2_claw_demo PUBLIC CLAW_DEBUG)

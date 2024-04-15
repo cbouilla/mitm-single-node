@@ -5,12 +5,17 @@
 // GLOBAL VARIABLES FOR DEBUGGING THE NUMBER OF COLLISIONS BEFORE THE GOLDEN
 // 0xdeadbeef tag for debugging 
 /* we saw the golden input, and in the chain C -f/g-> C it uses f: A -> C */
+#ifdef CLAW_DEBUG
 bool found_golden_A_and_use_f = false;
 /* we saw the golden input, and in the chain C -f/g-> C it uses g: B -> C */
 bool found_golden_B_and_use_g = false;
 /**/
+#endif
 
-
+#ifdef COLLISION_DEBUG
+bool found_1st_golden_inp = false;
+bool found_2nd_golden_inp = false;
+#endif 
 /*****************************************************************************/
 
 
@@ -512,7 +517,7 @@ void search_generic(Problem& Pb,
 
   Counters ctr{}; /* various non-essential counters */
   
-  bool found_a_collisions = false;
+  bool found_a_collision = false;
   
   /* We should have ration 1/3 real collisions and 2/3 false collisions */
   bool found_dist = false;
@@ -550,7 +555,7 @@ void search_generic(Problem& Pb,
 	 ++n_dist_points)
       {
       
-      found_a_collisions = false; /* initially we have not seen anything yet */
+      found_a_collision = false; /* initially we have not seen anything yet */
       /* fill the input with a fresh random value. */
       Pb.C.randomize(inp_St, prng_elm); /* todo rng should be reviewed */
       
@@ -573,13 +578,20 @@ void search_generic(Problem& Pb,
       // GLOBAL VARIABLES FOR DEBUGGING THE NUMBER OF COLLISIONS BEFORE THE GOLDEN
       // 0xdeadbeef tag for debugging
       if (found_golden_A_and_use_f || found_golden_B_and_use_g){
-	found_a_collisions = true;
+	found_a_collision = true;
 	// found_golden_pair = true;
       } else if (Pb.C.is_equal(*out0_pt, Pb.golden_out)){
 	/* bad collision, skip it! */
 	continue;
       }
       #endif
+
+
+      #ifdef COLLISION_DEBU
+      if (found_1st_golden_inp or found_2nd_golden_inp)
+	found_a_collision = true;
+      #endif 
+
       /**************************************************************************/
 
 
@@ -593,14 +605,14 @@ void search_generic(Problem& Pb,
       ctr.increment_n_distinguished_points();
 
       
-      found_a_collisions = dict.pop_insert(out0_digest, /* key */
+      found_a_collision = dict.pop_insert(out0_digest, /* key */
 					   inp_St, /* value  */
 					   chain_length0,
 					   *inp1_pt,
 					   chain_length1,
 					   Pb);
 
-      if (found_a_collisions) {
+      if (found_a_collision) {
 	ctr.increment_collisions();
 	/* respect the rule that inp0 doesn't have pointers dancing around it */
 	Pb.C.copy(inp_St, *inp0_pt); /* (*tmp0_ptO) holds the input value  */
@@ -627,10 +639,17 @@ void search_generic(Problem& Pb,
         #ifdef CLAW_DEBUG
 	// 0xdeadbeef tag for debugging
 	if (found_golden_A_and_use_f && found_golden_B_and_use_g){
-	  //found_a_collisions = true;
+	  //found_a_collision = true;
 	  found_golden_pair = true;
 	}
 	#endif
+
+
+	#ifdef COLLISION_DEBU
+	if (found_1st_golden_inp and  found_2nd_golden_inp)
+	  found_golden_pair = true;
+        #endif 
+
 	
 	if (not found_golden_pair)
 	    continue; /* nothing to do, test the next one!  */
@@ -678,8 +697,16 @@ void search_generic(Problem& Pb,
 
     // 0xdeadbeef tag for debugging
     // reset global variables with each dictionary flush
+    #ifdef CLAW_DEBUG
     found_golden_A_and_use_f = false;
     found_golden_B_and_use_g = false;
+    #endif
+
+    #ifdef COLLISION_DEBU
+    bool found_1st_golden_inp = false;
+    bool found_2nd_golden_inp = false;
+    #endif 
+
   }
 }
 

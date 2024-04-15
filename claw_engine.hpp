@@ -11,6 +11,7 @@
 #include <boost/stacktrace.hpp>
 namespace mitm {
 /*****************************************************************************/
+#ifdef CLAW_DEBUG
 template <typename Problem>
 void debug_golden_input_A(Problem& Pb,
 			  typename Problem::A_t& inpA)
@@ -42,6 +43,7 @@ void debug_golden_output(Problem& Pb,
 		// << boost::stacktrace::stacktrace()
 		<< "============================================\n";
 }
+#endif
 /*****************************************************************************/
   
  
@@ -98,26 +100,34 @@ void iterate_once(Problem &Pb,
   
   if (f_or_g == 1){
     Pb.send_C_to_A(inp_mixed, inpA);
+    #ifdef CLAW_DEBUG
     // debug_golden_input_A(Pb, inpA);
+
     // 0xdeadbeef tag for debugging
     if (Pb.is_equal_A(inpA, Pb.golden_inpA))
       found_golden_A_and_use_f = true;
-    //end 
+    //end
+    #endif
+    
     Pb.f(inpA, out);
   }
   else { /* f_or_g == 0 */
     Pb.send_C_to_B(inp_mixed, inpB);
 
+    #ifdef CLAW_DEBUG
     // debug_golden_input_B(Pb, inpB);
+
     // 0xdeadbeef tag for debugging 
     if (Pb.is_equal_B(inpB, Pb.golden_inpB))
       found_golden_B_and_use_g = true;
     //end
+    #endif
     
     Pb.g(inpB, out);
   }
+  #ifdef CLAW_DEBUG
   // debug_golden_output(Pb, out);
-  
+  #endif
 }
 
 

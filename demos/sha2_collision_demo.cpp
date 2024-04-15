@@ -324,7 +324,7 @@ public:
   }
 
 
-private:
+public:
   /* A simple equality test for the type A_t, since it's not required by mitm */
   bool is_equal_A(A_t const& inp0, A_t const& inp1) const{
     int not_equal = 0;
