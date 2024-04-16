@@ -9,6 +9,8 @@
 #include <array>
 #include <vector>
 #include "../include/AES.hpp"
+#include "bits_lib.hpp"
+
 /* We would like to call C function defined in `sha256.c` */
 extern "C"{
  void sha256_process(uint32_t state[8], const uint8_t data[], uint32_t length);
@@ -27,9 +29,14 @@ using i16 = int16_t;
 using i32 = int32_t;
 using i64 = int64_t;
 
-/* Edit the next *three* line to define a new demo! */
-#define NBYTES_A 2 /* A's input length <= 64 bytes  */
-#define NBYTES_C 2 /* output length <= 32 bytes */
+
+#define CEIL(a, b) (((a) + (b)-1) / (b))
+
+#define NBITS_A 16
+#define NBITS_C 16
+
+#define NBYTES_A CEIL(NBITS_A, 8) /* A's input length <= 64 bytes  */
+#define NBYTES_C CEIL(NBITS_C, 8) /* output length <= 32 bytes */
 /* stop here. */
 
 
@@ -69,12 +76,8 @@ struct SHA2_out_repr {
     return *this;
   }
 
-
   /****************************************************************************/
-  // For the naive algorithm
-  bool operator<(SHA2_out_repr const& other) const {
-    return (std::memcmp(data, other.data, NBYTES_C) < 0);
-  }
+
 };
 
 
@@ -109,11 +112,7 @@ struct SHA2_A_inp_repr {
     return *this;
   }
 
-  /****************************************************************************/
-  // For the naive algorithm
-  bool operator<(SHA2_A_inp_repr const& other) const {
-    return (std::memcmp(data, other.data, NBYTES_A) < 0);
-  }
+
 };
 
 
@@ -165,34 +164,40 @@ public:
   inline
   void randomize(t& x, mitm::PRNG& prng) const
   {
+    constexpr u8 rem_bits = NBITS_C % 8;
+    constexpr u8 mask = (1 << rem_bits) - 1;
+
     for(int i = 0; i < NBYTES_C; ++i )
       x.data[i] = prng.rand(); /* a bit overkill to call rand on a single byte! */
+
+    /* remove execessive bits */
+    x.data[NBYTES_C - 1] = x.data[NBYTES_C - 1] & mask;
   }
 
   
   inline
   bool is_equal(t const& x, t const& y) const
   {
-    return ( std::memcmp(x.data, y.data, NBYTES_C) == 0);
+    return ( bits_memcmp(x.data, y.data, NBITS_C) == 0);
   }
 
   inline
   void serialize(const t& in, u8* out) const
   {
-    std::memcpy(out, in.data, NBYTES_C);
+    bits_memcpy(out, in.data, NBITS_C);
   }
 
   inline
   void unserialize(const u8* in, t& out) const
   {
-    std::memcpy(out.data, in, NBYTES_C);
+    bits_memcpy(out.data, in, NBITS_C);
   }
 
 
   inline
   void copy(const t& in, t& out)
   {
-    std::memcpy(out.data, in.data, NBYTES_C);
+    bits_memcpy(out.data, in.data, NBITS_C);
   }
 
   
@@ -233,12 +238,21 @@ public:
     std::random_device rd;  // a seed source for the random number engine
     std::mt19937 gen(rd()); // mersenne_twister_engine seeded with rd()
     std::uniform_int_distribution<> distrib(0, 255); /* a random byte value*/
+
+    constexpr u8 rem_bits = NBITS_A % 8;
+    constexpr u8 mask     =  (1 << rem_bits) - 1;
     
     /* Fill golden_input with uniform garbage, truly golden data. */
-    for (int i = 0; i<NBYTES_A; ++i){
+    for (int i = 0; i < NBYTES_A; ++i){
       golden_inp0.data[i] = distrib(gen);
       golden_inp1.data[i] = distrib(gen);
     }
+
+    /* clear the rest of the bits */
+    golden_inp0.data[NBYTES_A - 1] = golden_inp0.data[NBYTES_A - 1] & mask;
+    golden_inp1.data[NBYTES_A - 1] = golden_inp1.data[NBYTES_A - 1] & mask;
+
+    
       
 
     /* It's enough to compute golden_out for inp0, by def f(inp1) = golden_out */
@@ -264,7 +278,7 @@ public:
   {
     /* Artifically make golden_inp1 collides with golden_inp0 */
     if (is_equal_A(x, golden_inp1)){
-      std::memcpy(y.data, golden_out.data, NBYTES_C);
+      bits_memcpy(y.data, golden_out.data, NBITS_C);
       return;
     }
 
@@ -272,7 +286,7 @@ public:
     u32 state[8] = { 0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
 		     0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19};
     sha256_process(state, x.data, 64);
-    std::memcpy(y.data, state, NBYTES_C);
+    bits_memcpy(y.data, state, NBITS_C);
   }
 
 
@@ -281,7 +295,7 @@ public:
   {
     /* remove any junk in A */
     std::memset(out_A.data, 0, 64);
-    std::memcpy(out_A.data, inp_C.data, NBYTES_C);
+    bits_memcpy(out_A.data, inp_C.data, NBITS_C);
   }
 
 
@@ -294,11 +308,11 @@ public:
     unsigned char key[16] = {0};
 
     std::memcpy(key, key_static.data(), 16);
-    std::memcpy(data, x.data, NBYTES_C);
+    bits_memcpy(data, x.data, NBITS_C);
 
     Cipher::Aes<128> aes(key);
     aes.encrypt_block(data);
-    std::memcpy(y.data, data, NBYTES_C);
+    bits_memcpy(y.data, data, NBITS_C);
   }
 
   
@@ -331,7 +345,7 @@ public:
     for (int i = 0; i < NBYTES_A; ++i)
       not_equal += (inp0.data[i] != inp1.data[i]);
 
-    return (not_equal == 0); /* i.e. return not not_equal */
+    return (bits_memcmp(inp0.data, inp1.data, NBITS_C) != 0); /* i.e. return not not_equal */
   }
 
 
