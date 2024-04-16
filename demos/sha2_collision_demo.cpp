@@ -32,8 +32,8 @@ using i64 = int64_t;
 
 #define CEIL(a, b) (((a) + (b)-1) / (b))
 
-#define NBITS_A 16
-#define NBITS_C 16
+#define NBITS_A 12
+#define NBITS_C 12
 
 #define NBYTES_A CEIL(NBITS_A, 8) /* A's input length <= 64 bytes  */
 #define NBYTES_C CEIL(NBITS_C, 8) /* output length <= 32 bytes */
@@ -171,7 +171,10 @@ public:
       x.data[i] = prng.rand(); /* a bit overkill to call rand on a single byte! */
 
     /* remove execessive bits */
-    x.data[NBYTES_C - 1] = x.data[NBYTES_C - 1] & mask;
+    if (rem_bits > 0){
+      x.data[NBYTES_C - 1] = x.data[NBYTES_C - 1] & mask;
+    }
+
   }
 
   
@@ -249,8 +252,10 @@ public:
     }
 
     /* clear the rest of the bits */
-    golden_inp0.data[NBYTES_A - 1] = golden_inp0.data[NBYTES_A - 1] & mask;
-    golden_inp1.data[NBYTES_A - 1] = golden_inp1.data[NBYTES_A - 1] & mask;
+    if (rem_bits > 0 ){
+      golden_inp0.data[NBYTES_A - 1] = golden_inp0.data[NBYTES_A - 1] & mask;
+      golden_inp1.data[NBYTES_A - 1] = golden_inp1.data[NBYTES_A - 1] & mask;
+    }
 
     
       
@@ -341,11 +346,7 @@ public:
 public:
   /* A simple equality test for the type A_t, since it's not required by mitm */
   bool is_equal_A(A_t const& inp0, A_t const& inp1) const{
-    int not_equal = 0;
-    for (int i = 0; i < NBYTES_A; ++i)
-      not_equal += (inp0.data[i] != inp1.data[i]);
-
-    return (bits_memcmp(inp0.data, inp1.data, NBITS_C) != 0); /* i.e. return not not_equal */
+    return (bits_memcmp(inp0.data, inp1.data, NBITS_C) == 0); /* i.e. return not not_equal */
   }
 
 
