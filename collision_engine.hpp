@@ -95,7 +95,6 @@ void iterate_once(Problem &Pb,
 	debug_golden_output(Pb, out);
 	if (Pb.is_equal_A(inpA, Pb.golden_inp0) )
 	  found_1st_golden_inp = true;
-
         if (Pb.is_equal_A(inpA, Pb.golden_inp1) )
 	  found_2nd_golden_inp = true;
 	#endif
@@ -152,7 +151,7 @@ bool treat_collision(Problem& Pb,
   Pb.send_C_to_A(inp_mixed, inp0_A);
 
   Pb.mix(i, *inp1_pt, inp_mixed);
-  Pb.send_C_to_A(inp_mixed, inp0_A);
+  Pb.send_C_to_A(inp_mixed, inp1_A);
 
   return Pb.is_good_pair(*out0_pt, inp0_A, inp1_A);
 }

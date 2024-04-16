@@ -463,8 +463,17 @@ void search_generic(Problem& Pb,
 
 
       #ifdef COLLISION_DEBUG
-      if (found_1st_golden_inp or found_2nd_golden_inp)
-	found_a_collision = true;
+      // typename Problem::A_t inpA_debug{};
+      // Pb.mix(i, *inp0_pt, inp_mixed);
+      // Pb.send_C_to_A(inp_mixed, inpA_debug);
+      // /* skip adding any to dict except those of the golden inputs */
+      // if (not (Pb.is_equal_A(inpA_debug, Pb.golden_inp0)
+      // 	       or Pb.is_equal_A(inpA_debug, Pb.golden_inp1)))
+      // 	continue;
+      // else
+      // 	std::cout << "golden value to be inserted!\n"
+      // 		  << "inp_unmix = " << *inp0_pt << "\n"
+      // 		  << "inpA      = " << inpA_debug << "\n";
       #endif 
 
       /**************************************************************************/
@@ -521,8 +530,10 @@ void search_generic(Problem& Pb,
 
 
 	#ifdef COLLISION_DEBUG
-	if (found_1st_golden_inp and  found_2nd_golden_inp)
-	  found_golden_pair = true;
+	// if (found_1st_golden_inp and  found_2nd_golden_inp){
+	//   std::cout << "Found golden triple in one iteration of the dictioanry\n";
+	// }
+	  
         #endif 
 
 	
