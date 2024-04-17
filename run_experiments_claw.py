@@ -5,23 +5,23 @@ NBYTES_C, for values in the range (1, 4). For each triple, run the program
 """
 
 import os
-import itertools as itr
+# import itertools as itr
 from tqdm import tqdm
 import subprocess
 
-bytes_range = list(range(1, 5))
+bits_range = list(range(1, 32))
 # let's focus when they are equal
-all_triples = [(i, i, i) for i in bytes_range]  # itr.product(bytes_range, repeat=3)
+all_triples = [(i, i, i) for i in bits_range]  # itr.product(bytes_range, repeat=3)
 nruns = 30  # How many times we run the code for the same triple value
 difficulty_range = 4  # i.e. difficulty between 0 and difficulty_range included
 
 
 def edit_claw_demo(triple):
     """Replace the nbytes_c, nbytes_b, nbytes_a from."""
-    keywords = ["NBYTES_A", "NBYTES_B", "NBYTES_C"]
+    keywords = ["NBITS_A", "NBITS_B", "NBITS_C"]
 
     with open("demos/sha2_claw_demo.cpp", "r") as claw,\
-         open("demos/tmp.cpp", "w") as tmp:
+         open("demos/tmp_clw.cpp", "w") as tmp:
         for line in claw:
             for i in range(len(keywords)):
                 if line.startswith("#define " + keywords[i]):
@@ -29,7 +29,7 @@ def edit_claw_demo(triple):
                          + " \n"
             tmp.write(line)
 
-    os.replace("demos/tmp.cpp", "demos/sha2_claw_demo.cpp")
+    os.replace("demos/tmp_clw.cpp", "demos/sha2_claw_demo.cpp")
 
 
 def print_errors_if_any(result):
@@ -64,29 +64,23 @@ def run_project(difficulty, timeout=3600):
 
     except subprocess.TimeoutExpired:
         print("Command timed out after 1 hour.")
-
     else:
         print_errors_if_any(result)
 
 
-try:  # if tqdm was installed.
-    for triple in all_triples:
-        print(f"Triple: {triple}")
-        edit_claw_demo(triple)
-        compile_project()
-        for difficulty in range(difficulty_range + 1):
-            print(f"difficulty={difficulty}, (|C|, |A|, |B|)={triple}")
+# Actual run
+for triple in all_triples:
+    print(f"Triple: {triple}")
+    edit_claw_demo(triple)
+    compile_project()
+
+    nbits_C = triple[-1]
+    for difficulty in range(min(difficulty_range + 1, nbits_C)):
+        print(f"difficulty={difficulty}, (|C|, |A|, |B|)={triple}")
+        try:
             for _ in tqdm(range(nruns)):
                 run_project(difficulty)
-
-except:
-    print("Consider installing `tqdm` for a nicer visuals "
-          "via  pip install tqdm")
-    for triple in all_triples:
-        print(f"Triple: {triple}")
-        edit_claw_demo(triple)
-        compile_project()
-        for difficulty in range(difficulty_range + 1):
-            print(f"difficulty={difficulty}, (|C|, |A|, |B|)={triple}")
+        except:
+            print("Think about installing tqdm by pip install tqdm")
             for _ in range(nruns):
                 run_project(difficulty)

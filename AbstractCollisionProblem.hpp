@@ -22,6 +22,9 @@ public:
   using C_t = typename Domain_C::t;
   using Dom_C = Domain_C;
   Dom_C C;
+  /* Used in collecting stats */
+  size_t nbits_A;
+  size_t nbits_C;
 
   /* Initialization, in principle  we don't need to initialize any variable unless a user
    * wishes to do so.

@@ -45,16 +45,6 @@ bool found_2nd_golden_inp = false;
 /// 1) `iterate_once` claw_engine.hpp introduces 2 more arguments.
 
 namespace mitm {
-/*----------------------------------------------------------------------------*/
-// Global variables to register program performance. To be removed later.
-
-/* these initial value never happened in real world, thus we can detect them */
-inline size_t  nbytes_A = 0; 
-inline size_t  nbytes_B = 0;
-/*----------------------------------------------------------------------------*/
-
-// todo move struct `Counters` to another file.
-
 
 /******************************************************************************/
 /* The two functions below are implemented in `claw_engine.hpp` and
@@ -550,18 +540,18 @@ void search_generic(Problem& Pb,
 				      
 
 	  /* todo think about a sensible way to pass |A|, |C|,  */
-	  if (sizeof...(args) == 0) 
+	  if constexpr (sizeof...(args) == 0) 
 	    ctr.save_summary_stats("collision",
-				   nbytes_A,/* = |A| */
-				   nbytes_A,/* = |A| since it's a collision */
-				   Pb.C.length,
+				   Pb.nbits_A,/* = |A| */
+				   Pb.nbits_A,/* = |A| since it's a collision */
+				   Pb.nbits_C,
 				   difficulty);
 
-	  if (sizeof...(args) == 2) 
+	  if constexpr (sizeof...(args) == 2) 
 	    ctr.save_summary_stats("claw",
-				   nbytes_A,/* = |A| */
-				   nbytes_B,/* = |B| */
-				   Pb.C.length,
+				   Pb.nbits_A,/* = |A| */
+				   Pb.nbits_B,/* = |B| */
+				   Pb.nbits_C,
 				   difficulty);
 
 	  return; /* nothing more to do */

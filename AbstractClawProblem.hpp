@@ -25,7 +25,11 @@ public:
   using C_t = typename Domain_C::t;
   using Dom_C = Domain_C;
   Dom_C C;
-  
+  /* Used in collecting stats */
+  size_t nbits_A;
+  size_t nbits_B;
+  size_t nbits_C;
+
   AbstractClawProblem() {
     static_assert(std::is_base_of<AbstractDomain<typename Domain_C::t>, Domain_C>::value,
 		  "C not derived from AbstractDomain");

@@ -35,8 +35,8 @@ using i64 = int64_t;
 #define NBITS_A 12
 #define NBITS_C 12
 
-#define NBYTES_A CEIL(NBITS_A, 8) /* A's input length <= 64 bytes  */
-#define NBYTES_C CEIL(NBITS_C, 8) /* output length <= 32 bytes */
+#define NBYTES_A CEIL(NBITS_A, 8)
+#define NBYTES_C CEIL(NBITS_C, 8)
 /* stop here. */
 
 
@@ -155,7 +155,8 @@ public:
   // Not only a shortcut, it's necessry to avoid error when specializing a class
   // In template: 't' is a private member of 'mitm::AbstractDomain<SHA2_out_repr>'
   using t = SHA2_out_repr;
-  
+
+    
   const static int length = NBYTES_C;
   int a[NBYTES_C];
   
@@ -233,6 +234,10 @@ public:
   using A_t = SHA2_A_inp_repr; /* 2nd template type */
   using C_t = SHA2_out_repr; /* 4th template type */
   using Dom_C = SHA2_OUT_DOMAIN;
+
+  size_t nbits_A = NBITS_A;
+  size_t nbits_C = NBITS_C;
+  
   
   /****************************************************************************/
   // INIT
@@ -360,10 +365,20 @@ public:
 };
 
 
-int main()
+int main(int argc, char* argv[])
 {
   
   SHA2_Problem Pb;
-  mitm::collision_search(Pb);
+
+  if (argc == 2){
+    /*  Get the value of difficulty as a string */
+    std::string d_str = argv[1];
+    int difficulty = std::stoi(d_str);
+    mitm::claw_search(Pb, difficulty);
+  } else {
+    mitm::collision_search(Pb);    
+  }
+
+
 }
 

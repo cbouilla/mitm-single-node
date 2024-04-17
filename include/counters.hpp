@@ -34,6 +34,7 @@ struct Counters {
       update_previous_time(wtime())
   {}
 
+
   void increment_n_distinguished_points()
   {
     ++n_distinguished_points[n_updates];
@@ -53,6 +54,7 @@ struct Counters {
     }
   }
 
+  
   void increment_n_updates()
   {
     elapsed = wtime() - update_previous_time;
@@ -70,8 +72,11 @@ struct Counters {
     n_distinguished_points.emplace_back(0);
     update_previous_time = wtime();
   }
+
+
   void increment_collisions(size_t n = 1) {n_collisions += n;}
 
+  
   void save_summary_stats(std::string problem_type,
 			  size_t A_size,
 			  size_t B_size,

@@ -1,5 +1,6 @@
 #include "../mitm.hpp"
 #include "../include/AES.hpp"
+#include "bits_lib.hpp"
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
@@ -28,10 +29,19 @@ using i16 = int16_t;
 using i32 = int32_t;
 using i64 = int64_t;
 
-/* Edit the next *three* line to define a new demo! */
-#define NBYTES_A 1 
-#define NBYTES_B 1 
-#define NBYTES_C 1 
+
+#define CEIL(a, b) (((a) + (b)-1) / (b))
+
+
+#define NBITS_A 3 
+#define NBITS_B 3 
+#define NBITS_C 3 
+
+
+
+#define NBYTES_A CEIL(NBITS_A, 8)
+#define NBYTES_B CEIL(NBITS_B, 8) 
+#define NBYTES_C CEIL(NBITS_C, 8) 
 /* stop here. */
 
 
@@ -121,7 +131,6 @@ std::ostream& operator<<(std::ostream& os, const SHA2_out_repr& x)
 
 
 
-
 /*
  * Implement functions related to inp/out as specified in AbstractDomain
  */
@@ -140,34 +149,42 @@ public:
   inline
   void randomize(t& x, mitm::PRNG& prng) const
   {
+    constexpr u8 rem_bits = NBITS_C % 8;
+    constexpr u8 mask = (1 << rem_bits) - 1;
+
     for(int i = 0; i < NBYTES_C; ++i )
       x.data[i] = prng.rand(); /* a bit overkill to call rand on a single byte! */
+
+    /* remove execessive bits */
+    if (rem_bits > 0)
+      x.data[NBYTES_C - 1] = x.data[NBYTES_C - 1] & mask;
+
   }
 
   
   inline
   bool is_equal(t const& x, t const& y) const
   {
-    return ( std::memcmp(x.data, y.data, NBYTES_C) == 0);
+    return ( bits_memcmp(x.data, y.data, NBITS_C) == 0);
   }
 
   inline
   void serialize(const t& in, u8* out) const
   {
-    std::memcpy(out, in.data, NBYTES_C);
+    bits_memcpy(out, in.data, NBITS_C);
   }
 
   inline
   void unserialize(const u8* in, t& out) const
   {
-    std::memcpy(out.data, in, NBYTES_C);
+    bits_memcpy(out.data, in, NBITS_C);
   }
 
 
   inline
   void copy(const t& in, t& out)
   {
-    std::memcpy(out.data, in.data, NBYTES_C);
+    bits_memcpy(out.data, in.data, NBITS_C);
   }
 
   
@@ -207,6 +224,10 @@ public:
   Dom_C C; /* Output related functions */  
   using I_t = std::array<u8, 16>;
 
+  size_t nbits_A = NBITS_A;
+  size_t nbits_B = NBITS_B;
+  size_t nbits_C = NBITS_C;
+
   /****************************************************************************/
   // Initialization
   SHA2_Problem()
@@ -215,18 +236,31 @@ public:
     std::mt19937 gen(rd()); // mersenne_twister_engine seeded with rd()
     std::uniform_int_distribution<> distrib(0, 255); /* a random byte value*/
 
+    constexpr u8 rem_bits_A = NBITS_A % 8;
+    constexpr u8 rem_bits_B = NBITS_B % 8;
+    constexpr u8 mask_A = (1 << rem_bits_A) - 1;
+    constexpr u8 mask_B = (1 << rem_bits_B) - 1;
+
+
     
     /* Fill golden_input with uniform garbage, truly golden data. */
-    for (int i = 0; i<NBYTES_A; ++i)
+    for (int i = 0; i < NBYTES_A; ++i)
       golden_inpA.data[i] = distrib(gen);
 
+    if (rem_bits_A > 0)
+      golden_inpA.data[NBYTES_A - 1] = golden_inpA.data[NBYTES_A - 1] & mask_A;
+      
+      
     /* Fill golden_input with uniform garbage, truly golden data. */
-    for (int i = 0; i<NBYTES_B; ++i){
+    for (int i = 0; i < NBYTES_B; ++i){
       golden_inpB.data[i] = distrib(gen);
       constant.data[i] = 0;
     }
 
+    if (rem_bits_B > 0)
+      golden_inpB.data[NBYTES_B - 1] = golden_inpB.data[NBYTES_B - 1] & mask_B;
 
+    
     /* get the constant, C,  that makes them collide */
     // f(golden_inpA) = g(golden_inpB) xor C
     f(golden_inpA, golden_out);
@@ -260,8 +294,7 @@ public:
     u32 data[8] = { 0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
 		     0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19};
     sha256_process(data, x.data, 64);
-    std::memcpy(y.data, data, NBYTES_C);
-
+    bits_memcpy(y.data, data, NBITS_C);
   }
 
   inline
@@ -278,8 +311,8 @@ public:
      */
     for (int i = 0; i < NBYTES_C; ++i)
       data_u8[i] ^= constant.data[i];
-
-    std::memcpy(y.data, data, NBYTES_C);
+    // deadbeaf 
+    bits_memcpy(y.data, data, NBITS_C);
   }
 
 
@@ -289,7 +322,7 @@ public:
     /* remove any junk in A */
     std::memset(out_A.data, 0, 64);
     /* Since domain and range may have different size: */
-    std::memcpy(out_A.data, inp_C.data, std::min(NBYTES_A, NBYTES_C));
+    bits_memcpy(out_A.data, inp_C.data, std::min(NBITS_A, NBITS_C));
   }
 
   inline
@@ -298,7 +331,7 @@ public:
     /* remove any junk in B */
     std::memset(out_B.data, 0, 64);
     /* Since domain and range may have different size: */
-    std::memcpy(out_B.data, inp_C.data, std::min(NBYTES_B, NBYTES_C));
+    bits_memcpy(out_B.data, inp_C.data, std::min(NBITS_B, NBITS_C));
   }
 
 
@@ -312,11 +345,11 @@ public:
     unsigned char key[16] = {0};
 
     std::memcpy(key, key_static.data(), 16);
-    std::memcpy(data, x.data, NBYTES_C);
+    bits_memcpy(data, x.data, NBITS_C);
 
     Cipher::Aes<128> aes(key);
     aes.encrypt_block(data);
-    std::memcpy(y.data, data, NBYTES_C);
+    bits_memcpy(y.data, data, NBITS_C);
   
     // std::cout << "after mix x = " << x << ", "
     // 	      << "y = " << y << "\n";
@@ -355,36 +388,20 @@ public: /* they are public for debugging */
 
   /* A simple equality test for the type A_t, since it's not required by mitm */
   bool is_equal_A(A_t const& inp0, A_t const& inp1) const{
-    int not_equal = 0;
-    for (int i = 0; i < NBYTES_A; ++i)
-      not_equal += (inp0.data[i] != inp1.data[i]);
-
-    return (not_equal == 0); /* i.e. return not not_equal */
+    return (bits_memcmp(inp0.data, inp1.data, NBITS_A) == 0); 
   }
 
   /* A simple equality test for the type B_t, since it's not required by mitm */
-  bool is_equal_B(B_t const& inp0, B_t const& inp1) const{
-    int not_equal = 0;
-    for (int i = 0; i < NBYTES_B; ++i)
-      not_equal += (inp0.data[i] != inp1.data[i]);
-
-    return (not_equal == 0); /* i.e. return not not_equal */
+  bool is_equal_B(B_t const& inp0, B_t const& inp1) const {
+    return (bits_memcmp(inp0.data, inp1.data, NBITS_B) == 0);
   }
-
-  /* print if the value in C equals the golden input in A or B */
-  void test_C_eq_golden_inp(C_t&)
-  {
-    
-  }
-
+  
 };
 
 
 int main(int argc, char* argv[])
 {
 
-  mitm::nbytes_A = NBYTES_A;
-  mitm::nbytes_B = NBYTES_B;
   SHA2_Problem Pb;
   
   std::cout << "sha2-claw demo! |inp_A| = " << NBYTES_A << "bytes, "
