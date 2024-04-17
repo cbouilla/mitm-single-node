@@ -32,8 +32,8 @@ using i64 = int64_t;
 
 #define CEIL(a, b) (((a) + (b)-1) / (b))
 
-#define NBITS_A 12
-#define NBITS_C 12
+#define NBITS_A 5 
+#define NBITS_C 5 
 
 #define NBYTES_A CEIL(NBITS_A, 8)
 #define NBYTES_C CEIL(NBITS_C, 8)
@@ -374,7 +374,7 @@ int main(int argc, char* argv[])
     /*  Get the value of difficulty as a string */
     std::string d_str = argv[1];
     int difficulty = std::stoi(d_str);
-    mitm::claw_search(Pb, difficulty);
+    mitm::collision_search(Pb, difficulty);
   } else {
     mitm::collision_search(Pb);    
   }

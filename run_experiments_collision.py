@@ -29,7 +29,7 @@ def edit_claw_demo(triple):
                          + " \n"
             tmp.write(line)
 
-    os.replace("demos/tmp_col.cpp", "demos/sha2_col_demo.cpp")
+    os.replace("demos/tmp_col.cpp", "demos/sha2_collision_demo.cpp")
 
 
 def print_errors_if_any(result):
@@ -54,7 +54,7 @@ def compile_project():
 
 def run_project(difficulty, timeout=3600):
     """Run the code."""
-    run_cmd = f"./sha2_claw_demo {difficulty}"
+    run_cmd = f"./sha2_collision_demo {difficulty}"
     try:
         result = subprocess.run(run_cmd,
                                 shell=True,
