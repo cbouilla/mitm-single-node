@@ -89,29 +89,53 @@ struct Counters {
 	   "Took %0.2f sec to find the golden inputs.\n"
 	   "Saving the counters ...\n",
 	   total_time);
-    
+    /* open folder (create it if it doesn't exist )*/
     std::ofstream summary;
     std::string d_name = "data/";
     std::string f_name = d_name + problem_type + "_summary.csv";
-    
     create_folder_if_not_exist(d_name);
-    create_file_if_not_exist  (f_name);
+    int file_status = create_file_if_not_exist(f_name);
+
+      
     /* open the summary file */
     summary.open(f_name, std::ios::app);
-    
+
+
+    std::string column_names = "";
+    /* Depending on the problem, we have different column names */
+    if (problem_type == "claw")
+      column_names = "C_size,A_size,B_size,difficulty,#distinguished_points,#distinguished_points_log2,#collisions,log2_n_collisions,#updates,time(sec)\n";
+    if (problem_type == "collision")
+      column_names = "C_size,A_size,difficulty,#distinguished_points,#distinguished_points_log2,#collisions,log2_n_collisions,#updates,time(sec)\n";
+
+    /* Write column names to the file only if the file did not exist before */
+    if (file_status == 2)
+      summary << column_names;
+
+
+    /* compute some stats */
     size_t total_distinguished_points
       = std::accumulate(n_distinguished_points.begin(),
 			n_distinguished_points.end(),
 			static_cast<size_t>(0)); // starting value.
+
     double log2_n_distinguished_points = std::log2(total_distinguished_points);
+    double log2_n_collisions = std::log2(n_collisions);
+
+    /* write all those stats to the summary file */
+    std::string B_data = "";
+    if (B_size != 0) /* B_size passed as 0 when this function is called by a
+		      * collision problem */
+      B_data = std::to_string(B_size) +  ", ";
     
     summary << std::to_string(C_size) << ", "
 	    << std::to_string(A_size) << ", "
-	    << std::to_string(B_size) << ", "
+	    << B_data
 	    << std::to_string(difficulty) << ", "
 	    << std::to_string(total_distinguished_points) << ", "
       	    << std::to_string(log2_n_distinguished_points) << ", "
       	    << std::to_string(n_collisions) << ", "
+	    << std::to_string(log2_n_collisions) << ", "
       	    << std::to_string(n_updates) << ", "
 	    << total_time
 	    << "\n";
@@ -121,7 +145,7 @@ struct Counters {
 
     std::cout << "Successfully saved stats in " << f_name << "\n"
 	      << "Format:\n"
-	      << "C_size,A_size,B_size,difficulty,#distinguished_points,#distinguished_points_log2,#collisions,#updates,time(sec)"
+	      << column_names
 	      << "\n" /* This should be the end */
 	      << std::to_string(C_size) << ", "
 	      << std::to_string(A_size) << ", "
