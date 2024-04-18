@@ -322,6 +322,7 @@ std::string is_claw_or_collision_problem(Types... args)
  */
 template<typename Problem,  typename... Types>
 void search_generic(Problem& Pb,
+		    size_t nbytes_memory,
 		    int difficulty,
 		    typename Problem::C_t& inp_St, // Startign point in chain
 		    typename Problem::C_t* inp0_pt,
@@ -351,26 +352,13 @@ void search_generic(Problem& Pb,
   
   
   /*============================= DICT INIT ==================================*/
-  size_t n_bytes = get_available_memory();
-  size_t output_max_bytes = 4*(1LL<<(8*Pb.C.length));
-  std::cout << "output_max_bytes = " << output_max_bytes << "\n";
-  n_bytes = std::min(n_bytes, output_max_bytes);
-
-  
-  std::cout << "Going to use "
-	    << std::dec << n_bytes << " bytes = 2^"<< std::log2(n_bytes)
-	    << " bytes for dictionary!\n";
+  Dict<u64, C_t, Problem> dict{nbytes_memory};
+  printf("Initialized a dict with %llu slots = 2^%0.2f slots\n",
+	 dict.n_slots, std::log2(dict.n_slots));
   
 
-  Dict<u64, C_t, Problem> dict{n_bytes};
-  u64 out0_digest = 0;
-  
-  
-  std::cout << "Initialized a dict with " << dict.n_slots << " slots = 2^"
-	    << std::log2(dict.n_slots) << " slots\n";
   /*=============== data extracted from dictionarry ==========================*/
-
-
+  u64 out0_digest = 0;
 
 
   

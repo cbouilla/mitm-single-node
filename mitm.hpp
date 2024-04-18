@@ -8,6 +8,8 @@
 #include "claw_engine.hpp"
 #include "collision_engine.hpp"
 #include "naive_engine.hpp"
+#include "include/memory.hpp"
+#include <cstddef>
 
 
 /* Interface for the search functions:
@@ -26,12 +28,25 @@ namespace mitm {
  * f: A -> C
  */
 template <typename Problem>
-void collision_search(Problem& Pb, int difficulty = 0)
+void collision_search(Problem& Pb,
+		      size_t nbytes_memory = 0,
+		      int difficulty = 0)
 {
   using A_t = typename Problem::A_t;
   using C_t = typename Problem::C_t;
 
+  /* If a user did not specify how large memory to be used, use all the
+   * free bytes in ram! */
+  if (nbytes_memory == 0){
+    nbytes_memory = get_available_memory();
+    std::cout << "You have not specified how many bytes to be used for the dictionary!\n"
+	      << "Going to use " << nbytes_memory << " bytes.\n";
+  }
 
+  /* If a user asks for too much memory, reduce it to the available memory */
+  adjust_to_available_memory(nbytes_memory);
+
+  
   /* ============================= BUFFERS ================================== */
   /* Input/Output containers */
   /* 1st set of buffers: Related to input0 as a starting point */
@@ -77,6 +92,7 @@ void collision_search(Problem& Pb, int difficulty = 0)
   
   /* note the search_engine has different arguments than claw_search */
   search_generic(Pb,
+		 nbytes_memory,
 		 difficulty,
 		 inp0_st, /* starting point in the chain, not a pointer! */
 		 inp0_pt,/* pointer to the inp0 s.t. f(inp0) = out0 or using g*/
@@ -99,15 +115,28 @@ void collision_search(Problem& Pb, int difficulty = 0)
  * a claw between f and g.
  */
 template <typename Problem>
-void claw_search(Problem& Pb, int difficulty = 0)
+void claw_search(Problem& Pb,
+		 size_t nbytes_memory = 0,
+		 int difficulty = 0)
 {
   using A_t = typename Problem::A_t;
   using B_t = typename Problem::B_t;
   using C_t = typename Problem::C_t;
 
 
-  /* ============================= BUFFERS ================================== */
+  /* If a user did not specify how large memory to be used, use all the
+   * free bytes in ram! */
+  if (nbytes_memory == 0){
+    nbytes_memory = get_available_memory();
+    std::cout << "You have not specified how many bytes to be used for the dictionary!\n"
+	      << "Going to use " << nbytes_memory << " bytes.\n";
+  }
 
+  /* If a user asks for too much memory, reduce it to the available memory */
+  adjust_to_available_memory(nbytes_memory);
+
+
+  /* ============================= BUFFERS ================================== */
   /* Input/Output containers */
   /* 1st set of buffers: Related to input0 as a starting point */
   /* either tmp0 or  output0 */
@@ -156,6 +185,7 @@ void claw_search(Problem& Pb, int difficulty = 0)
   
   search_generic(Pb,
 		 difficulty,
+		 nbytes_memory,
 		 inp0_st, /* starting point in the chain, not a pointer! */
 		 inp0_pt,/* pointer to the inp0 s.t. f(inp0) = out0 or using g*/
 		 inp1_pt,/* pointer to the 2nd input, s.t. f or g (inp1) = out1 */

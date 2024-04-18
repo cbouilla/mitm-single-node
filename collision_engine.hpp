@@ -30,11 +30,14 @@ void debug_golden_input(Problem& Pb,
 
 template <typename Problem>
 void debug_golden_output(Problem& Pb,
-			 typename Problem::C_t& out)
+			 typename Problem::C_t& out,
+			 typename Problem::A_t& inp)
 {
-  if (Pb.C.is_equal(out, Pb.golden_out))
+  bool found_golden_out = Pb.C.is_equal(out, Pb.golden_out);
+  if (found_golden_out)
       std::cout << "\nwe hit the golden output!\n"
-		// << boost::stacktrace::stacktrace()
+		<< "inp = " << inp << "\n"
+		<< boost::stacktrace::stacktrace()
 		<< "============================================\n";
 }
 #endif 
@@ -92,7 +95,7 @@ void iterate_once(Problem &Pb,
 
 	#ifdef COLLISION_DEBUG
 	debug_golden_input(Pb, inpA);
-	debug_golden_output(Pb, out);
+	debug_golden_output(Pb, out, inpA);
 	if (Pb.is_equal_A(inpA, Pb.golden_inp0) )
 	  found_1st_golden_inp = true;
         if (Pb.is_equal_A(inpA, Pb.golden_inp1) )

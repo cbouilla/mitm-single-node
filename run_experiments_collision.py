@@ -9,7 +9,7 @@ import os
 from tqdm import tqdm
 import subprocess
 
-bits_range = list(range(1, 32))
+bits_range = list(range(8, 32))
 # let's focus when they are equal
 all_triples = [(i, i, i) for i in bits_range]  # itr.product(bytes_range, repeat=3)
 nruns = 30  # How many times we run the code for the same triple value
@@ -52,7 +52,7 @@ def compile_project():
     print_errors_if_any(result)
 
 
-def run_project(difficulty, timeout=3600):
+def run_project(log2_nbytes, difficulty, timeout=300):
     """Run the code."""
     run_cmd = f"./sha2_collision_demo {difficulty}"
     try:
@@ -79,7 +79,7 @@ for triple in all_triples:
         print(f"difficulty={difficulty}, (|C|, |A|, |B|)={triple}")
         try:
             for _ in tqdm(range(nruns)):
-                run_project(difficulty)
+                run_project(int(nbits_C/2), difficulty)
         except:
             print("Think about installing tqdm by pip install tqdm")
             for _ in range(nruns):

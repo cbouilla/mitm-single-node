@@ -10,9 +10,29 @@
 #include <random>
 #include <sys/types.h>
 #include <vector>
+#include <cstdlib>
 
 namespace mitm {
 
+
+
+/* source: https://gist.github.com/mortenpi/9745042 */
+template<class T>
+T read_urandom()
+{
+  union {
+    T value;
+    char cs[sizeof(T)];
+  } u;
+
+  std::ifstream rfin("/dev/urandom");
+  rfin.read(u.cs, sizeof(u.cs));
+  rfin.close();
+
+  return u.value;
+}
+
+ 
 /*
  * Generic interface for a PRNG. The sequence of pseudo-random numbers
  * depends on both seed and seq
@@ -31,12 +51,17 @@ public:
 
   PRNG()
   { /* random seed */
-    gen64.seed(rd());
+    // gen64.seed(rd());
+    gen64.seed(read_urandom<uint64_t>());
   };
 
   void update_seed() { gen64.seed(rd());  }
 
-  uint64_t rand(){ return gen64(); };
+  uint64_t rand(){
+    //return gen64();
+    return read_urandom<uint64_t>();
+  };
+  
 };
 
 

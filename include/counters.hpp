@@ -104,9 +104,9 @@ struct Counters {
     std::string column_names = "";
     /* Depending on the problem, we have different column names */
     if (problem_type == "claw")
-      column_names = "C_size,A_size,B_size,difficulty,#distinguished_points,#distinguished_points_log2,#collisions,log2_n_collisions,#updates,time(sec)\n";
+      column_names = "C_size,A_size,B_size,difficulty,#distinguished_points,log2(#distinguished_points),#collisions,log2(#collisions),#updates,time(sec)\n";
     if (problem_type == "collision")
-      column_names = "C_size,A_size,difficulty,#distinguished_points,#distinguished_points_log2,#collisions,log2_n_collisions,#updates,time(sec)\n";
+      column_names = "C_size,A_size,difficulty,#distinguished_points,log2(#distinguished_points),#collisions,log2(#collisions),#updates,time(sec)\n";
 
     /* Write column names to the file only if the file did not exist before */
     if (file_status == 2)

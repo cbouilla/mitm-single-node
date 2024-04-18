@@ -7,6 +7,7 @@
 #include <iostream>
 #include <iomanip>
 #include <array>
+#include <string>
 #include <vector>
 #include "../include/AES.hpp"
 #include "bits_lib.hpp"
@@ -32,8 +33,8 @@ using i64 = int64_t;
 
 #define CEIL(a, b) (((a) + (b)-1) / (b))
 
-#define NBITS_A 20 
-#define NBITS_C 20 
+#define NBITS_A 20
+#define NBITS_C 20
 
 #define NBYTES_A CEIL(NBITS_A, 8)
 #define NBYTES_C CEIL(NBITS_C, 8)
@@ -341,10 +342,12 @@ public:
   /* assuming that f(x0) == f(x1) == y, is (x0, x1) an acceptable outcome? */
   bool is_good_pair(C_t const &z,  A_t const &x0,  A_t const &x1)
   {
-   return (C.is_equal(golden_out, z)
-	    and is_equal_A(golden_inp0, x0)
-	    and is_equal_A(golden_inp1, x1));
-     
+    /* TOO strong condition */
+    // return (C.is_equal(golden_out, z)
+    // 	    and is_equal_A(golden_inp0, x0)
+    // 	    and is_equal_A(golden_inp1, x1));
+
+    return C.is_equal(golden_out, z);
   }
 
 
@@ -364,6 +367,18 @@ public:
 
 };
 
+/* This function enables us to compute how many bytes needed to have nslots
+ * in the dictionary. The calculation method depends on how the dictionary is
+ * implemented. It works for now on our simple dictionary.
+ */
+size_t calculate_nbytes_given(size_t nslots)
+{
+  /* sizeof(Value) + sizeof(Key) + sizeof(Chainlength)*/
+  size_t triple_size = sizeof(SHA2_out_repr) + sizeof(u64) + sizeof(u64);
+
+  return triple_size*nslots;
+}
+
 
 int main(int argc, char* argv[])
 {
@@ -371,10 +386,31 @@ int main(int argc, char* argv[])
   SHA2_Problem Pb;
 
   if (argc == 2){
+    /* ./sha2_collision_demo log2_nslots  */
+    
     /*  Get the value of difficulty as a string */
-    std::string d_str = argv[1];
+    
+    std::string log2_nslots_str = argv[1];
+    size_t log2_nslots = std::stoull(log2_nslots_str);
+    size_t nbytes_dict = calculate_nbytes_given(1LL<<log2_nslots);
+
+    printf("nslots = 2^%lu\n", log2_nslots);
+
+    /* Main work: */
+    mitm::collision_search(Pb, nbytes_dict);
+
+  } else if (argc == 3) {
+    /* ./sha2_collision_demo log2_nslots difficulty */
+    std::string log2_nslots_str = argv[1];
+    std::string d_str = argv[2];
     int difficulty = std::stoi(d_str);
-    mitm::collision_search(Pb, difficulty);
+    size_t log2_nslots = std::stoull(log2_nslots_str);
+    size_t nbytes_dict = calculate_nbytes_given(1LL<<log2_nslots);
+
+    printf("nslots = 2^%lu, difficulty = %d\n", log2_nslots, difficulty);
+
+    /* Main work */
+    mitm::collision_search(Pb, nbytes_dict, difficulty);
   } else {
     mitm::collision_search(Pb);    
   }
