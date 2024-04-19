@@ -112,7 +112,6 @@ struct Counters {
     if (file_status == 2)
       summary << column_names;
 
-
     /* compute some stats */
     size_t total_distinguished_points
       = std::accumulate(n_distinguished_points.begin(),
@@ -124,39 +123,31 @@ struct Counters {
 
     /* write all those stats to the summary file */
     std::string B_data = "";
+    /* Special case: Collision Problem doesn't have B */
     if (B_size != 0) /* B_size passed as 0 when this function is called by a
 		      * collision problem */
       B_data = std::to_string(B_size) +  ", ";
     
-    summary << std::to_string(C_size) << ", "
-	    << std::to_string(A_size) << ", "
-	    << B_data
-	    << std::to_string(difficulty) << ", "
-	    << std::to_string(total_distinguished_points) << ", "
-      	    << std::to_string(log2_n_distinguished_points) << ", "
-      	    << std::to_string(n_collisions) << ", "
-	    << std::to_string(log2_n_collisions) << ", "
-      	    << std::to_string(n_updates) << ", "
-	    << total_time
-	    << "\n";
+    std::string summary_data = std::to_string(C_size) + ", "
+                             + std::to_string(A_size) + ", "
+                             + B_data
+                             + std::to_string(difficulty) + ", "
+                             + std::to_string(total_distinguished_points) + ", "
+                             + std::to_string(log2_n_distinguished_points) + ", "
+                             + std::to_string(n_collisions) + ", "
+                             + std::to_string(log2_n_collisions) + ", "
+                             + std::to_string(n_updates) + ", "
+                             + std::to_string(total_time)
+                             + "\n";
 
-
+    
+    summary << summary_data;
     summary.close();
 
     std::cout << "Successfully saved stats in " << f_name << "\n"
 	      << "Format:\n"
 	      << column_names
-	      << "\n" /* This should be the end */
-	      << std::to_string(C_size) << ", "
-	      << std::to_string(A_size) << ", "
-	      << std::to_string(B_size) << ", "
-	      << std::to_string(difficulty) << ", "
-	      << std::to_string(total_distinguished_points) << ", "
-	      << std::to_string(log2_n_distinguished_points) << ", "
-	      << std::to_string(n_collisions) << ", "
-	      << std::to_string(n_updates) << ", "
-	      << total_time
-	      << "\n";
+	      << summary_data;
   }
 };  
 }

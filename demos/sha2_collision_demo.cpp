@@ -12,6 +12,9 @@
 #include "../include/AES.hpp"
 #include "bits_lib.hpp"
 
+/* For debugging */
+#include <unordered_map>
+
 /* We would like to call C function defined in `sha256.c` */
 extern "C"{
  void sha256_process(uint32_t state[8], const uint8_t data[], uint32_t length);
@@ -33,8 +36,8 @@ using i64 = int64_t;
 
 #define CEIL(a, b) (((a) + (b)-1) / (b))
 
-#define NBITS_A 20
-#define NBITS_C 20
+#define NBITS_A 16
+#define NBITS_C 16
 
 #define NBYTES_A CEIL(NBITS_A, 8)
 #define NBYTES_C CEIL(NBITS_C, 8)
@@ -144,8 +147,26 @@ std::ostream& operator<<(std::ostream& os, const SHA2_out_repr& x)
 }
 
 
+#ifdef COLLISION_DEBUG
+// /* Specific Hash for C_t aka SHA2_out_repr to enable the usage of
+//  * std::unordered_map */
+// template<>
+// struct std::hash<SHA2_out_repr>
+// {
+//     std::size_t operator()(const SHA2_out_repr& s) const noexcept
+//     {
+//       size_t digest = 0;
+//       for (int i = 0; i < NBYTES_C; ++i)
+// 	digest ^= s.data[i];
+//       return digest;
+//     }
+// };
 
-
+// bool operator==(const SHA2_out_repr& lhs, const SHA2_out_repr& rhs) {
+//     // Compare lhs and rhs for equality
+//   return (bits_memcmp(lhs.data, rhs.data, NBITS_C) == 0);
+// }
+#endif 
 
 /*
  * Implement functions related to inp/out as specified in AbstractDomain
@@ -164,7 +185,7 @@ public:
   const static size_t n_elements = (1LL<<length)*8;
   /* todo: randomize */
   inline
-  void randomize(t& x, mitm::PRNG& prng) const
+  void randomize(t& x, mitm::PRNG& prng)
   {
     constexpr u8 rem_bits = NBITS_C % 8;
     constexpr u8 mask = (1 << rem_bits) - 1;
@@ -177,6 +198,9 @@ public:
       x.data[NBYTES_C - 1] = x.data[NBYTES_C - 1] & mask;
     }
 
+    // #ifdef COLLISION_DEBUG
+    // starting_points[x] += 1;
+    // #endif
   }
 
   
@@ -217,6 +241,11 @@ public:
 
     return digest;
   }
+
+public:
+  // #ifdef COLLISION_DEBUG
+  // std::unordered_map<t, size_t> starting_points{};
+  // #endif
 };
 
 
@@ -244,6 +273,8 @@ public:
   // INIT
     SHA2_Problem()
   {
+
+    
     std::random_device rd;  // a seed source for the random number engine
     std::mt19937 gen(rd()); // mersenne_twister_engine seeded with rd()
     std::uniform_int_distribution<> distrib(0, 255); /* a random byte value*/
@@ -357,12 +388,20 @@ public:
     return (bits_memcmp(inp0.data, inp1.data, NBITS_C) == 0); /* i.e. return not not_equal */
   }
 
+  // #ifdef COLLISION_DEBUG
+  // void clear_starting_points()
+  // {
+  //   /* next time try to zeroize all values*/
+  //   C.starting_points.clear();
+  // }
+  // #endif
 
 public:
   C_t golden_out ; /* We look for point that equals this */
   A_t golden_inp0; /* We will edit f so that */
   A_t golden_inp1;
   C_t constant{};
+
 
 
 };
@@ -382,8 +421,11 @@ size_t calculate_nbytes_given(size_t nslots)
 
 int main(int argc, char* argv[])
 {
-  
   SHA2_Problem Pb;
+
+  std::cout << "sha2 collision demo! |inp_A| = " << NBYTES_A << "bytes, "
+	    << "|out| = " << NBYTES_C << "bytes\n";
+
 
   if (argc == 2){
     /* ./sha2_collision_demo log2_nslots  */

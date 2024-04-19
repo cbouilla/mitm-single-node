@@ -37,11 +37,8 @@ void collision_search(Problem& Pb,
 
   /* If a user did not specify how large memory to be used, use all the
    * free bytes in ram! */
-  if (nbytes_memory == 0){
-    nbytes_memory = get_available_memory();
-    std::cout << "You have not specified how many bytes to be used for the dictionary!\n"
-	      << "Going to use " << nbytes_memory << " bytes.\n";
-  }
+  if (nbytes_memory == 0)
+    set_to_available_memory(nbytes_memory);
 
   /* If a user asks for too much memory, reduce it to the available memory */
   adjust_to_available_memory(nbytes_memory);
@@ -125,12 +122,9 @@ void claw_search(Problem& Pb,
 
 
   /* If a user did not specify how large memory to be used, use all the
-   * free bytes in ram! */
-  if (nbytes_memory == 0){
-    nbytes_memory = get_available_memory();
-    std::cout << "You have not specified how many bytes to be used for the dictionary!\n"
-	      << "Going to use " << nbytes_memory << " bytes.\n";
-  }
+   * available bytes in ram! */
+  if (nbytes_memory == 0)
+    set_to_available_memory(nbytes_memory); // nbytes will be changed.
 
   /* If a user asks for too much memory, reduce it to the available memory */
   adjust_to_available_memory(nbytes_memory);
@@ -184,8 +178,8 @@ void claw_search(Problem& Pb,
 
   
   search_generic(Pb,
-		 difficulty,
 		 nbytes_memory,
+		 difficulty,
 		 inp0_st, /* starting point in the chain, not a pointer! */
 		 inp0_pt,/* pointer to the inp0 s.t. f(inp0) = out0 or using g*/
 		 inp1_pt,/* pointer to the 2nd input, s.t. f or g (inp1) = out1 */

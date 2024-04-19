@@ -33,9 +33,9 @@ using i64 = int64_t;
 #define CEIL(a, b) (((a) + (b)-1) / (b))
 
 
-#define NBITS_A 3 
-#define NBITS_B 3 
-#define NBITS_C 3 
+#define NBITS_A 16
+#define NBITS_B 16
+#define NBITS_C 16
 
 
 
@@ -399,11 +399,22 @@ public: /* they are public for debugging */
 };
 
 
+/* This function enables us to compute how many bytes needed to have nslots
+ * in the dictionary. The calculation method depends on how the dictionary is
+ * implemented. It works for now on our simple dictionary.
+ */
+size_t calculate_nbytes_given(size_t nslots)
+{
+  /* sizeof(Value) + sizeof(Key) + sizeof(Chainlength)*/
+  size_t triple_size = sizeof(SHA2_out_repr) + sizeof(u64) + sizeof(u64);
+
+  return triple_size*nslots;
+}
+
 int main(int argc, char* argv[])
 {
 
   SHA2_Problem Pb;
-  
   std::cout << "sha2-claw demo! |inp_A| = " << NBYTES_A << "bytes, "
 	    << "|inp_B| = " << NBYTES_B << "bytes, "
 	    << "|out| = " << NBYTES_C << "bytes\n";
@@ -411,12 +422,30 @@ int main(int argc, char* argv[])
 
   if (argc < 2) /* we have not provided difficulty */
     mitm::claw_search(Pb);
+
   if (argc == 2){
-    /*  Get the value of difficulty as a string */
-    std::string d_str = argv[1];
+    // diff will be set to 0
+        
+    std::string log2_nslots_str = argv[1];
+    size_t log2_nslots = std::stoull(log2_nslots_str);
+    size_t nbytes_dict = calculate_nbytes_given(1LL<<log2_nslots);
+
+    printf("nslots = 2^%lu\n", log2_nslots);
+
+    /* Main work: */
+    mitm::claw_search(Pb, nbytes_dict);
+  } else if (argc == 3) {
+    /* ./sha2_claw_demo log2_nslots difficulty */
+    std::string log2_nslots_str = argv[1];
+    std::string d_str = argv[2];
     int difficulty = std::stoi(d_str);
-    mitm::claw_search(Pb, difficulty);
-  }
+    size_t log2_nslots = std::stoull(log2_nslots_str);
+    size_t nbytes_dict = calculate_nbytes_given(1LL<<log2_nslots);
+
+    printf("nslots = 2^%lu, difficulty = %d\n", log2_nslots, difficulty);
+    /* Main work */
+    mitm::claw_search(Pb, nbytes_dict, difficulty);
+  } 
     
 }
 

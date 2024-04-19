@@ -51,15 +51,15 @@ public:
 
   PRNG()
   { /* random seed */
-    // gen64.seed(rd());
-    gen64.seed(read_urandom<uint64_t>());
+    gen64.seed(rd());
+    //gen64.seed(read_urandom<uint64_t>());
   };
 
   void update_seed() { gen64.seed(rd());  }
 
   uint64_t rand(){
-    //return gen64();
-    return read_urandom<uint64_t>();
+    return gen64();
+    //return read_urandom<uint64_t>();
   };
   
 };

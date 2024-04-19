@@ -1,6 +1,7 @@
 /* get the available memory on a system. Currently only supports linux */
 #ifndef MEMORY_INO
 #define MEMORY_INO
+#include <cstddef>
 #include <linux/sysinfo.h>
 #include <sys/sysinfo.h>
 #include <cstdint>
@@ -23,6 +24,15 @@ inline void adjust_to_available_memory(std::size_t &nbytes)
 	      << get_available_memory() << " bytes\n";
     nbytes = get_available_memory();
   }
+}
+
+/* If nbytes was not specifed use all the available memory */
+inline void set_to_available_memory(size_t& nbytes_memory)
+{
+  nbytes_memory = get_available_memory();
+  printf("You have not specified how many bytes to be used for the dictionary!\n"
+	 "Going to use %lu bytes\n" , nbytes_memory);
+
 }
 
 #endif 

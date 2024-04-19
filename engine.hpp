@@ -531,7 +531,7 @@ void search_generic(Problem& Pb,
 	  if constexpr (sizeof...(args) == 0) 
 	    ctr.save_summary_stats("collision",
 				   Pb.nbits_A,/* = |A| */
-				   Pb.nbits_A,/* = |A| since it's a collision */
+				   0,/* save summary will ignore this if it 0 */
 				   Pb.nbits_C,
 				   difficulty);
 
