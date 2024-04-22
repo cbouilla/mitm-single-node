@@ -3,6 +3,7 @@
 #include "timing.hpp"
 #include "util_file_system.hpp"
 #include <numeric>
+#include <string>
 #include <vector>
 #include <fstream>
 
@@ -81,6 +82,7 @@ struct Counters {
 			  size_t A_size,
 			  size_t B_size,
 			  size_t C_size,
+			  double log2_nbytes,
 			  int difficulty)
   {
     end_time = wtime();
@@ -102,11 +104,13 @@ struct Counters {
 
 
     std::string column_names = "";
+    /* common suffix for both problems*/
+    std::string suffix = "log2(nbytes),difficulty,#distinguished_points,log2(#distinguished_points),#collisions,log2(#collisions),#updates,time(sec)\n";
     /* Depending on the problem, we have different column names */
     if (problem_type == "claw")
-      column_names = "C_size,A_size,B_size,difficulty,#distinguished_points,log2(#distinguished_points),#collisions,log2(#collisions),#updates,time(sec)\n";
+      column_names = "C_size,A_size,B_size," + suffix;
     if (problem_type == "collision")
-      column_names = "C_size,A_size,difficulty,#distinguished_points,log2(#distinguished_points),#collisions,log2(#collisions),#updates,time(sec)\n";
+      column_names = "C_size,A_size," + suffix ;
 
     /* Write column names to the file only if the file did not exist before */
     if (file_status == 2)
@@ -131,8 +135,9 @@ struct Counters {
     std::string summary_data = std::to_string(C_size) + ", "
                              + std::to_string(A_size) + ", "
                              + B_data
-                             + std::to_string(difficulty) + ", "
-                             + std::to_string(total_distinguished_points) + ", "
+                             + std::to_string(log2_nbytes) + ", "
+                             + std::to_string(difficulty)  + ", "
+                             + std::to_string(total_distinguished_points)  + ", "
                              + std::to_string(log2_n_distinguished_points) + ", "
                              + std::to_string(n_collisions) + ", "
                              + std::to_string(log2_n_collisions) + ", "
