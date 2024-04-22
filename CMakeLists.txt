@@ -72,7 +72,7 @@ include_directories(include)
 
 add_executable(sha2_collision_demo
         demos/sha2_collision_demo.cpp
-	demos/sha256_x86.c # demos/sha256.c
+	demos/sha256.c # demos/sha256.c
 	mitm.hpp
 	engine.hpp
 	naive_engine.hpp
@@ -89,7 +89,7 @@ target_compile_definitions(sha2_collision_demo PUBLIC COLLISION_DEBUG)
 
 add_executable(sha2_claw_demo
         demos/sha2_claw_demo.cpp
-	demos/sha256_x86.c
+	demos/sha256.c
 	mitm.hpp
 	engine.hpp
 	naive_engine.hpp
