@@ -17,22 +17,24 @@ bool found_1st_golden_inp = false;
 bool found_2nd_golden_inp = false;
 #endif 
 /*****************************************************************************/
-
-
-#include "AbstractDomain.hpp"
-#include "AbstractClawProblem.hpp"
-#include "AbstractCollisionProblem.hpp"
-
 #include <cstddef>
 #include <exception>
 #include <iostream>
 #include <string>
 #include <vector>
 #include <cmath>
+#include <mpi.h>
+
+#include "AbstractDomain.hpp"
+#include "AbstractClawProblem.hpp"
+#include "AbstractCollisionProblem.hpp"
 #include "include/prng.hpp"
 #include "include/memory.hpp"
 #include "include/counters.hpp"
 #include "dict.hpp"
+
+
+
 
 /// When a function, func, behavior's depends if the problem is a claw or a
 ///  collision, we use veriadic template to have two different implementation:
@@ -106,6 +108,33 @@ namespace mitm {
 //}
 
 /******************************************************************************/
+/*                                     MPI                                    */
+  
+enum process_type{ SENDER,  RECEIVER };
+
+struct MITM_MPI_data{
+  MPI_Comm global_comm; // Global communicator. Kept just in case, todo to be removed!
+  MPI_Comm inter_comm; // splitted into two: senders and receivers.
+  int nsenders;        // Total number of senders .
+  int nreceivers;      // Total number of receivers.
+  int nsenders_node;   //  nsenders on my node (counts me if i'am a sender).
+  int nreceivers_node; //  nreceivers on my node (counts me if i'am a receiver).
+  process_type my_role; // am I a sender or a receiver.
+};
+
+
+/* Initializes mpi processes for mitm,  and splits senders and receivers into
+ * seperate communicators. Aslo, gives the number of total numbers of senders
+ *  and receivers, `nsenders` and `nreceivers` respectively,  and the number
+ * senders and receivers that are on the same node, `nsenders_node` & 
+ * `nreceivers_node` respectively. This allows us to use nodes with different
+ * specs without affecting the code.
+ * 
+ */
+MITM_MPI_data MITM_MPI_Init();
+  
+/******************************************************************************/
+
 
 inline bool is_distinguished_point(u64 digest, u64 mask)
 {  return (0 == (mask & digest) ); }
@@ -340,8 +369,8 @@ void search_generic(Problem& Pb,
   PRNG prng_elm;
   PRNG prng_mix; /* for mixing function */
   PearsonHash byte_hasher{};
-  
-
+ 
+ 
   using C_t = typename Problem::C_t;
   // using A_t = typename Problem::A_t;
   

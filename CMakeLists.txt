@@ -72,7 +72,7 @@ include_directories(include)
 
 add_executable(sha2_collision_demo
         demos/sha2_collision_demo.cpp
-	demos/sha256.c # demos/sha256.c
+	demos/sha256_x86.c # demos/sha256.c
 	mitm.hpp
 	engine.hpp
 	naive_engine.hpp
@@ -89,7 +89,7 @@ target_compile_definitions(sha2_collision_demo PUBLIC COLLISION_DEBUG)
 
 add_executable(sha2_claw_demo
         demos/sha2_claw_demo.cpp
-	demos/sha256.c
+	demos/sha256_x86.c
 	mitm.hpp
 	engine.hpp
 	naive_engine.hpp
@@ -105,6 +105,7 @@ add_executable(sha2_claw_demo
 target_compile_definitions(sha2_claw_demo PUBLIC CLAW_DEBUG)
 
 
+
 find_package(OpenMP)
 if(OpenMP_CXX_FOUND)
   # target_link_libraries(sha2_collision_1collision_demo PUBLIC OpenMP::OpenMP_CXX)
@@ -113,6 +114,22 @@ if(OpenMP_CXX_FOUND)
 endif()
 
 
+
+find_package(MPI REQUIRED)
+message(STATUS "Run: ${MPIEXEC} ${MPIEXEC_NUMPROC_FLAG} ${MPIEXEC_MAX_NUMPROCS} ${MPIEXEC_PREFLAGS} EXECUTABLE ${MPIEXEC_POSTFLAGS} ARGS")
+# Check if MPI was found
+if(MPI_CXX_FOUND)
+  # Link the MPI libraries to your targets
+  target_link_libraries(sha2_collision_demo PUBLIC MPI::MPI_CXX)
+  target_link_libraries(sha2_claw_demo PUBLIC MPI::MPI_CXX)
+endif()
+
+# link OpenMP (node level parallelism) and MPI (multiple nodes parallelism)
+target_link_libraries(sha2_collision_demo
+                      PUBLIC MPI::MPI_CXX)
+
+target_link_libraries(sha2_collision_demo
+                      PUBLIC MPI::MPI_CXX)
 # # Link TBB to your executable
 
 # #[[
