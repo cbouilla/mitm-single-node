@@ -109,19 +109,41 @@ namespace mitm {
 
 /******************************************************************************/
 /*                                     MPI                                    */
-  
+#define INTERCOM_TAG 0
+
 enum process_type{ SENDER,  RECEIVER };
 
 struct MITM_MPI_data{
   MPI_Comm global_comm; // Global communicator. Kept just in case, todo to be removed!
-  MPI_Comm inter_comm; // splitted into two: senders and receivers.
-  int nsenders;        // Total number of senders .
-  int nreceivers;      // Total number of receivers.
-  int nsenders_node;   //  nsenders on my node (counts me if i'am a sender).
-  int nreceivers_node; //  nreceivers on my node (counts me if i'am a receiver).
+  MPI_Comm local_comm;  // Processes that do the same thing, e.g. senders. 
+  MPI_Comm inter_comm;  // splitted into two: senders and receivers.
+  int nprocesses;      // Total number of processes.
+  int nsenders;         // Total number of senders .
+  int nreceivers;       // Total number of receivers.
+  int nnodes; // How many nodes are there? 
+  int nsenders_node;    //  nsenders on my node (counts me if i'am a sender).
+  int nreceivers_node;  //  nreceivers on my node (counts me if i'am a receiver).
+  int my_rank_intercomm; // My rank among the group of the same color
+  int my_rank_global;
   process_type my_role; // am I a sender or a receiver.
 };
 
+/* source: https://stackoverflow.com/a/34118174 */
+int get_nodes_count(MPI_Comm comm)
+{
+  int rank, is_rank0, nodes;
+  MPI_Comm shmcomm;
+
+  MPI_Comm_split_type(MPI_COMM_WORLD, MPI_COMM_TYPE_SHARED, 0,
+		      MPI_INFO_NULL, &shmcomm);
+  
+  MPI_Comm_rank(shmcomm, &rank);
+  is_rank0 = (rank == 0) ? 1 : 0;
+  MPI_Allreduce(&is_rank0, &nodes, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
+  MPI_Comm_free(&shmcomm);
+
+  return nodes;  
+}
 
 /* Initializes mpi processes for mitm,  and splits senders and receivers into
  * seperate communicators. Aslo, gives the number of total numbers of senders
@@ -131,7 +153,75 @@ struct MITM_MPI_data{
  * specs without affecting the code.
  * 
  */
-MITM_MPI_data MITM_MPI_Init();
+MITM_MPI_data MITM_MPI_Init(int nreceivers, int argc=0, char** argv = NULL)
+{
+  MITM_MPI_data my_info{};
+  
+
+  /* Basic MPI Boilerplate */
+  MPI_Init(&argc, &argv); /* Provided argc, and argv to silence C++ errors */
+  MPI_Comm_rank(MPI_COMM_WORLD, &my_info.my_rank_global);
+  MPI_Comm_size(MPI_COMM_WORLD, &my_info.nprocesses);
+
+  /* Two disjoint groups: receivers, and senders */
+  int is_receiver = (my_info.my_rank_global < nreceivers);
+  
+  /* Create an inter-comm that seperates senders and receivers */
+  MPI_Comm_split(MPI_COMM_WORLD, /* Communicator to be splitted */
+		 is_receiver, /* create comm with processes that share this value  */
+		 my_info.my_rank_global, 
+		 &my_info.inter_comm /* New communicator. */
+		 ); /* sad face for the seperation between processes */
+
+
+  /* Create communicator between the two clans of processes. */
+  
+  /*  Receivers establish their communication channel with senders */
+  if (is_receiver) {
+    MPI_Intercomm_create(my_info.local_comm, /* my tribe */
+			 0, /* Local name of the sheikh of my tribe */
+			 MPI_COMM_WORLD, /* Where to find the remote leader. */
+			 nreceivers, /* Global Name/rank of senders leader. */
+			 INTERCOM_TAG, /* This tag is unique to the creation of intercomm */
+			 &my_info.inter_comm); /* <- put down these info here */
+
+    my_info.my_role = RECEIVER;
+  }
+  
+  /* senders establish their communication channel with receivers */
+  else {
+    MPI_Intercomm_create(my_info.local_comm, /* my tribe */
+			 0, /* Local name of the leader of my tribe */
+			 MPI_COMM_WORLD, /* Where to find the remote leade. */
+			 0, /* Global name/rank of receivers leader. */
+			 INTERCOM_TAG, /* This tag is unique to the creation of intercomm */
+			 &my_info.inter_comm); /* <- put down these info here */
+
+    my_info.my_role = SENDER;
+  }
+
+  /* Fill the rest of the details  */
+  my_info.nsenders = my_info.nprocesses - nreceivers;
+  my_info.nreceivers = nreceivers;
+  my_info.nnodes = get_nodes_count(MPI_COMM_WORLD);
+  my_info.nsenders_node = my_info.nsenders / my_info.nnodes;
+  my_info.nreceivers_node = my_info.nreceivers / my_info.nnodes;
+  
+  MPI_Comm_rank(my_info.local_comm, &my_info.my_rank_intercomm);
+  
+
+
+  return my_info;
+}
+
+
+/* Return how many bytes of RAM can a receiver allocate,
+ * if the available space is shared. */
+size_t max_bytes_per_receivers(MITM_MPI_data& my_info)
+{
+  return 0;
+}
+
   
 /******************************************************************************/
 
