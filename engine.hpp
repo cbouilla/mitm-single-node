@@ -109,14 +109,17 @@ namespace mitm {
 
 /******************************************************************************/
 /*                                     MPI                                    */
-#define INTERCOM_TAG 0
+
 
 enum process_type{ SENDER,  RECEIVER };
+enum MITM_MPI_TAGS {INTERCOM_TAG}; // to be extended ...
+
 
 struct MITM_MPI_data{
   MPI_Comm global_comm; // Global communicator. Kept just in case, todo to be removed!
   MPI_Comm local_comm;  // Processes that do the same thing, e.g. senders. 
   MPI_Comm inter_comm;  // splitted into two: senders and receivers.
+  size_t const nelements_buffer = 1000; // #elements stored in buffer during send/receive
   int nprocesses;      // Total number of processes.
   int nsenders;         // Total number of senders .
   int nreceivers;       // Total number of receivers.
@@ -128,7 +131,10 @@ struct MITM_MPI_data{
   process_type my_role; // am I a sender or a receiver.
 };
 
-/* source: https://stackoverflow.com/a/34118174 */
+    
+/* Get the number of number of physical nodes that runs the program.
+ * It requires MPI 3 or above.
+ * source: https://stackoverflow.com/a/34118174 */
 int get_nodes_count(MPI_Comm comm)
 {
   int rank, is_rank0, nodes;
@@ -144,6 +150,7 @@ int get_nodes_count(MPI_Comm comm)
 
   return nodes;  
 }
+
 
 /* Initializes mpi processes for mitm,  and splits senders and receivers into
  * seperate communicators. Aslo, gives the number of total numbers of senders
@@ -217,11 +224,116 @@ MITM_MPI_data MITM_MPI_Init(int nreceivers, int argc=0, char** argv = NULL)
 
 /* Return how many bytes of RAM can a receiver allocate,
  * if the available space is shared. */
-size_t max_bytes_per_receivers(MITM_MPI_data& my_info)
+size_t get_nbytes_per_receivers(MITM_MPI_data& my_info)
 {
   return 0;
 }
 
+/* One round of computation for sender */
+template <typename Problem, typename... Types> void sender_round() {}
+
+/* One round of computation of receiver  */
+template <typename Problem, typename... Types> void receiver_round() {}
+
+
+
+template<typename Problem,  typename... Types>
+void sender(Problem& Pb,
+	    MITM_MPI_data& my_info,
+	    int difficulty,
+	    typename Problem::C_t& inp_St, // Startign point in chain
+	    typename Problem::C_t* inp0_pt,
+	    typename Problem::C_t* inp1_pt,
+	    typename Problem::C_t* out0_pt,
+	    typename Problem::C_t* out1_pt,
+	    typename Problem::C_t& inp_mixed,
+	    typename Problem::A_t& inp0A,
+	    typename Problem::A_t& inp1A,
+	    Types... args) /* two extra arguments if claw problem */
+{
+  using C_t = typename Problem::C_t;
+  /* Pseudo-random number generators for elements */
+
+  PRNG prng_elm;
+  PRNG prng_mix; /* for mixing function */
+  PearsonHash byte_hasher{}; /* todo update PearsonHash to accept a seed */
+  /* variable to generate families of functions f_i: C -> C */
+  /* typename Problem::I_t */
+  auto i = Pb.mix_default();
+  
+  int emitter_rank = my_info.nreceivers;
+  u64 seeds[2] = {0, 0};
+
+
+
+  // if my intercomm rank = 0, i.e. I am the leader
+  // I am resposible for sending the initial seed.
+  if (my_info.my_rank_global == emitter_rank){
+    /* Update the seeds buffer */
+    // todo 
+  }
+  
+  /* All sender should agree on mixing function in each round */  
+  /* Broadcast seeds to everyone */
+  MPI_Bcast(seeds, 2, MPI_UINT64_T, emitter_rank, my_info.global_comm);
+
+  /* Update PRNGs according to the received seed */
+
+  while (true){
+    sender_round<Problem, Types... >();
+    /* Update seeds */
+    /* wait for the others to update their seeds */
+  }
+}
+
+template<typename Problem,  typename... Types>
+void reciever(Problem& Pb,
+	      MITM_MPI_data& my_info,
+	      int difficulty,
+	      typename Problem::C_t& inp_St, // Startign point in chain
+	      typename Problem::C_t* inp0_pt,
+	      typename Problem::C_t* inp1_pt,
+	      typename Problem::C_t* out0_pt,
+	      typename Problem::C_t* out1_pt,
+	      typename Problem::C_t& inp_mixed,
+	      typename Problem::A_t& inp0A,
+	      typename Problem::A_t& inp1A,
+	      Types... args) /* two extra arguments if claw problem */
+{
+  using C_t = typename Problem::C_t;
+
+  /*============================= DICT INIT ==================================*/
+  size_t nbytes_memory = get_nbytes_per_receivers(my_info);
+  
+  Dict<u64, C_t, Problem> dict{nbytes_memory};
+  printf("Recv %d initialized a dict with %llu slots = 2^%0.2f slots\n",
+	 my_info.my_rank_intercomm, dict.n_slots, std::log2(dict.n_slots));
+
+  /*=============== data extracted from dictionarry ==========================*/
+  u64 out0_digest = 0;
+  
+  
+  /*=========================== Collisions counters ==========================*/
+  /* How many steps does it take to get a distinguished point from  an input */
+  size_t chain_length0 = 0;
+  size_t chain_length1 = 0;
+
+  Counters ctr{}; /* various non-essential counters */
+  
+  bool found_a_collision = false;
+  
+  /* We should have ration 1/3 real collisions and 2/3 false collisions */
+  bool found_dist = false;
+
+  /* we found a pair of inputs that lead to the golden collisoin or golden claw! */
+  bool found_golden_pair = false;
+
+  /* Receivers in each round should use the same mix functions as all the senders */
+  // after each round a dictionary must be flushed
+
+  
+
+}
   
 /******************************************************************************/
 
@@ -478,8 +590,6 @@ void search_generic(Problem& Pb,
 
   /*=============== data extracted from dictionarry ==========================*/
   u64 out0_digest = 0;
-
-
   
   
   /*=========================== Collisions counters ==========================*/
@@ -494,9 +604,11 @@ void search_generic(Problem& Pb,
   /* We should have ration 1/3 real collisions and 2/3 false collisions */
   bool found_dist = false;
 
+
   /* variable to generate families of functions f_i: C -> C */
   /* typename Problem::I_t */
   auto i = Pb.mix_default();
+
 
   /* we found a pair of inputs that lead to the golden collisoin or golden claw! */
   bool found_golden_pair = false;
@@ -513,7 +625,7 @@ void search_generic(Problem& Pb,
 
   /*----------------------------MAIN COMPUTATION------------------------------*/
   /*=================== Generate Distinguished Points ========================*/
-
+  // todo start here 
   while (not found_golden_pair){
 
     /* These simulations show that if 10w distinguished points are generated
