@@ -55,8 +55,15 @@ public:
     //gen64.seed(read_urandom<uint64_t>());
   };
 
+  /* Initializes with a given a seed */
+  PRNG(uint64_t seed){ gen64.seed(seed); }
+
   void update_seed() { gen64.seed(rd());  }
 
+  /* Resets the internal state of */
+  void set_seed(uint64_t s) { gen64.seed(s);}
+  
+  
   uint64_t rand(){
     return gen64();
     //return read_urandom<uint64_t>();
@@ -99,18 +106,20 @@ class PearsonHash{
 			   0xea, 0xeb, 0xec, 0xed, 0xee, 0xef, 0xf0, 0xf1, 0xf2,
 			   0xf3, 0xf4, 0xf5, 0xf6, 0xf7, 0xf8, 0xf9, 0xfa, 0xfb,
 			   0xfc, 0xfd, 0xfe, 0xff };
+
   /* random number generator based on urandom */
   std::random_device rd{};
   std::mt19937 g;
 
   /* given a byte b0b1b2b3...b7 return (b0 xor b1 xor ... xor b7)*/
-  uint8_t fold_byte(uint8_t byte) const {
+  uint8_t fold_byte(uint8_t byte) const
+  {
     byte ^= byte >> 4;
     byte ^= byte >> 2;
     byte ^= byte >> 1;
     // Return the least significant bit
     return byte & 1;
-}
+  }
   
 public:
   PearsonHash()
@@ -120,24 +129,40 @@ public:
     std::shuffle(T.begin(), T.end(), g);
   }
 
+
+  PearsonHash(uint64_t seed)
+  {
+    g.seed(seed);
+    /* T must be a permutation. At the beginning it's the identity. */
+    std::shuffle(T.begin(), T.end(), g);
+  }
+
+
+  /* With random seed */
   void update_table()
   {
     g.seed(rd());
     std::shuffle(T.begin(), T.end(), rd);
   }
 
+  /* We control the seed */
+  void update_table(uint64_t seed)
+  {
+    g.seed(seed);
+    std::shuffle(T.begin(), T.end(), rd);
+  }
+
+  void set_seed(uint64_t s){ update_table(s);}
+  
   /* returns 1 bit after hashing n to an */
   uint8_t operator()(uint64_t n)
 
   {
-    // return n&1;
-    
     uint8_t result = 0;
     uint8_t const mask = 0xFF;
 
     for (size_t i = 0; i < sizeof(uint64_t); ++i)
       /* result = T[result xor  8-bit of n] */
-
       result ^= T[result ^ ((n>>(i*8))&mask) ];
 
     return (result&1);

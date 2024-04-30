@@ -236,6 +236,33 @@ template <typename Problem, typename... Types> void sender_round() {}
 template <typename Problem, typename... Types> void receiver_round() {}
 
 
+/* Everyone should agree on the same seed at the beginning.
+ * Update the arguments: mixer_seed, byte_hasher_seed */
+void seed_agreement(MITM_MPI_data& my_info,
+			   u64& mixer_seed,
+			   u64& byte_hasher_seed)
+{
+  u64 seeds[2] = {0};
+  int emitter_rank = my_info.nreceivers;
+
+  // if my intercomm rank = 0, i.e. I am the leader
+  // I am resposible for sending the initial seed.
+  if (my_info.my_rank_global == emitter_rank){
+    seeds[0] = read_urandom<u64>();
+    seeds[1] = read_urandom<u64>();
+  }
+  
+  /* All sender should agree on mixing function in each round */  
+  /* Broadcast seeds to everyone */
+  MPI_Bcast(seeds, 2, MPI_UINT64_T, emitter_rank, my_info.global_comm);
+
+  /* Write the received seeds to my memory */
+  mixer_seed = seeds[0];
+  byte_hasher_seed = seeds[1];
+
+  /* It was a nice exchange, thank you! */
+}
+
 
 template<typename Problem,  typename... Types>
 void sender(Problem& Pb,
@@ -254,35 +281,37 @@ void sender(Problem& Pb,
   using C_t = typename Problem::C_t;
   /* Pseudo-random number generators for elements */
 
-  PRNG prng_elm;
-  PRNG prng_mix; /* for mixing function */
-  PearsonHash byte_hasher{}; /* todo update PearsonHash to accept a seed */
+  // ======================================================================== //
+  //                                 STEP 1                                   //
+  // ------------------------------------------------------------------------ //
+  //      Initialization, and  agreeing on mix_function and walk function     //
+  // ------------------------------------------------------------------------ //
+  u64 mixer_seed;
+  u64 byte_hasher_seed;
+
+  seed_agreement(my_info, mixer_seed, byte_hasher_seed);
+
+  /* Now, mixing function and byte_hasher are the same among all processes */
+  PRNG prng_mix{mixer_seed}; /* for mixing function */
+  PearsonHash byte_hasher{byte_hasher_seed}; /* todo update PearsonHash to accept a seed */
   /* variable to generate families of functions f_i: C -> C */
   /* typename Problem::I_t */
   auto i = Pb.mix_default();
   
-  int emitter_rank = my_info.nreceivers;
-  u64 seeds[2] = {0, 0};
+  /* Generating a starting point should be independent in each process,
+   * otherwise, we are repeatign the same work in each process!   */
+  PRNG prng_elm;
 
-
-
-  // if my intercomm rank = 0, i.e. I am the leader
-  // I am resposible for sending the initial seed.
-  if (my_info.my_rank_global == emitter_rank){
-    /* Update the seeds buffer */
-    // todo 
-  }
-  
-  /* All sender should agree on mixing function in each round */  
-  /* Broadcast seeds to everyone */
-  MPI_Bcast(seeds, 2, MPI_UINT64_T, emitter_rank, my_info.global_comm);
-
-  /* Update PRNGs according to the received seed */
+  // ======================================================================== //
+  //                                 STEP 2                                   //
+  // ------------------------------------------------------------------------ //
 
   while (true){
-    sender_round<Problem, Types... >();
-    /* Update seeds */
-    /* wait for the others to update their seeds */
+    sender_round<typename Problem, typename Types>();
+
+    /* Update seeds  */
+    /* Clear buffers */
+    /* repeat! */
   }
 }
 
@@ -331,8 +360,39 @@ void reciever(Problem& Pb,
   /* Receivers in each round should use the same mix functions as all the senders */
   // after each round a dictionary must be flushed
 
-  
+  // ======================================================================== //
+  //                                 STEP 1                                   //
+  //      Initialization, and  agreeing on mix_function and walk function     //
+  // ------------------------------------------------------------------------ //
+  u64 mixer_seed;
+  u64 byte_hasher_seed;
 
+  seed_agreement(my_info, mixer_seed, byte_hasher_seed);
+
+  /* Now, mixing function and byte_hasher are the same among all processes */
+  PRNG prng_mix{mixer_seed}; /* for mixing function */
+  PearsonHash byte_hasher{byte_hasher_seed}; /* todo update PearsonHash to accept a seed */
+  /* variable to generate families of functions f_i: C -> C */
+  /* typename Problem::I_t */
+  auto i = Pb.mix_default();
+  
+  /* Generating a starting point should be independent in each process,
+   * otherwise, we are repeatign the same work in each process!   */
+  PRNG prng_elm;
+
+  // ======================================================================== //
+  //                                 STEP 2                                   //
+  // ------------------------------------------------------------------------ //
+
+  while (true){
+    receiver_round<typename Problem, typename Types>();
+
+    /* Update seeds  */
+    /* Clear buffers */
+    /* Clear dictionary */
+    /* repeat! */
+  }
+  
 }
   
 /******************************************************************************/
