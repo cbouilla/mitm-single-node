@@ -112,7 +112,7 @@ namespace mitm {
 
 
 enum process_type{ SENDER,  RECEIVER };
-enum MITM_MPI_TAGS {INTERCOM_TAG}; // to be extended ...
+enum MITM_MPI_TAGS {INTERCOM_TAG, ROUND_SND_TAG}; // to be extended ...
 
 
 struct MITM_MPI_data{
@@ -229,11 +229,105 @@ size_t get_nbytes_per_receivers(MITM_MPI_data& my_info)
   return 0;
 }
 
-/* One round of computation for sender */
-template <typename Problem, typename... Types> void sender_round() {}
+template<typename Problem,  typename... Types>
+int sender_fill_buff(Problem& Pb,
+		     int const difficulty,
+		     u64 const mixer_seed,
+		     u64 const byte_hasher_seed,
+		     u8*  const receivers_buf, // constant pointer
+		     i32* const receivers_buf_counters, // constant pointer
+		     typename Problem::C_t& inp_St, // Startign point in chain
+		     typename Problem::C_t* inp0_pt,
+		     typename Problem::C_t* inp1_pt,
+		     typename Problem::C_t* out0_pt,
+		     typename Problem::C_t* out1_pt,
+		     typename Problem::C_t& inp_mixed,
+		     typename Problem::A_t& inp0A,
+		     typename Problem::A_t& inp1A,
+		     Types... args)/* two extra arguments if claw problem */
+{
+  // todo complete this part
+}
+
+/* Send x messages to receivers, after that update, return was golden collision found?  */
+template<typename Problem,  typename... Types>
+bool sender_round(Problem& Pb,
+		  MITM_MPI_data& my_info,
+		  int const difficulty,
+		  u64 const mixer_seed,
+		  u64 const byte_hasher_seed,
+		  u8*  const receivers_buf, // constant pointer
+		  i32* const receivers_buf_counters, // constant pointer 
+		  u8*  const snd_buf, // constant pointer 
+		  typename Problem::C_t& inp_St, // Startign point in chain
+		  typename Problem::C_t* inp0_pt,
+		  typename Problem::C_t* inp1_pt,
+		  typename Problem::C_t* out0_pt,
+		  typename Problem::C_t* out1_pt,
+		  typename Problem::C_t& inp_mixed,
+		  typename Problem::A_t& inp0A,
+		  typename Problem::A_t& inp1A,
+		  Types... args)/* two extra arguments if claw problem */
+
+{
+  size_t const buf_size = my_info.nelements_buffer * Pb.C.size;
+  MPI_Request request;
+  int buf_id =  sender_fill_buff(Pb,
+				 difficulty,
+				 mixer_seed,
+				 byte_hasher_seed,
+				 receivers_buf,
+				 receivers_buf_counters,
+				 inp_St,
+				 inp0_pt,
+				 inp1_pt,
+				 out0_pt,
+				 out1_pt,
+				 inp_mixed,
+				 inp0A,
+				 inp1A,
+				 args...);
+  size_t nsends = 100;
+  for (size_t i = 0; i < nsends; ++i){ // tood x is the number of times to fill buffer
+    /* Send the buffer that is already full  */
+    MPI_Isend(snd_buf,
+	      buf_size,
+	      MPI_UNSIGNED_CHAR,
+	      buf_id,
+	      ROUND_SND_TAG,
+	      my_info.inter_comm,
+	      &request);
+
+    /* Fill buffers until one becomes full */
+    sender_fill_buff(Pb,
+		     difficulty,
+		     mixer_seed,
+		     byte_hasher_seed,
+		     receivers_buf,
+		     receivers_buf_counters,
+		     inp_St,
+		     inp0_pt,
+		     inp1_pt,
+		     out0_pt,
+		     out1_pt,
+		     inp_mixed,
+		     inp0A,
+		     inp1A,
+		     args...);
+
+    /* Check that the previous sending was completed */
+    MPI_Wait(&request, MPI_STATUSES_IGNORE);
+
+  }
+
+  /* send the remaining elements in the buffer */
+  // todo complete this section
+
+  return false; /* no golden collision was found */
+}
 
 /* One round of computation of receiver  */
-template <typename Problem, typename... Types> void receiver_round() {}
+template <typename Problem, typename... Types> bool receiver_round() {}
 
 
 /* Everyone should agree on the same seed at the beginning.
@@ -281,11 +375,19 @@ void sender(Problem& Pb,
   using C_t = typename Problem::C_t;
   /* Pseudo-random number generators for elements */
 
+  size_t buf_size = my_info.nelements_buffer * Pb.C.size;
+  
+  /* ----------------------------- sender buffers ---------------------------- */
+  u8*  receivers_buf = new u8[my_info.nreceivers * buf_size];
 
-  /* ----------------------------- sender buffer ---------------------------- */
-  u8* snd_buff;
-  snd_buff = new u8[my_info.nreceivers * my_info.nelements_buffer * Pb.C.size ];
+  /* How many elements buffered in each recv buf */
+  i32* receivers_buf_ctr = new i32[my_info.nreceivers * my_info.nelements_buffer];
 
+  /* buffer to be sent by MPI */
+  u8* snd_buf  = new u8[buf_size];
+  
+  
+  
   // ======================================================================== //
   //                                 STEP 1                                   //
   // ------------------------------------------------------------------------ //
@@ -312,15 +414,26 @@ void sender(Problem& Pb,
   // ------------------------------------------------------------------------ //
 
    while (true){
-    sender_round<typename Problem, typename Types>();
+     sender_round(Pb,
+		  my_info,
+		  difficulty,  mixer_seed,  byte_hasher_seed,
+		  receivers_buf,  receivers_buf_ctr,  snd_buf,
+		  inp_St, inp0_pt, inp1_pt, out0_pt, out1_pt, inp_mixed,
+		  inp0A, inp1A,  args...);
+     
 
-    /* Update seeds  */
+     /* Update seeds  */
 
-    /* Clear buffers */
-    std::memset(snd_buff, 0, my_info.nreceivers * my_info.nelements_buffer * Pb.C.size);
+     /* Clear buffers */
+     std::memset(receivers_buf, 0, my_info.nreceivers * buf_size);
+     std::memset(receivers_buf_ctr, 0, my_info.nreceivers * my_info.nelements_buffer);
+     std::memset(snd_buf, 0,  buf_size);
     /* repeat! */
   }
-   delete[] snd_buff;
+   delete[] receivers_buf;
+   delete[] receivers_buf_ctr;
+   delete[] snd_buf;
+
 }
 
 template<typename Problem,  typename... Types>
@@ -338,6 +451,7 @@ void reciever(Problem& Pb,
 	      Types... args) /* two extra arguments if claw problem */
 {
   using C_t = typename Problem::C_t;
+  size_t const buf_size = my_info.nelements_buffer * Pb.C.size;
   // ======================================================================== //
   //                          STEP 0:  INTITALIZATION                         //
   // ------------------------------------------------------------------------ //
@@ -351,27 +465,28 @@ void reciever(Problem& Pb,
 	 my_info.my_rank_intercomm, dict.n_slots, std::log2(dict.n_slots));
 
   /* ----------------------------- receive buffer ---------------------------- */
-  u8* rcv_buff;
-  rcv_buff = new u8[my_info.nelements_buffer * Pb.C.size];
+  u8* rcv_buf  = new u8[buf_size];
+  u8* work_buf = new u8[buf_size];
 
+  
   /* ---------------- data inserted/extracted from dictionarry -------------- */
-  u64 out0_digest = 0;
-  size_t chain_length1 = 0;
-  // C_t* out1_pt,
+  // u64 out0_digest = 0;
+  // size_t chain_length1 = 0;
+  // // C_t* out1_pt,
   
-  /*--------------------------- Collisions counters --------------------------*/
-  /* How many steps does it take to get a distinguished point from  an input */
-  size_t chain_length0 = 0;
-  Counters ctr{}; /* various non-essential counters */
+  // /*--------------------------- Collisions counters --------------------------*/
+  // /* How many steps does it take to get a distinguished point from  an input */
+  // size_t chain_length0 = 0;
+  // Counters ctr{}; /* various non-essential counters */
 
-  /* ----------------------------- Query Results ---------------------------- */
-  bool found_a_collision = false;
+  // /* ----------------------------- Query Results ---------------------------- */
+  // bool found_a_collision = false;
   
-  /* We should have ration 1/3 real collisions and 2/3 false collisions */
-  bool found_dist = false;
+  // /* We should have ration 1/3 real collisions and 2/3 false collisions */
+  // bool found_dist = false;
 
-  /* we found a pair of inputs that lead to the golden collisoin or golden claw! */
-  bool found_golden_pair = false;
+  // /* we found a pair of inputs that lead to the golden collisoin or golden claw! */
+  // bool found_golden_pair = false;
 
 
 
@@ -403,19 +518,22 @@ void reciever(Problem& Pb,
   // ======================================================================== //
   //                                 STEP 3                                   //
   // ------------------------------------------------------------------------ //
-
-  while (true){
-    receiver_round<typename Problem, typename Types>();
+  bool found_golden_inputs = false;
+  
+  while (not found_golden_inputs){
+    found_golden_inputs = receiver_round<Problem,  Types...>();
 
     /* Update seeds  */
     /* Clear receiv buffers */
-    std::memset(rcv_buff, 0, my_info.nelements_buffer * Pb.C.size);
+    std::memset(rcv_buf, 0, my_info.nelements_buffer * Pb.C.size);
+    std::memset(work_buf, 0, my_info.nelements_buffer * Pb.C.size);
     /* Clear dictionary */
     dict.flush();
     /* repeat! */
   }
 
-  delete[] rcv_buff;
+  delete[] rcv_buf;
+  delete[] work_buf;
 }
   
 /******************************************************************************/
