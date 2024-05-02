@@ -146,6 +146,7 @@ commands = []
 repaeat = 40
 
 for triple in all_triples:
+    nbits_C = triple[-1]
     for difficulty in range(min(difficulty_range + 1, nbits_C//2)):
         for log2_ram in range(nbits_C//2, nbits_C):
             run_cmd = f"./sha2_collision_demo_{nbits_C}_{difficulty} {log2_ram} {difficulty}"

@@ -281,6 +281,11 @@ void sender(Problem& Pb,
   using C_t = typename Problem::C_t;
   /* Pseudo-random number generators for elements */
 
+
+  /* ----------------------------- sender buffer ---------------------------- */
+  u8* snd_buff;
+  snd_buff = new u8[my_info.nreceivers * my_info.nelements_buffer * Pb.C.size ];
+
   // ======================================================================== //
   //                                 STEP 1                                   //
   // ------------------------------------------------------------------------ //
@@ -306,13 +311,16 @@ void sender(Problem& Pb,
   //                                 STEP 2                                   //
   // ------------------------------------------------------------------------ //
 
-  while (true){
+   while (true){
     sender_round<typename Problem, typename Types>();
 
     /* Update seeds  */
+
     /* Clear buffers */
+    std::memset(snd_buff, 0, my_info.nreceivers * my_info.nelements_buffer * Pb.C.size);
     /* repeat! */
   }
+   delete[] snd_buff;
 }
 
 template<typename Problem,  typename... Types>
@@ -330,25 +338,33 @@ void reciever(Problem& Pb,
 	      Types... args) /* two extra arguments if claw problem */
 {
   using C_t = typename Problem::C_t;
+  // ======================================================================== //
+  //                          STEP 0:  INTITALIZATION                         //
+  // ------------------------------------------------------------------------ //
 
-  /*============================= DICT INIT ==================================*/
+  
+  /* ------------------------------- DICT INIT ------------------------------ */
   size_t nbytes_memory = get_nbytes_per_receivers(my_info);
   
   Dict<u64, C_t, Problem> dict{nbytes_memory};
   printf("Recv %d initialized a dict with %llu slots = 2^%0.2f slots\n",
 	 my_info.my_rank_intercomm, dict.n_slots, std::log2(dict.n_slots));
 
-  /*=============== data extracted from dictionarry ==========================*/
+  /* ----------------------------- receive buffer ---------------------------- */
+  u8* rcv_buff;
+  rcv_buff = new u8[my_info.nelements_buffer * Pb.C.size];
+
+  /* ---------------- data inserted/extracted from dictionarry -------------- */
   u64 out0_digest = 0;
+  size_t chain_length1 = 0;
+  // C_t* out1_pt,
   
-  
-  /*=========================== Collisions counters ==========================*/
+  /*--------------------------- Collisions counters --------------------------*/
   /* How many steps does it take to get a distinguished point from  an input */
   size_t chain_length0 = 0;
-  size_t chain_length1 = 0;
-
   Counters ctr{}; /* various non-essential counters */
-  
+
+  /* ----------------------------- Query Results ---------------------------- */
   bool found_a_collision = false;
   
   /* We should have ration 1/3 real collisions and 2/3 false collisions */
@@ -357,8 +373,7 @@ void reciever(Problem& Pb,
   /* we found a pair of inputs that lead to the golden collisoin or golden claw! */
   bool found_golden_pair = false;
 
-  /* Receivers in each round should use the same mix functions as all the senders */
-  // after each round a dictionary must be flushed
+
 
   // ======================================================================== //
   //                                 STEP 1                                   //
@@ -384,15 +399,23 @@ void reciever(Problem& Pb,
   //                                 STEP 2                                   //
   // ------------------------------------------------------------------------ //
 
+
+  // ======================================================================== //
+  //                                 STEP 3                                   //
+  // ------------------------------------------------------------------------ //
+
   while (true){
     receiver_round<typename Problem, typename Types>();
 
     /* Update seeds  */
-    /* Clear buffers */
+    /* Clear receiv buffers */
+    std::memset(rcv_buff, 0, my_info.nelements_buffer * Pb.C.size);
     /* Clear dictionary */
+    dict.flush();
     /* repeat! */
   }
-  
+
+  delete[] rcv_buff;
 }
   
 /******************************************************************************/
