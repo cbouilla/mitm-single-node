@@ -232,9 +232,13 @@ size_t get_nbytes_per_receivers(MITM_MPI_data& my_info)
 template<typename Problem,  typename... Types>
 int sender_fill_buff(Problem& Pb,
 		     int const difficulty,
-		     u64 const mixer_seed,
+		     PRNG& prng_elm,
+		     PRNG& prng_mix,
+		     PearsonHash& byte_hasher,
 		     u64 const byte_hasher_seed,
-		     u8*  const receivers_buf, // constant pointer
+		     u8*  const receivers_buf_inp, // constant pointer
+		     u8*  const receivers_buf_chains_lengths, // constant pointer
+		     u8*  const receivers_buf_out, // constant pointer
 		     i32* const receivers_buf_counters, // constant pointer
 		     typename Problem::C_t& inp_St, // Startign point in chain
 		     typename Problem::C_t* inp0_pt,
@@ -246,7 +250,7 @@ int sender_fill_buff(Problem& Pb,
 		     typename Problem::A_t& inp1A,
 		     Types... args)/* two extra arguments if claw problem */
 {
-  // todo complete this part
+  
 }
 
 /* Send x messages to receivers, after that update, return was golden collision found?  */
@@ -256,9 +260,11 @@ bool sender_round(Problem& Pb,
 		  int const difficulty,
 		  u64 const mixer_seed,
 		  u64 const byte_hasher_seed,
-		  u8*  const receivers_buf, // constant pointer
-		  i32* const receivers_buf_counters, // constant pointer 
-		  u8*  const snd_buf, // constant pointer 
+		  u8*  const receivers_buf_inp, // constant pointer
+		  u8*  const receivers_buf_chains_lengths, // constant pointer
+		  u8*  const receivers_buf_out, // constant pointer
+		  i32* const receivers_buf_counters, // constant pointer
+  		  u8*  const snd_buf, // constant pointer 
 		  typename Problem::C_t& inp_St, // Startign point in chain
 		  typename Problem::C_t* inp0_pt,
 		  typename Problem::C_t* inp1_pt,
@@ -272,11 +278,20 @@ bool sender_round(Problem& Pb,
 {
   size_t const buf_size = my_info.nelements_buffer * Pb.C.size;
   MPI_Request request;
+
+  u64 elm_seed = read_urandom<u64>();
+  PRNG prng_elm{elm_seed};
+  PRNG prng_mix{mixer_seed};
+  PearsonHash byte_hasher{byte_hasher_seed};
+  
   int buf_id =  sender_fill_buff(Pb,
 				 difficulty,
-				 mixer_seed,
-				 byte_hasher_seed,
-				 receivers_buf,
+				 prng_elm,
+				 prng_mix,
+				 byte_hasher,
+				 receivers_buf_inp,
+				 receivers_buf_chains_lengths,
+				 receivers_buf_inp,
 				 receivers_buf_counters,
 				 inp_St,
 				 inp0_pt,
@@ -301,9 +316,12 @@ bool sender_round(Problem& Pb,
     /* Fill buffers until one becomes full */
     sender_fill_buff(Pb,
 		     difficulty,
-		     mixer_seed,
-		     byte_hasher_seed,
-		     receivers_buf,
+		     prng_elm,
+		     prng_mix,
+		     byte_hasher,
+		     receivers_buf_inp,
+		     receivers_buf_chains_lengths,
+		     receivers_buf_inp,
 		     receivers_buf_counters,
 		     inp_St,
 		     inp0_pt,
@@ -314,7 +332,7 @@ bool sender_round(Problem& Pb,
 		     inp0A,
 		     inp1A,
 		     args...);
-
+    
     /* Check that the previous sending was completed */
     MPI_Wait(&request, MPI_STATUSES_IGNORE);
 
@@ -342,7 +360,7 @@ void seed_agreement(MITM_MPI_data& my_info,
   // if my intercomm rank = 0, i.e. I am the leader
   // I am resposible for sending the initial seed.
   if (my_info.my_rank_global == emitter_rank){
-    seeds[0] = read_urandom<u64>();
+     seeds[0] = read_urandom<u64>();
     seeds[1] = read_urandom<u64>();
   }
   
