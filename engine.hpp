@@ -228,7 +228,81 @@ size_t get_nbytes_per_receivers(MITM_MPI_data& my_info)
 {
   return 0;
 }
+/******************************************************************************/
 
+// -------------------------------------------------------------------------- //
+// ---------------------------------- SENDER --------------------------------- //
+
+/* Sender use these bufffers for data to be sent */
+
+struct sender_buffers {
+  // we could have an array of triple (inp, out, digest).
+  // Assume there are `n` receivers, per receiver we have `m` elements, each of
+  // size `l`. Then to get the ith element that will be sent to receiver `k`:
+  u8* inputs;   // ith input  <-  inputs[(k * m * l) +  i * l]
+  u64* outputs; // ith output <- outputs[(k * m)     +  i]
+  u32* chain_lengths; // ith chain length <- chain_length[(k * m)  +  i]
+
+  // ith element <- #elements stored in reciever i buffer. We use u16 since
+  // we are going to send ~1k at a time, i.e. nelements < 2^10 
+  u16* counters; 
+  
+  // One receiver buffers to be sent where all values chained as 
+  //  snd =  outputs || chain_length || inputs, i.e.
+  // ith output <-  cast_u64(snd[8*i]),
+  // ith chain_lenght <- cast_u32( snd[nelements*8 + i*4] )
+  // ith input <- snd[nelements*8 + nelements*4 + i*m]
+  u8* snd; 
+
+  size_t const nreceivers;
+  
+  sender_buffers(size_t nelements, size_t nreceivers, size_t element_size)
+    : nreceivers(nreceivers)
+  {
+
+    // Book nreceivers * nelements `bytes` for each receiver.
+    inputs  = new u8[nreceivers * nelements * element_size];
+
+    // on the other hand, we only send the digests.
+    outputs = new u64[nreceivers * nelements ];
+
+    // How many times we applied f(inp) to get the corresponding output
+    chain_lengths = new u32[nreceivers * nelements ];
+ 
+    snd = new u8[nelements*sizeof(u64)  // outputs of one receiver 
+		 + nelements*sizeof(u32) // chains lengths of 1 receiver
+		 + nelements*element_size]; // inputs of receiver
+
+    counters = new u16[nreceivers];
+
+    // Not sure, but I feel it's better to map virtual memory to ram right away!
+    inputs[0]        = 0;
+    outputs[0]       = 0;
+    chain_lengths[0] = 0;
+    snd[0]           = 0;
+    
+    // This is the only buffer that requires to be zero. 
+    std::memset(counters, 0, nreceivers*sizeof(u16));
+    
+  }
+
+  ~sender_buffers() /* free up the memory */
+  {
+    delete[] inputs ;
+    delete[] outputs;
+    delete[] chain_lengths;
+    delete[] snd;
+  }
+
+  /* Clear buffers for next use */
+  void clear()
+  { 
+    std::memset(counters, 0, nreceivers*sizeof(u16));  
+  }
+  
+};
+
+    
 template<typename Problem,  typename... Types>
 int sender_fill_buff(Problem& Pb,
 		     int const difficulty,
@@ -236,10 +310,7 @@ int sender_fill_buff(Problem& Pb,
 		     PRNG& prng_mix,
 		     PearsonHash& byte_hasher,
 		     u64 const byte_hasher_seed,
-		     u8*  const receivers_buf_inp, // constant pointer
-		     u8*  const receivers_buf_chains_lengths, // constant pointer
-		     u8*  const receivers_buf_out, // constant pointer
-		     i32* const receivers_buf_counters, // constant pointer
+		     sender_buffers& buffers,
 		     typename Problem::C_t& inp_St, // Startign point in chain
 		     typename Problem::C_t* inp0_pt,
 		     typename Problem::C_t* inp1_pt,
@@ -260,11 +331,7 @@ bool sender_round(Problem& Pb,
 		  int const difficulty,
 		  u64 const mixer_seed,
 		  u64 const byte_hasher_seed,
-		  u8*  const receivers_buf_inp, // constant pointer
-		  u8*  const receivers_buf_chains_lengths, // constant pointer
-		  u8*  const receivers_buf_out, // constant pointer
-		  i32* const receivers_buf_counters, // constant pointer
-  		  u8*  const snd_buf, // constant pointer 
+  		  sender_buffers& buffers, // constant pointer 
 		  typename Problem::C_t& inp_St, // Startign point in chain
 		  typename Problem::C_t* inp0_pt,
 		  typename Problem::C_t* inp1_pt,
@@ -393,17 +460,15 @@ void sender(Problem& Pb,
   using C_t = typename Problem::C_t;
   /* Pseudo-random number generators for elements */
 
-  size_t buf_size = my_info.nelements_buffer * Pb.C.size;
+
   
   /* ----------------------------- sender buffers ---------------------------- */
-  u8*  receivers_buf = new u8[my_info.nreceivers * buf_size];
-
-  /* How many elements buffered in each recv buf */
-  i32* receivers_buf_ctr = new i32[my_info.nreceivers * my_info.nelements_buffer];
-
-  /* buffer to be sent by MPI */
-  u8* snd_buf  = new u8[buf_size];
+  sender_buffers buffers(my_info.nelements_buffer,
+			 my_info.nreceivers,
+			 Pb.C.size);
   
+  
+
   
   
   // ======================================================================== //
@@ -411,10 +476,19 @@ void sender(Problem& Pb,
   // ------------------------------------------------------------------------ //
   //      Initialization, and  agreeing on mix_function and walk function     //
   // ------------------------------------------------------------------------ //
-  u64 mixer_seed;
-  u64 byte_hasher_seed;
+  /* Top seeds to be agreed among all processes */
+  u64 seed1;
+  u64 seed2;
 
-  seed_agreement(my_info, mixer_seed, byte_hasher_seed);
+  seed_agreement(my_info, seed1, seed2);
+
+  /* Then we generate the next seeds using prng (deterministic process) */
+  PRNG mixer_seed_gen{seed1};
+  u64 mixer_seed = mixer_seed_gen.rand();
+
+  PRNG byte_hasher_seed_gen{seed2};
+  u64 byte_hasher_seed = byte_hasher_seed_gen.rand();
+  
 
   /* Now, mixing function and byte_hasher are the same among all processes */
   PRNG prng_mix{mixer_seed}; /* for mixing function */
@@ -434,23 +508,25 @@ void sender(Problem& Pb,
    while (true){
      sender_round(Pb,
 		  my_info,
-		  difficulty,  mixer_seed,  byte_hasher_seed,
-		  receivers_buf,  receivers_buf_ctr,  snd_buf,
-		  inp_St, inp0_pt, inp1_pt, out0_pt, out1_pt, inp_mixed,
-		  inp0A, inp1A,  args...);
+		  difficulty,
+		  mixer_seed,  byte_hasher_seed,
+		  buffers,
+		  inp_St,
+		  inp0_pt, inp1_pt, out0_pt, out1_pt, inp_mixed,
+		  inp0A, inp1A,
+		  args...);
      
 
      /* Update seeds  */
-
+     mixer_seed = mixer_seed_gen.rand();
+     byte_hasher_seed = byte_hasher_seed_gen.rand();
+     
      /* Clear buffers */
-     std::memset(receivers_buf, 0, my_info.nreceivers * buf_size);
-     std::memset(receivers_buf_ctr, 0, my_info.nreceivers * my_info.nelements_buffer);
-     std::memset(snd_buf, 0,  buf_size);
+     buffers.clear();
+     
     /* repeat! */
   }
-   delete[] receivers_buf;
-   delete[] receivers_buf_ctr;
-   delete[] snd_buf;
+
 
 }
 
