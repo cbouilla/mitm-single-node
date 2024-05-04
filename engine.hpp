@@ -254,24 +254,31 @@ struct sender_buffers {
   // ith input <- snd[nelements*8 + nelements*4 + i*m]
   u8* snd; 
 
-  size_t const nreceivers;
+  size_t const snd_size_max;
+  size_t const element_size; /* we store this information twice! */
+  /* Au cas où, get a segmentation error if it used incorrectly. */
+  size_t snd_size = -1;
+  size_t counters_size;
   
   sender_buffers(size_t nelements, size_t nreceivers, size_t element_size)
-    : nreceivers(nreceivers)
+    : snd_size_max(nelements * (sizeof(u64) + sizeof(u32) + element_size)),
+      element_size(element_size),
+      counters_size(nreceivers)
   {
 
-    // Book nreceivers * nelements `bytes` for each receiver.
     inputs  = new u8[nreceivers * nelements * element_size];
 
-    // on the other hand, we only send the digests.
+    // on the other hand, we are only going send the digests.
     outputs = new u64[nreceivers * nelements ];
 
     // How many times we applied f(inp) to get the corresponding output
     chain_lengths = new u32[nreceivers * nelements ];
  
-    snd = new u8[nelements*sizeof(u64)  // outputs of one receiver 
-		 + nelements*sizeof(u32) // chains lengths of 1 receiver
-		 + nelements*element_size]; // inputs of receiver
+    // snd = new u8[nelements*sizeof(u64)  // outputs of one receiver 
+    // 		 + nelements*sizeof(u32) // chains lengths of 1 receiver
+    // 		 + nelements*element_size]; // inputs of receiver
+    snd = new u8[snd_size_max];
+    
 
     counters = new u16[nreceivers];
 
@@ -283,7 +290,6 @@ struct sender_buffers {
     
     // This is the only buffer that requires to be zero. 
     std::memset(counters, 0, nreceivers*sizeof(u16));
-    
   }
 
   ~sender_buffers() /* free up the memory */
@@ -297,20 +303,33 @@ struct sender_buffers {
   /* Clear buffers for next use */
   void clear()
   { 
-    std::memset(counters, 0, nreceivers*sizeof(u16));  
+    std::memset(counters, 0, counters_size*sizeof(u16));  
   }
-  
+
+  /* Put all data found in receivers number i buffers (inputs, outputs, chains)
+   * into snd_buffer. Use counters[i] to see how many elements to put in the 
+   */
+  void copy_receiver_i_to_snd(int id)
+  {
+    snd_size = static_cast<u64>(counters[id])
+             * (sizeof(u64) + sizeof(u32) + element_size);
+
+    // todo: check this sizeof(u64) * counters[id] is on u64;
+    size_t offset = sizeof(u64) * counters[id];
+    std::memcpy(&snd[0], outputs, offset);
+    std::memcpy(&snd[offset], chain_lengths, sizeof(u32) * counters[id]);
+
+    offset += sizeof(u32) * counters[id];
+    std::memcpy(&snd[offset], inputs, element_size * counters[id]);
+  }
 };
 
     
 template<typename Problem,  typename... Types>
 int sender_fill_buff(Problem& Pb,
 		     int const difficulty,
-		     PRNG& prng_elm,
-		     PRNG& prng_mix,
-		     PearsonHash& byte_hasher,
-		     u64 const byte_hasher_seed,
-		     sender_buffers& buffers,
+		     PearsonHash const& byte_hasher,
+		     sender_buffers& buffers, // constant pointer 
 		     typename Problem::C_t& inp_St, // Startign point in chain
 		     typename Problem::C_t* inp0_pt,
 		     typename Problem::C_t* inp1_pt,
@@ -329,8 +348,7 @@ template<typename Problem,  typename... Types>
 bool sender_round(Problem& Pb,
 		  MITM_MPI_data& my_info,
 		  int const difficulty,
-		  u64 const mixer_seed,
-		  u64 const byte_hasher_seed,
+		  PearsonHash const& byte_hasher,
   		  sender_buffers& buffers, // constant pointer 
 		  typename Problem::C_t& inp_St, // Startign point in chain
 		  typename Problem::C_t* inp0_pt,
@@ -343,37 +361,27 @@ bool sender_round(Problem& Pb,
 		  Types... args)/* two extra arguments if claw problem */
 
 {
-  size_t const buf_size = my_info.nelements_buffer * Pb.C.size;
   MPI_Request request;
 
   u64 elm_seed = read_urandom<u64>();
+  /* Generating a starting point should be independent in each process,
+   * otherwise, we are repeatign the same work in each process!   */
   PRNG prng_elm{elm_seed};
-  PRNG prng_mix{mixer_seed};
-  PearsonHash byte_hasher{byte_hasher_seed};
+
   
   int buf_id =  sender_fill_buff(Pb,
 				 difficulty,
-				 prng_elm,
-				 prng_mix,
 				 byte_hasher,
-				 receivers_buf_inp,
-				 receivers_buf_chains_lengths,
-				 receivers_buf_inp,
-				 receivers_buf_counters,
-				 inp_St,
-				 inp0_pt,
-				 inp1_pt,
-				 out0_pt,
-				 out1_pt,
-				 inp_mixed,
-				 inp0A,
-				 inp1A,
-				 args...);
-  size_t nsends = 100;
+				 buffers,
+				 inp_St, inp0_pt, inp1_pt, out0_pt, out1_pt,
+				 inp_mixed, inp0A, inp1A, args...);
+
+  size_t nsends = 100; /* todo pick a good number! */
+
   for (size_t i = 0; i < nsends; ++i){ // tood x is the number of times to fill buffer
     /* Send the buffer that is already full  */
-    MPI_Isend(snd_buf,
-	      buf_size,
+    MPI_Isend(buffers.snd,
+	      buffers.snd_size,
 	      MPI_UNSIGNED_CHAR,
 	      buf_id,
 	      ROUND_SND_TAG,
@@ -381,28 +389,15 @@ bool sender_round(Problem& Pb,
 	      &request);
 
     /* Fill buffers until one becomes full */
-    sender_fill_buff(Pb,
-		     difficulty,
-		     prng_elm,
-		     prng_mix,
-		     byte_hasher,
-		     receivers_buf_inp,
-		     receivers_buf_chains_lengths,
-		     receivers_buf_inp,
-		     receivers_buf_counters,
-		     inp_St,
-		     inp0_pt,
-		     inp1_pt,
-		     out0_pt,
-		     out1_pt,
-		     inp_mixed,
-		     inp0A,
-		     inp1A,
-		     args...);
-    
+    buf_id =  sender_fill_buff(Pb,
+			       difficulty,
+			       byte_hasher,
+			       buffers,
+			       inp_St, inp0_pt, inp1_pt, out0_pt, out1_pt,
+			       inp_mixed, inp0A, inp1A, args...);
+
     /* Check that the previous sending was completed */
     MPI_Wait(&request, MPI_STATUSES_IGNORE);
-
   }
 
   /* send the remaining elements in the buffer */
@@ -471,45 +466,45 @@ void sender(Problem& Pb,
 
   
   
-  // ======================================================================== //
-  //                                 STEP 1                                   //
-  // ------------------------------------------------------------------------ //
-  //      Initialization, and  agreeing on mix_function and walk function     //
-  // ------------------------------------------------------------------------ //
+  // ======================================================================== +
+  //                                 STEP 1                                   +
+  // ------------------------------------------------------------------------ +
+  //      Initialization, and  agreeing on mix_function and walk function     +
+  // ------------------------------------------------------------------------ +
   /* Top seeds to be agreed among all processes */
   u64 seed1;
   u64 seed2;
 
   seed_agreement(my_info, seed1, seed2);
-
+  // ------------------------------------------------------------------------+
+  // Create my local PRNG that agrees with everyone globally.
   /* Then we generate the next seeds using prng (deterministic process) */
   PRNG mixer_seed_gen{seed1};
   u64 mixer_seed = mixer_seed_gen.rand();
 
   PRNG byte_hasher_seed_gen{seed2};
   u64 byte_hasher_seed = byte_hasher_seed_gen.rand();
-  
 
   /* Now, mixing function and byte_hasher are the same among all processes */
   PRNG prng_mix{mixer_seed}; /* for mixing function */
-  PearsonHash byte_hasher{byte_hasher_seed}; /* todo update PearsonHash to accept a seed */
+  PearsonHash byte_hasher{byte_hasher_seed};
+  
   /* variable to generate families of functions f_i: C -> C */
   /* typename Problem::I_t */
   auto i = Pb.mix_default();
-  
-  /* Generating a starting point should be independent in each process,
-   * otherwise, we are repeatign the same work in each process!   */
+  // -------------------------------------------------------------------------+
+
   PRNG prng_elm;
 
-  // ======================================================================== //
-  //                                 STEP 2                                   //
-  // ------------------------------------------------------------------------ //
+  // ======================================================================== +
+  //                                 STEP 2                                   +
+  // ------------------------------------------------------------------------ +
 
    while (true){
      sender_round(Pb,
 		  my_info,
 		  difficulty,
-		  mixer_seed,  byte_hasher_seed,
+		  byte_hasher,
 		  buffers,
 		  inp_St,
 		  inp0_pt, inp1_pt, out0_pt, out1_pt, inp_mixed,
@@ -520,11 +515,17 @@ void sender(Problem& Pb,
      /* Update seeds  */
      mixer_seed = mixer_seed_gen.rand();
      byte_hasher_seed = byte_hasher_seed_gen.rand();
+
+     /* update mix_function */
+     i = Pb.mix_sample(prng_mix);
+     
+     /* update byte_hasher (claw) */
+     byte_hasher.update_table(byte_hasher_seed);
      
      /* Clear buffers */
      buffers.clear();
      
-    /* repeat! */
+    /* repeat! and good luck! */
   }
 
 

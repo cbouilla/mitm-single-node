@@ -155,7 +155,7 @@ public:
   void set_seed(uint64_t s){ update_table(s);}
   
   /* returns 1 bit after hashing n to an */
-  uint8_t operator()(uint64_t n)
+  uint8_t operator()(uint64_t n) const
 
   {
     uint8_t result = 0;
