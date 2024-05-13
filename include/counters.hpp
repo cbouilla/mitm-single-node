@@ -2,6 +2,7 @@
 #define MITM_COUNTERS
 #include "timing.hpp"
 #include "util_file_system.hpp"
+#include <cstddef>
 #include <numeric>
 #include <string>
 #include <vector>
@@ -13,6 +14,7 @@ struct Counters {
   size_t const interval = (1LL<<15); // for printing only
   size_t n_updates = 0; // #times dict were flushed
   size_t n_collisions = 0;
+  size_t n_points = 0;
   
   // each entry contains number of distinguished point between
   size_t n_dist_points_previous = 0;
@@ -105,7 +107,7 @@ struct Counters {
 
     std::string column_names = "";
     /* common suffix for both problems*/
-    std::string suffix = "log2(nbytes),difficulty,#distinguished_points,log2(#distinguished_points),#collisions,log2(#collisions),#updates,time(sec)\n";
+    std::string suffix = "log2(nbytes),difficulty,#points,#distinguished_points,log2(#distinguished_points),#collisions,log2(#collisions),#updates,time(sec)\n";
     /* Depending on the problem, we have different column names */
     if (problem_type == "claw")
       column_names = "C_size,A_size,B_size," + suffix;
@@ -137,6 +139,7 @@ struct Counters {
                              + B_data
                              + std::to_string(log2_nbytes) + ", "
                              + std::to_string(difficulty)  + ", "
+                             + std::to_string(n_points)  + ", "
                              + std::to_string(total_distinguished_points)  + ", "
                              + std::to_string(log2_n_distinguished_points) + ", "
                              + std::to_string(n_collisions) + ", "

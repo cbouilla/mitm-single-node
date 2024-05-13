@@ -992,6 +992,7 @@ void search_generic(Problem& Pb,
       
       ++n_dist_points;
       ctr.increment_n_distinguished_points();
+      ctr.n_points += chain_length0;
 
       
       found_a_collision = dict.pop_insert(out0_digest, /* key */
