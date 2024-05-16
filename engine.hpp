@@ -120,6 +120,7 @@ struct MITM_MPI_data{
   MPI_Comm local_comm;  // Processes that do the same thing, e.g. senders. 
   MPI_Comm inter_comm;  // splitted into two: senders and receivers.
   size_t const nelements_buffer = 1000; // #elements stored in buffer during send/receive
+  size_t nelements_in_mem; // How many elements can be stored across all dictionaries.
   int nprocesses;      // Total number of processes.
   int nsenders;         // Total number of senders .
   int nreceivers;       // Total number of receivers.
@@ -152,6 +153,13 @@ int get_nodes_count(MPI_Comm comm)
 }
 
 
+/* Return how many bytes of RAM can a receiver allocate,
+ * if the available space is shared. */
+size_t get_nbytes_per_receivers(MITM_MPI_data& my_info)
+{
+  return 0;
+}
+
 /* Initializes mpi processes for mitm,  and splits senders and receivers into
  * seperate communicators. Aslo, gives the number of total numbers of senders
  *  and receivers, `nsenders` and `nreceivers` respectively,  and the number
@@ -172,7 +180,7 @@ MITM_MPI_data MITM_MPI_Init(int nreceivers, int argc=0, char** argv = NULL)
 
   /* Two disjoint groups: receivers, and senders */
   int is_receiver = (my_info.my_rank_global < nreceivers);
-  
+
   /* Create an inter-comm that seperates senders and receivers */
   MPI_Comm_split(MPI_COMM_WORLD, /* Communicator to be splitted */
 		 is_receiver, /* create comm with processes that share this value  */
@@ -182,21 +190,18 @@ MITM_MPI_data MITM_MPI_Init(int nreceivers, int argc=0, char** argv = NULL)
 
 
   /* Create communicator between the two clans of processes. */
-  
-  /*  Receivers establish their communication channel with senders */
   if (is_receiver) {
+    /*  Receivers establish their communication channel with senders */
     MPI_Intercomm_create(my_info.local_comm, /* my tribe */
 			 0, /* Local name of the sheikh of my tribe */
 			 MPI_COMM_WORLD, /* Where to find the remote leader. */
 			 nreceivers, /* Global Name/rank of senders leader. */
 			 INTERCOM_TAG, /* This tag is unique to the creation of intercomm */
 			 &my_info.inter_comm); /* <- put down these info here */
-
     my_info.my_role = RECEIVER;
-  }
-  
-  /* senders establish their communication channel with receivers */
-  else {
+    
+  } else {
+    /* senders establish their communication channel with receivers */
     MPI_Intercomm_create(my_info.local_comm, /* my tribe */
 			 0, /* Local name of the leader of my tribe */
 			 MPI_COMM_WORLD, /* Where to find the remote leade. */
@@ -217,24 +222,50 @@ MITM_MPI_data MITM_MPI_Init(int nreceivers, int argc=0, char** argv = NULL)
   MPI_Comm_rank(my_info.local_comm, &my_info.my_rank_intercomm);
   
 
+  /* We can say how many elements can be stored in memory */
+  // todo formulas are incorrect!
+  size_t nbytes_avaiable = get_available_memory();
+  size_t sender_needed_bytes = 0;
+  size_t dict_one_element_size = 1;
+  // memory available to all receivers per node 
+  size_t nelements_ram_receiver = (nbytes_avaiable - sender_needed_bytes);
+  // nelements that will be stored in all receivers per node
+  nelements_ram_receiver = nelements_ram_receiver / dict_one_element_size;
+  // nelements per receiver
+  nelements_ram_receiver = nelements_ram_receiver / my_info.nreceivers_node;
+
+  my_info.nelements_in_mem = nelements_ram_receiver;
 
   return my_info;
 }
 
 
-/* Return how many bytes of RAM can a receiver allocate,
- * if the available space is shared. */
-size_t get_nbytes_per_receivers(MITM_MPI_data& my_info)
-{
-  return 0;
-}
+/******************************************************************************/
+// Model of send receive:
+// 1) Create sender and receivers. Also, determine the number of elements
+//    the receivers have.
+// 2) Agree on seed by brodacasting the seed from rank 0 to everyone
+// 3) A sender fill receivers buffer and send as soon as a buffer is complete.
+//    Also, send the number of elements along with the message. This helps to
+//    say if sender has finished its round (all senders would do the same).
+//    The tag used is snd_tag + i where i is the round number to block
+//    from processing elements from the next round.
+// 4) recievers receive messages. increase a counter if the number of received
+//    is less than the maximum. update seeds when the counter is equal the
+//    equal the number of senders
+// 
+// 
+
+
 /******************************************************************************/
 
 // -------------------------------------------------------------------------- //
 // ---------------------------------- SENDER --------------------------------- //
 
-/* Sender use these bufffers for data to be sent */
-
+/* Create two type:
+ * 1) working buffers where we book t bytes for each receiver.
+ * 2) sending buffers that are ready to be sent to specific receivers. 
+ */
 struct sender_buffers {
   // we could have an array of triple (inp, out, digest).
   // Assume there are `n` receivers, per receiver we have `m` elements, each of
@@ -259,7 +290,8 @@ struct sender_buffers {
   /* Au cas où, get a segmentation error if it used incorrectly. */
   size_t snd_size = -1;
   size_t counters_size;
-  
+
+  /* sender has: 1) working buffers. 2) sending buffers ready to be sent  */
   sender_buffers(size_t nelements, size_t nreceivers, size_t element_size)
     : snd_size_max(nelements * (sizeof(u64) + sizeof(u32) + element_size)),
       element_size(element_size),
@@ -277,7 +309,7 @@ struct sender_buffers {
     // snd = new u8[nelements*sizeof(u64)  // outputs of one receiver 
     // 		 + nelements*sizeof(u32) // chains lengths of 1 receiver
     // 		 + nelements*element_size]; // inputs of receiver
-    snd = new u8[snd_size_max];
+    snd = new u8[snd_size_max + 4]; // + 4 for ntriples in buffer 
     
 
     counters = new u16[nreceivers];
@@ -309,18 +341,21 @@ struct sender_buffers {
   /* Put all data found in receivers number i buffers (inputs, outputs, chains)
    * into snd_buffer. Use counters[i] to see how many elements to put in the 
    */
-  void copy_receiver_i_to_snd(int id)
+  void copy_receiver_i_to_snd(int id, int msg_size)
   {
     snd_size = static_cast<u64>(counters[id])
              * (sizeof(u64) + sizeof(u32) + element_size);
 
     // todo: check this sizeof(u64) * counters[id] is on u64;
-    size_t offset = sizeof(u64) * counters[id];
+    size_t offset = sizeof(u64) * counters[id]; 
     std::memcpy(&snd[0], outputs, offset);
     std::memcpy(&snd[offset], chain_lengths, sizeof(u32) * counters[id]);
 
     offset += sizeof(u32) * counters[id];
     std::memcpy(&snd[offset], inputs, element_size * counters[id]);
+
+    // todo add msg_size at the end of the buffer
+    
   }
 };
 
@@ -376,8 +411,9 @@ bool sender_round(Problem& Pb,
 				 inp_St, inp0_pt, inp1_pt, out0_pt, out1_pt,
 				 inp_mixed, inp0A, inp1A, args...);
 
-  size_t nsends = 100; /* todo pick a good number! */
-
+  size_t beta = 10; // Wiener&Oorschost say 
+  size_t nsends = beta * (my_info.nelements_in_mem / my_info.nsenders);
+  
   for (size_t i = 0; i < nsends; ++i){ // tood x is the number of times to fill buffer
     /* Send the buffer that is already full  */
     MPI_Isend(buffers.snd,
@@ -402,7 +438,7 @@ bool sender_round(Problem& Pb,
 
   /* send the remaining elements in the buffer */
   // todo complete this section
-
+  
   return false; /* no golden collision was found */
 }
 
@@ -413,8 +449,8 @@ template <typename Problem, typename... Types> bool receiver_round() {}
 /* Everyone should agree on the same seed at the beginning.
  * Update the arguments: mixer_seed, byte_hasher_seed */
 void seed_agreement(MITM_MPI_data& my_info,
-			   u64& mixer_seed,
-			   u64& byte_hasher_seed)
+		    u64& mixer_seed,
+		    u64& byte_hasher_seed)
 {
   u64 seeds[2] = {0};
   int emitter_rank = my_info.nreceivers;
@@ -993,7 +1029,6 @@ void search_generic(Problem& Pb,
       ++n_dist_points;
       ctr.increment_n_distinguished_points();
       ctr.n_points += chain_length0;
-
       
       found_a_collision = dict.pop_insert(out0_digest, /* key */
 					   inp_St, /* value  */
