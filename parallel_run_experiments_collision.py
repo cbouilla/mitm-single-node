@@ -9,74 +9,61 @@ import os
 # from tqdm import tqdm
 import subprocess
 import time
+import math
+import random
+import argparse
 
-bits_range = list(range(8, 10))
+
+# Read the problem size from the command line
+parser = argparse.ArgumentParser()
+
+parser.add_argument("-n",
+                    type=int,
+                    help="f:{0, 1}^n -> {0, 1}^n, run many collision finding experiments for this function")
+
+args = parser.parse_args()
+
+
+
+
+#bits_range = list(range(18, 19))
+bits_range = list(range(args.n, args.n+1))
+
 # let's focus when they are equal
 all_triples = [(i, i, i) for i in bits_range]  # itr.product(bytes_range, repeat=3)
-nruns = 30  # How many times we run the code for the same triple value
+print(f"all triples= {all_triples}")
+nruns = 20000  # How many times we run the code for the same triple value
 difficulty_range = 48  # i.e. difficulty between 0 and difficulty_range included
 
 
-def edit_claw_demo(triple):
-    """Replace the nbytes_c, nbytes_b, nbytes_a from."""
-    keywords = ["NBITS_A", "NBITS_B", "NBITS_C"]
 
-    with open("demos/sha2_collision_demo.cpp", "r") as claw,\
-         open("demos/tmp_col.cpp", "w") as tmp:
-        for line in claw:
-            for i in range(len(keywords)):
-                if line.startswith("#define " + keywords[i]):
-                    line = "#define " + keywords[i] + " " + str(triple[i])\
-                         + " \n"
-            tmp.write(line)
+def is_memory_enough(command):
+    import psutil
+    import re
 
-    os.replace("demos/tmp_col.cpp", "demos/sha2_collision_demo.cpp")
+    # Get the available memory at the system
+    memory = psutil.virtual_memory()
+    available_mem = memory.available
+    
+    # see how many bytes the problem requires
+    pattern = r'./sha2_collision_demo_(\d+)_(\d+) (\d+) (\d+)'
+    results = re.search(pattern, command)
 
+    if results:
+        nbits = int(results.group(1))
+        log2_ram = int(results.group(3))
 
-def print_errors_if_any(result):
-    """Print errors if any from subprocess run."""
-    if result.stderr:
-        print("Error:", result.stderr.decode())
+        print(f"command: {command}")
 
 
-def compile_project():
-    """Compile the project."""
-    clean_cmake = "rm -rf CMakeCache.txt  CMakeFiles/"
-    compile_cmd = "cmake -S . -B . -D AES_IMPL=aesni && make"
+        # memory estimated to be used by the program
+        space = (2**log2_ram) * (8 + 8 + (nbits_C+7)//8 )
+        print(f"nbits={nbits}, log2_ram={log2_ram}, space={space} bytes, available={available_mem} bytes")
+        if 2**(log2_ram+2 - 3) < 0.85 * available_mem:
+            return True
 
-    result = subprocess.run(clean_cmake, shell=True,
-                            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-    print_errors_if_any(result)
-
-    result = subprocess.run(compile_cmd, shell=True,
-                            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-    print_errors_if_any(result)
-
-
-
-def rename_executable(nbits_A_C, difficulty):
-    move_cmd = f"cp sha2_collision_demo sha2_collision_demo_{nbits_A_C}_{difficulty}"
-    result = subprocess.run(move_cmd, shell=True,
-                            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-    print_errors_if_any(result)
-
-
-
-def run_project(log2_nbytes, difficulty, timeout=300):
-    """Run the code."""
-    run_cmd = f"./sha2_collision_demo {log2_nbytes} {difficulty}"
-    try:
-        result = subprocess.run(run_cmd,
-                                shell=True,
-                                timeout=timeout,
-                                stdout=subprocess.DEVNULL,
-                                stderr=subprocess.PIPE)
-
-    except subprocess.TimeoutExpired:
-        print("Command timed out after 1 hour.")
-    else:
-        print_errors_if_any(result)
-
+    return False
+    
 
 # source: chatgpt
 def run_commands_in_parallel(commands, max_processes, timeout=8*60):
@@ -105,11 +92,14 @@ def run_commands_in_parallel(commands, max_processes, timeout=8*60):
         clean_up_processes()
 
         # Wait if we have reached the maximum number of parallel processes
-        while len(processes) >= max_processes:
+        not_enough_memory = not (is_memory_enough(command))
+        print(f"number of processes now = {len(processes)}")
+        while (len(processes) >= max_processes) or not_enough_memory:
             time.sleep(1)  # Sleep briefly to avoid constant CPU usage
             clean_up_processes()
 
         # Start a new subprocess
+        print(f"running {command}")
         process = subprocess.Popen(command, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
         processes.append(process)
         start_times[process] = time.time()  # Track the start time of this process
@@ -122,44 +112,30 @@ def run_commands_in_parallel(commands, max_processes, timeout=8*60):
     print("All processes have completed.")
 
 
-# First compile all the triples sequentially
-for triple in all_triples:
-    print(f"Triple: {triple}")
-    edit_claw_demo(triple)
-    compile_project()
-
-    nbits_C = triple[-1]
-    for difficulty in range(min(difficulty_range + 1, nbits_C)):
-        rename_executable(nbits_C, difficulty)
-
-    # for difficulty in range(min(difficulty_range + 1, nbits_C)):
-    #     print(f"difficulty={difficulty}, (|C|, |A|, |B|)={triple}")
-    #     try:
-    #         for _ in tqdm(range(nruns)):
-    #             run_project(int(nbits_C/2), difficulty)
-    #     except:
-    #         print("Think about installing tqdm by pip install tqdm")
-    #         for _ in range(nruns):
-    #             run_project(difficulty)
 
 commands = []
-repaeat = 40
-
+# create a list commands to be runned
 for triple in all_triples:
     nbits_C = triple[-1]
-    for difficulty in range(min(difficulty_range + 1, nbits_C//2)):
-        for log2_ram in range(nbits_C//2, nbits_C):
-            run_cmd = f"./sha2_collision_demo_{nbits_C}_{difficulty} {log2_ram} {difficulty}"
+    #difficulty_range = (nbits_C // 2) + 3
+    #for difficulty in range(min(difficulty_range + 1, nbits_C//2)):
+    #for difficulty in range(difficulty_range):
+    for log2_ram in range(4,  (nbits_C//2) +  4):
+        # theta = alpha * sqrt(w/n), difficulty = 1/theta, alpha = 2.25,
+        # w = 2^log2_ram, n = 2^nbits_C
+        difficulty = int((nbits_C - log2_ram)//2 + math.log2(2.225))
+        run_cmd = f"./sha2_collision_demo_{nbits_C}_{difficulty} {log2_ram} {difficulty}"
+        for _ in range(nruns):
             commands.append(run_cmd)
 
+commands[::-1]
+random.shuffle(commands)
 
 # Running in Parallel
-timeout = 8*60
-max_processes = os.cpu_count()
+timeout = 3*60*60
+max_processes =  os.cpu_count() 
 print(f"Going to use {max_processes} parallel processes...")
 run_commands_in_parallel(commands, max_processes, timeout)
 
 
-# Finally collect all data in a single file
-os.system("cat data/collision_* > data/collision_summary.csv")
 print("DONE!")

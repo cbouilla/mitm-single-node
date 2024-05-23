@@ -1090,7 +1090,7 @@ void search_generic(Problem& Pb,
 				      );
 
 
-	  double log2_nwords = std::log2(dict.nelements);
+	  double log2_nwords = std::log2(dict.n_slots);
           /* todo think about a sensible way to pass |A|, |C|,  */
 	  if constexpr (sizeof...(args) == 0) 
 	    ctr.save_summary_stats("collision",
