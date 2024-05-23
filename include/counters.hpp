@@ -84,7 +84,7 @@ struct Counters {
 			  size_t A_size,
 			  size_t B_size,
 			  size_t C_size,
-			  double log2_nbytes,
+			  double log2_nwords, // how many words are stored in dict 
 			  int difficulty)
   {
     end_time = wtime();
@@ -107,7 +107,7 @@ struct Counters {
 
     std::string column_names = "";
     /* common suffix for both problems*/
-    std::string suffix = "log2(nbytes),difficulty,#points,#distinguished_points,log2(#distinguished_points),#collisions,log2(#collisions),#updates,time(sec)\n";
+    std::string suffix = "log2(nwords),difficulty,#points,#distinguished_points,log2(#distinguished_points),#collisions,log2(#collisions),#updates,time(sec)\n";
     /* Depending on the problem, we have different column names */
     if (problem_type == "claw")
       column_names = "C_size,A_size,B_size," + suffix;
@@ -137,7 +137,7 @@ struct Counters {
     std::string summary_data = std::to_string(C_size) + ", "
                              + std::to_string(A_size) + ", "
                              + B_data
-                             + std::to_string(log2_nbytes) + ", "
+                             + std::to_string(log2_nwords) + ", "
                              + std::to_string(difficulty)  + ", "
                              + std::to_string(n_points)  + ", "
                              + std::to_string(total_distinguished_points)  + ", "

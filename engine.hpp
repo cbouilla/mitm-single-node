@@ -1090,14 +1090,14 @@ void search_generic(Problem& Pb,
 				      );
 
 
-	  double log2_nbytes = std::log2(nbytes_memory);
+	  double log2_nwords = std::log2(dict.nelements);
           /* todo think about a sensible way to pass |A|, |C|,  */
 	  if constexpr (sizeof...(args) == 0) 
 	    ctr.save_summary_stats("collision",
 				   Pb.nbits_A,/* = |A| */
 				   0,/* save summary will ignore this if it 0 */
 				   Pb.nbits_C,
-				   log2_nbytes,
+				   log2_nwords,
 				   difficulty);
 
 	  if constexpr (sizeof...(args) == 2) 
@@ -1105,7 +1105,7 @@ void search_generic(Problem& Pb,
 				   Pb.nbits_A,/* = |A| */
 				   Pb.nbits_B,/* = |B| */
 				   Pb.nbits_C,
-				   log2_nbytes,
+				   log2_nwords,
 				   difficulty);
 
 	  return; /* nothing more to do */
