@@ -279,37 +279,47 @@ MITM_MPI_data MITM_MPI_Init(int nreceivers,
 
 /* Create two type:
  * 1) working buffers where we book t bytes for each receiver.
- * 2) sending buffers that are ready to be sent to specific receivers. 
- */
+ * 2) sending buffers that are ready to be sent to specific receivers.
+ * Note: OUT_T is the digest of the output, we limit ourselves to 64bit digest.
+ *       CHAIN_LENGTH_T choosen to be u32 since we expect difficulty to be less 32bits
+ */ // inputs don't need to be templated since they are sequence of bytes.
+template <typename OUT_T = u64, typename CHAIN_LENGTH_T = u32>
 struct sender_buffers {
-  // we could have an array of triple (inp, out, digest).
-  // Assume there are `n` receivers, per receiver we have `m` elements, each of
-  // size `l`. Then to get the ith element that will be sent to receiver `k`:
-  u8* inputs;   // ith input  <-  inputs[(k * m * l) +  i * l]
-  u64* outputs; // ith output <- outputs[(k * m)     +  i]
-  u32* chain_lengths; // ith chain length <- chain_length[(k * m)  +  i]
 
-  // ith element <- #elements stored in reciever i buffer. We use u16 since
-  // we are going to send ~1k at a time, i.e. nelements < 2^10 
-  u16* counters; 
   
-  // One receiver buffers to be sent where all values chained as 
-  //  snd =  outputs || chain_length || inputs, i.e.
-  // ith output <-  cast_u64(snd[8*i]),
-  // ith chain_lenght <- cast_u32( snd[nelements*8 + i*4] )
+  // Assume there are `n` receivers, per receiver we send `m` elements, each of
+  // size `l`.
+  // Then to get the ith element that will be sent to receiver `r`:
+  u8* inputs;   // ith input  <-  inputs[(r * m * l) +  i * l]
+  u64* outputs; // ith output <- outputs[(r * m)     +  i]
+  u32* chain_lengths; // ith chain length <- chain_length[(r * m)  +  i]
+
+  // ith element <- #elements stored in reciever `r` buffer. 
+  // We use u16 since nelements to be sent  are ~1k at a time < 2^16
+  u16* counters; 
+
+  // When a receiver `r' buffers (inputs, outputs, chain_lengths) gets filled,
+  // it will be copied to `snd` buffer. Then, MPI will upload `snd` to the
+  // receiver `r`.
+  // In `snd` all values are chained as the following
+  //  snd =  outputs || chain_length || inputs || nelements,
+  // i.e.
+  // ith output <-  cast_u64(snd[8*i]), recall we send digests as the outputs
+  // ith chain_length <- cast_u32( snd[nelements*8 + i*4] )
   // ith input <- snd[nelements*8 + nelements*4 + i*m]
   u8* snd; 
-
+  // todo start from here
   size_t const snd_size_max;
-  size_t const element_size; /* we store this information twice! */
   /* Au cas où, get a segmentation error if it used incorrectly. */
   size_t snd_size = -1;
   size_t counters_size;
 
 
   /* sender has: 1) working buffers. 2) sending buffers ready to be sent  */
-  sender_buffers(size_t nelements, size_t nreceivers, size_t element_size)
-    : snd_size_max(nelements * (sizeof(u64) + sizeof(u32) + element_size)),
+  sender_buffers(size_t nelements,
+		 size_t nreceivers,
+		 size_t inp_size)
+    : snd_size_max(nelements * (sizeof(OUT_T) + sizeof(u32) + inp_size)),
       element_size(element_size),
       counters_size(nreceivers)
   {
@@ -428,7 +438,7 @@ bool sender_round(Problem& Pb,
 				 inp_mixed, inp0A, inp1A, args...);
 
   size_t beta = 10; // Wiener&Oorschost say 
-  size_t nsends = beta * (my_info.nelements_in_mem / my_info.nsenders);
+  size_t nsends = beta * (my_info.nelements_mem_receiver * my_info.nsenders);
   
   for (size_t i = 0; i < nsends; ++i){ // tood x is the number of times to fill buffer
     /* Send the buffer that is already full  */
