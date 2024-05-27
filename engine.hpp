@@ -114,13 +114,13 @@ namespace mitm {
 enum process_type{ SENDER,  RECEIVER };
 enum MITM_MPI_TAGS {INTERCOM_TAG, ROUND_SND_TAG}; // to be extended ...
 
-
+/* A wrapper to MPI data associated with a process. */
 struct MITM_MPI_data{
   MPI_Comm global_comm; // Global communicator. Kept just in case, todo to be removed!
   MPI_Comm local_comm;  // Processes that do the same thing, e.g. senders. 
   MPI_Comm inter_comm;  // splitted into two: senders and receivers.
   size_t const nelements_buffer = 1000; // #elements stored in buffer during send/receive
-  size_t nelements_in_mem; // How many elements can be stored across all dictionaries.
+  size_t nelements_mem_receiver; // How many elements can be stored across all dictionaries.
   int nprocesses;      // Total number of processes.
   int nsenders;         // Total number of senders .
   int nreceivers;       // Total number of receivers.
@@ -134,9 +134,9 @@ struct MITM_MPI_data{
 
     
 /* Get the number of number of physical nodes that runs the program.
- * It requires MPI 3 or above.
+ * It requires MPI-3 or higher.
  * source: https://stackoverflow.com/a/34118174 */
-int get_nodes_count(MPI_Comm comm)
+int get_nodes_count()
 {
   int rank, is_rank0, nodes;
   MPI_Comm shmcomm;
@@ -160,6 +160,15 @@ size_t get_nbytes_per_receivers(MITM_MPI_data& my_info)
   return 0;
 }
 
+/* Return how many bytes a sender would allocated for sending buffers */
+size_t sender_buffer_size(MITM_MPI_data& my_info,
+			  size_t element_size /* |(inp, digest, chain_length)| */
+			  )
+{
+  return (my_info.nreceivers + 1) * (my_info.nelements_buffer)
+         * element_size + sizeof(u8);
+}
+  
 /* Initializes mpi processes for mitm,  and splits senders and receivers into
  * seperate communicators. Aslo, gives the number of total numbers of senders
  *  and receivers, `nsenders` and `nreceivers` respectively,  and the number
@@ -168,7 +177,9 @@ size_t get_nbytes_per_receivers(MITM_MPI_data& my_info)
  * specs without affecting the code.
  * 
  */
-MITM_MPI_data MITM_MPI_Init(int nreceivers, int argc=0, char** argv = NULL)
+MITM_MPI_data MITM_MPI_Init(int nreceivers,
+			    size_t element_size, //  |(inp, hash, chain_length)|
+			    int argc=0, char** argv = NULL)
 {
   MITM_MPI_data my_info{};
   
@@ -186,7 +197,7 @@ MITM_MPI_data MITM_MPI_Init(int nreceivers, int argc=0, char** argv = NULL)
 		 is_receiver, /* create comm with processes that share this value  */
 		 my_info.my_rank_global, 
 		 &my_info.inter_comm /* New communicator. */
-		 ); /* sad face for the seperation between processes */
+		 ); /* sad face for the separation between processes */
 
 
   /* Create communicator between the two clans of processes. */
@@ -195,7 +206,7 @@ MITM_MPI_data MITM_MPI_Init(int nreceivers, int argc=0, char** argv = NULL)
     MPI_Intercomm_create(my_info.local_comm, /* my tribe */
 			 0, /* Local name of the sheikh of my tribe */
 			 MPI_COMM_WORLD, /* Where to find the remote leader. */
-			 nreceivers, /* Global Name/rank of senders leader. */
+			 nreceivers, /* Global rank of senders leader. */
 			 INTERCOM_TAG, /* This tag is unique to the creation of intercomm */
 			 &my_info.inter_comm); /* <- put down these info here */
     my_info.my_role = RECEIVER;
@@ -205,7 +216,7 @@ MITM_MPI_data MITM_MPI_Init(int nreceivers, int argc=0, char** argv = NULL)
     MPI_Intercomm_create(my_info.local_comm, /* my tribe */
 			 0, /* Local name of the leader of my tribe */
 			 MPI_COMM_WORLD, /* Where to find the remote leade. */
-			 0, /* Global name/rank of receivers leader. */
+			 0, /* Global rank of receivers leader. */
 			 INTERCOM_TAG, /* This tag is unique to the creation of intercomm */
 			 &my_info.inter_comm); /* <- put down these info here */
 
@@ -215,7 +226,7 @@ MITM_MPI_data MITM_MPI_Init(int nreceivers, int argc=0, char** argv = NULL)
   /* Fill the rest of the details  */
   my_info.nsenders = my_info.nprocesses - nreceivers;
   my_info.nreceivers = nreceivers;
-  my_info.nnodes = get_nodes_count(MPI_COMM_WORLD);
+  my_info.nnodes = get_nodes_count();
   my_info.nsenders_node = my_info.nsenders / my_info.nnodes;
   my_info.nreceivers_node = my_info.nreceivers / my_info.nnodes;
   
@@ -224,17 +235,21 @@ MITM_MPI_data MITM_MPI_Init(int nreceivers, int argc=0, char** argv = NULL)
 
   /* We can say how many elements can be stored in memory */
   // todo formulas are incorrect!
-  size_t nbytes_avaiable = get_available_memory();
-  size_t sender_needed_bytes = 0;
-  size_t dict_one_element_size = 1;
-  // memory available to all receivers per node 
-  size_t nelements_ram_receiver = (nbytes_avaiable - sender_needed_bytes);
-  // nelements that will be stored in all receivers per node
-  nelements_ram_receiver = nelements_ram_receiver / dict_one_element_size;
-  // nelements per receiver
-  nelements_ram_receiver = nelements_ram_receiver / my_info.nreceivers_node;
+  size_t nbytes_avaiable_node = get_available_memory();
+  /* How many bytes a sender needed for the sending buffers */
+  /* On my local node, how many bytes senders would consume? */
+  size_t senders_needed_bytes_node = my_info.nsenders_node
+                                   * sender_buffer_size(my_info, element_size);
+  
 
-  my_info.nelements_in_mem = nelements_ram_receiver;
+  //   size_t dict_one_element_size = element_size;
+  // memory available to all receivers per node 
+  size_t nelements_ram_receivers_node = (nbytes_avaiable_node - senders_needed_bytes_node);
+  // nelements that will be stored in all receivers per node
+  nelements_ram_receivers_node = nelements_ram_receivers_node / element_size;
+  // nelements per receiver
+  size_t nelements_ram_receiver = nelements_ram_receivers_node / my_info.nreceivers_node;
+  my_info.nelements_mem_receiver = nelements_ram_receiver;
 
   return my_info;
 }
@@ -290,6 +305,7 @@ struct sender_buffers {
   /* Au cas où, get a segmentation error if it used incorrectly. */
   size_t snd_size = -1;
   size_t counters_size;
+
 
   /* sender has: 1) working buffers. 2) sending buffers ready to be sent  */
   sender_buffers(size_t nelements, size_t nreceivers, size_t element_size)
