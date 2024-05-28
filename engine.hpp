@@ -283,10 +283,11 @@ MITM_MPI_data MITM_MPI_Init(int nreceivers,
  * Note: OUT_T is the digest of the output, we limit ourselves to 64bit digest.
  *       CHAIN_LENGTH_T choosen to be u32 since we expect difficulty to be less 32bits
  */ // inputs don't need to be templated since they are sequence of bytes.
-template <typename OUT_T = u64, typename CHAIN_LENGTH_T = u32>
+//template <typename OUT_T = u64, typename CHAIN_LENGTH_T = u32>
 struct sender_buffers {
 
-  
+  using OUT_T = u64;
+  using CHAIN_LENGTH_T = u32;
   // Assume there are `n` receivers, per receiver we send `m` elements, each of
   // size `l`.
   // Then to get the ith element that will be sent to receiver `r`:
@@ -297,7 +298,8 @@ struct sender_buffers {
   // ith element <- #elements stored in reciever `r` buffer. 
   // We use u16 since nelements to be sent  are ~1k at a time < 2^16
   u16* counters; 
-
+  size_t const counter_size = sizeof(u16);
+  
   // When a receiver `r' buffers (inputs, outputs, chain_lengths) gets filled,
   // it will be copied to `snd` buffer. Then, MPI will upload `snd` to the
   // receiver `r`.
@@ -308,34 +310,41 @@ struct sender_buffers {
   // ith chain_length <- cast_u32( snd[nelements*8 + i*4] )
   // ith input <- snd[nelements*8 + nelements*4 + i*m]
   u8* snd; 
-  // todo start from here
-  size_t const snd_size_max;
-  /* Au cas où, get a segmentation error if it used incorrectly. */
-  size_t snd_size = -1;
-  size_t counters_size;
+  // Maximum number of elements in a single send.
+  size_t const nelements_snd_max;
+  /* Regardless of the number of elements in the buffer, always send fixed  */
+  size_t const snd_size; // amount of bytes.
+  size_t const nreceivers; 
+  size_t const inp_size;
+  size_t const inp_out_chain_size;
+  // How many bytes for counter that counts how many triples in the send buffer
 
-
+  
   /* sender has: 1) working buffers. 2) sending buffers ready to be sent  */
-  sender_buffers(size_t nelements,
-		 size_t nreceivers,
-		 size_t inp_size)
-    : snd_size_max(nelements * (sizeof(OUT_T) + sizeof(u32) + inp_size)),
-      element_size(element_size),
-      counters_size(nreceivers)
+  sender_buffers(size_t const nelements,
+		 size_t const nreceivers,
+		 size_t const inp_size)
+    // The last 4 bytes for #triples in the buffer.
+    : nelements_snd_max(nelements),
+      snd_size(nelements * (sizeof(OUT_T) + sizeof(u32) + inp_size) + counter_size),
+      nreceivers(nreceivers),
+      inp_size(inp_size),
+      inp_out_chain_size(sizeof(OUT_T) + sizeof(u32) + inp_size)
   {
-
-    inputs  = new u8[nreceivers * nelements * element_size];
+    inputs  = new u8[nreceivers * nelements_snd_max * inp_size];
 
     // on the other hand, we are only going send the digests.
-    outputs = new u64[nreceivers * nelements ];
+    //outputs = new u64[nreceivers * nelements ];
+    outputs = new OUT_T[nreceivers * nelements_snd_max];
 
     // How many times we applied f(inp) to get the corresponding output
-    chain_lengths = new u32[nreceivers * nelements ];
+    // chain_lengths = new u32[nreceivers * nelements ];
+    chain_lengths = new CHAIN_LENGTH_T[nreceivers * nelements_snd_max ];
  
     // snd = new u8[nelements*sizeof(u64)  // outputs of one receiver 
     // 		 + nelements*sizeof(u32) // chains lengths of 1 receiver
     // 		 + nelements*element_size]; // inputs of receiver
-    snd = new u8[snd_size_max + 4]; // + 4 for ntriples in buffer 
+    snd = new u8[snd_size]; // + 4 for ntriples in buffer
     
 
     counters = new u16[nreceivers];
@@ -361,27 +370,47 @@ struct sender_buffers {
   /* Clear buffers for next use */
   void clear()
   { 
-    std::memset(counters, 0, counters_size*sizeof(u16));  
+    std::memset(counters, 0, nreceivers*sizeof(u16));  
   }
 
   /* Put all data found in receivers number i buffers (inputs, outputs, chains)
    * into snd_buffer. Use counters[i] to see how many elements to put in the 
    */
-  void copy_receiver_i_to_snd(int id, int msg_size)
+  void copy_receiver_i_to_snd(int id)
   {
-    snd_size = static_cast<u64>(counters[id])
-             * (sizeof(u64) + sizeof(u32) + element_size);
+    // Recall: snd = [outputs] || [chain lengths] || [inputs]
+    // where each array has fixed size |element| * nelements_max_snd regardless
+    // of the number of actual elements.
+    
+    // snd_size = static_cast<u64>(counters[id]) * inp_out_chain_size
+    //          + counter_size;
 
     // todo: check this sizeof(u64) * counters[id] is on u64;
-    size_t offset = sizeof(u64) * counters[id]; 
-    std::memcpy(&snd[0], outputs, offset);
-    std::memcpy(&snd[offset], chain_lengths, sizeof(u32) * counters[id]);
-
-    offset += sizeof(u32) * counters[id];
-    std::memcpy(&snd[offset], inputs, element_size * counters[id]);
-
-    // todo add msg_size at the end of the buffer
+    //    size_t offset = sizeof(OUT_T) * counters[id];  // wrong
     
+    //size_t offset = 0; 
+    std::memcpy(&snd[0],
+		outputs,
+		sizeof(OUT_T) * counters[id]);
+
+    // It is always constant regardless of #elements stored.
+    size_t const offset_chain = sizeof(OUT_T) * nelements_snd_max;
+    std::memcpy(&snd[offset_chain],
+		chain_lengths,
+		sizeof(CHAIN_LENGTH_T) * counters[id]);
+
+    size_t const offset_out = (sizeof(CHAIN_LENGTH_T) * nelements_snd_max)
+                            + offset_chain;
+    
+    std::memcpy(&snd[offset_chain],
+		inputs,
+		inp_size * counters[id]);
+
+    // Finally add how many elements were copied.
+    size_t const offset_ctr = offset_out + offset_chain + (inp_size * counters[id]);
+    std::memcpy(&snd[offset_ctr],
+		&counters[id],
+		counter_size);
   }
 };
 
