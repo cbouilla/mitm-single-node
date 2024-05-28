@@ -179,21 +179,21 @@ struct sender_buffers {
  * RETURN: receiver id whose buffer is full.
  */
 template<typename Problem,  typename... Types>
-int sender_fill_buff(Problem& Pb,
-		     int const difficulty,
-		     PRNG& prng_elm,
-		     PearsonHash const& byte_hasher,
-		     sender_buffers& buffers, // constant pointer
-		     typename Problem::I_t& func_idx,
-		     typename Problem::C_t& inp_St, // Startign point in chain
-		     typename Problem::C_t* inp0_pt,
-		     typename Problem::C_t* inp1_pt,
-		     typename Problem::C_t* out0_pt,
-		     typename Problem::C_t* out1_pt,
-		     typename Problem::C_t& inp_mixed,
-		     typename Problem::A_t& inp0A,
-		     typename Problem::A_t& inp1A,
-		     Types... args)/* two extra arguments if claw problem */
+int fill_buffers(Problem& Pb,
+		 int const difficulty,
+		 PRNG& prng_elm,
+		 PearsonHash const& byte_hasher,
+		 sender_buffers& buffers, // constant pointer
+		 typename Problem::I_t& func_idx,
+		 typename Problem::C_t& inp_St, // Startign point in chain
+		 typename Problem::C_t* inp0_pt,
+		 typename Problem::C_t* inp1_pt,
+		 typename Problem::C_t* out0_pt,
+		 typename Problem::C_t* out1_pt,
+		 typename Problem::C_t& inp_mixed,
+		 typename Problem::A_t& inp0A,
+		 typename Problem::A_t& inp1A,
+		 Types... args)/* two extra arguments if claw problem */
 {
   size_t chain_length = 0;
   int found_dist = -1; // Was the search for a disitinguished point successful?
@@ -243,6 +243,7 @@ int sender_fill_buff(Problem& Pb,
 template<typename Problem,  typename... Types>
 bool sender_round(Problem& Pb,
 		  MITM_MPI_data& my_info,
+		  size_t round_number, // used to differetiate between different function updates
 		  int const difficulty,
 		  PearsonHash const& byte_hasher,
   		  sender_buffers& buffers, // constant pointer
@@ -273,34 +274,47 @@ bool sender_round(Problem& Pb,
   for (size_t i = 0; i < nsends; ++i){ // tood x is the number of times to fill buffer
 
     /* Fill buffers until one becomes full */
-    buf_id =  sender_fill_buff(Pb,
-			       difficulty,
-			       prng_elm,
-			       byte_hasher,
-			       func_idx,
-			       buffers,
-			       inp_St, inp0_pt, inp1_pt, out0_pt, out1_pt,
-			       inp_mixed, inp0A, inp1A, args...);
+    buf_id =  fill_buffers(Pb,
+			   difficulty,
+			   prng_elm,
+			   byte_hasher,
+			   func_idx,
+			   buffers,
+			   inp_St, inp0_pt, inp1_pt, out0_pt, out1_pt,
+			   inp_mixed, inp0A, inp1A, args...);
     buffers.clear_buf(buf_id); // reset the buffer counter.
 
     if (i > 0) // skip MPI_Wait in the first round
       MPI_Wait(&request, MPI_STATUSES_IGNORE); // wait for the previous send.
 
+    // todo copy buffers to snd buffer!!!
+    buffers.copy_receiver_i_to_snd(buf_id);
+    
     /* Send the buffer that is already full  */
     MPI_Isend(buffers.snd,
 	      buffers.snd_size,
 	      MPI_UNSIGNED_CHAR,
 	      buf_id,
-	      ROUND_SND_TAG,
+	      ROUND_SND_TAG + round_number, // todo don't forget to add round number to the tag. Also, check ROUND_SND_TAG is the largest tag. // todo edit common_mpi.hpp
 	      my_info.inter_comm,
 	      &request);
-
-    
   }
-  // todo continue heer
-  /* send the remaining elements in the buffer */
 
-  
+  /* send the remaining elements in the buffer */
+  for (size_t id = 0; id < buffers.nreceivers; ++id){
+    buffers.copy_receiver_i_to_snd(id);
+    
+    /* Send the buffer that is already full  */
+    MPI_Isend(buffers.snd,
+	      buffers.snd_size,
+	      MPI_UNSIGNED_CHAR,
+	      id,
+	      ROUND_SND_TAG + round_number, // todo don't forget to add round number to the tag. Also, check ROUND_SND_TAG is the largest tag. // todo edit common_mpi.hpp
+	      my_info.inter_comm,
+	      &request);
+  }
+
+  // todo how sender would know a golden collision was found?
   return false; /* no golden collision was found */
 }
 
