@@ -122,6 +122,12 @@ struct sender_buffers {
     std::memset(counters, 0, nreceivers*sizeof(u16));  
   }
 
+  /* Reset buffer i counter to zero, and clear and other data if necessary */
+  void clear_buf(int id)
+  {
+    counters[id] = 0;
+  }
+
   /* Put all data found in receivers number i buffers (inputs, outputs, chains)
    * into snd_buffer. Use counters[i] to see how many elements to put in the 
    */
@@ -161,6 +167,11 @@ struct sender_buffers {
 		&counters[id],
 		counter_size);
   }
+
+  int to_which_receiver(u64 digest)
+  {
+    return 0; // todo fix this!
+  }
 };
 
 
@@ -170,8 +181,10 @@ struct sender_buffers {
 template<typename Problem,  typename... Types>
 int sender_fill_buff(Problem& Pb,
 		     int const difficulty,
+		     PRNG& prng_elm,
 		     PearsonHash const& byte_hasher,
-		     sender_buffers& buffers, // constant pointer 
+		     sender_buffers& buffers, // constant pointer
+		     typename Problem::I_t& func_idx,
 		     typename Problem::C_t& inp_St, // Startign point in chain
 		     typename Problem::C_t* inp0_pt,
 		     typename Problem::C_t* inp1_pt,
@@ -182,7 +195,48 @@ int sender_fill_buff(Problem& Pb,
 		     typename Problem::A_t& inp1A,
 		     Types... args)/* two extra arguments if claw problem */
 {
+  size_t chain_length = 0;
+  int found_dist = -1; // Was the search for a disitinguished point successful?
+  bool is_full_buffer = false;
+  size_t out_digest = 0;
+  size_t receiver_id = 0;
+  u16 buff_nelements = 0;
   
+  while(not is_full_buffer){
+    Pb.C.randomize(inp_St, prng_elm); // Get new fresh element.
+    Pb.C.copy(inp_St, *inp0_pt); // Copy the starting point to buffer that changes
+
+    found_dist = generate_dist_point(Pb,
+				     byte_hasher,
+				     func_idx, /* permutation number of f's input */
+				     chain_length,
+				     difficulty,
+				     inp0_pt,
+				     out0_pt,
+				     inp_mixed,
+				     inp0A,
+				     args...); /* for claw args := inp0B, inp1B */
+    if (found_dist){
+      out_digest = Pb.C.hash(*out0_pt);
+      // to which receiver?
+      receiver_id = (out_digest >> difficulty) % buffers.nreceivers;
+      // increment nelements counter
+      buff_nelements = buffers.counters[receiver_id]; 
+      // Copy the input, output, chain_length to receiver_id buffers
+      buffers.outputs[buff_nelements] = out_digest;
+      buffers.chain_lengths[buff_nelements] = chain_length;
+      Pb.C.serialize(inp_St, // from here to the location below // todo use Pb.C.size
+		     &buffers.inputs[buff_nelements * buffers.inp_size]
+		     );
+      // record the new number of elements in receiver_id buffer 
+      ++buffers.counters[receiver_id]; 
+
+      if (buffers.counters[receiver_id] >= buffers.nelements_snd_max)
+	is_full_buffer = true; // break from the loop
+    }
+  }
+
+  return receiver_id; // last one whose buffer became full.
 }
 
 /* Send x messages to receivers, after that update, return was golden collision found?  */
@@ -191,7 +245,8 @@ bool sender_round(Problem& Pb,
 		  MITM_MPI_data& my_info,
 		  int const difficulty,
 		  PearsonHash const& byte_hasher,
-  		  sender_buffers& buffers, // constant pointer 
+  		  sender_buffers& buffers, // constant pointer
+		  typename Problem::I_t& func_idx,
 		  typename Problem::C_t& inp_St, // Startign point in chain
 		  typename Problem::C_t* inp0_pt,
 		  typename Problem::C_t* inp1_pt,
@@ -211,17 +266,26 @@ bool sender_round(Problem& Pb,
   PRNG prng_elm{elm_seed};
 
   
-  int buf_id =  sender_fill_buff(Pb,
-				 difficulty,
-				 byte_hasher,
-				 buffers,
-				 inp_St, inp0_pt, inp1_pt, out0_pt, out1_pt,
-				 inp_mixed, inp0A, inp1A, args...);
-
+  int buf_id = -1;
   size_t beta = 10; // Wiener&Oorschost say 
   size_t nsends = beta * (my_info.nelements_mem_receiver * my_info.nsenders);
   
   for (size_t i = 0; i < nsends; ++i){ // tood x is the number of times to fill buffer
+
+    /* Fill buffers until one becomes full */
+    buf_id =  sender_fill_buff(Pb,
+			       difficulty,
+			       prng_elm,
+			       byte_hasher,
+			       func_idx,
+			       buffers,
+			       inp_St, inp0_pt, inp1_pt, out0_pt, out1_pt,
+			       inp_mixed, inp0A, inp1A, args...);
+    buffers.clear_buf(buf_id); // reset the buffer counter.
+
+    if (i > 0) // skip MPI_Wait in the first round
+      MPI_Wait(&request, MPI_STATUSES_IGNORE); // wait for the previous send.
+
     /* Send the buffer that is already full  */
     MPI_Isend(buffers.snd,
 	      buffers.snd_size,
@@ -231,20 +295,11 @@ bool sender_round(Problem& Pb,
 	      my_info.inter_comm,
 	      &request);
 
-    /* Fill buffers until one becomes full */
-    buf_id =  sender_fill_buff(Pb,
-			       difficulty,
-			       byte_hasher,
-			       buffers,
-			       inp_St, inp0_pt, inp1_pt, out0_pt, out1_pt,
-			       inp_mixed, inp0A, inp1A, args...);
-
-    /* Check that the previous sending was completed */
-    MPI_Wait(&request, MPI_STATUSES_IGNORE);
+    
   }
-
+  // todo continue heer
   /* send the remaining elements in the buffer */
-  // todo complete this section
+
   
   return false; /* no golden collision was found */
 }
