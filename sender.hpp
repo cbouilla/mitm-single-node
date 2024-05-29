@@ -168,10 +168,6 @@ struct sender_buffers {
 		counter_size);
   }
 
-  int to_which_receiver(u64 digest)
-  {
-    return 0; // todo fix this!
-  }
 };
 
 
@@ -184,7 +180,7 @@ int fill_buffers(Problem& Pb,
 		 PRNG& prng_elm,
 		 PearsonHash const& byte_hasher,
 		 sender_buffers& buffers, // constant pointer
-		 typename Problem::I_t& func_idx,
+		 typename Problem::I_t& fn_idx,
 		 typename Problem::C_t& inp_St, // Startign point in chain
 		 typename Problem::C_t* inp0_pt,
 		 typename Problem::C_t* inp1_pt,
@@ -208,7 +204,7 @@ int fill_buffers(Problem& Pb,
 
     found_dist = generate_dist_point(Pb,
 				     byte_hasher,
-				     func_idx, /* permutation number of f's input */
+				     fn_idx, /* permutation number of f's input */
 				     chain_length,
 				     difficulty,
 				     inp0_pt,
@@ -247,7 +243,7 @@ bool sender_round(Problem& Pb,
 		  int const difficulty,
 		  PearsonHash const& byte_hasher,
   		  sender_buffers& buffers, // constant pointer
-		  typename Problem::I_t& func_idx,
+		  typename Problem::I_t& fn_idx,
 		  typename Problem::C_t& inp_St, // Startign point in chain
 		  typename Problem::C_t* inp0_pt,
 		  typename Problem::C_t* inp1_pt,
@@ -260,7 +256,7 @@ bool sender_round(Problem& Pb,
 
 {
   MPI_Request request;
-
+  
   u64 elm_seed = read_urandom<u64>();
   /* Generating a starting point should be independent in each process,
    * otherwise, we are repeatign the same work in each process!   */
@@ -278,7 +274,7 @@ bool sender_round(Problem& Pb,
 			   difficulty,
 			   prng_elm,
 			   byte_hasher,
-			   func_idx,
+			   fn_idx,
 			   buffers,
 			   inp_St, inp0_pt, inp1_pt, out0_pt, out1_pt,
 			   inp_mixed, inp0A, inp1A, args...);
@@ -295,7 +291,7 @@ bool sender_round(Problem& Pb,
 	      buffers.snd_size,
 	      MPI_UNSIGNED_CHAR,
 	      buf_id,
-	      ROUND_SND_TAG + round_number, // todo don't forget to add round number to the tag. Also, check ROUND_SND_TAG is the largest tag. // todo edit common_mpi.hpp
+	      ROUND_SND_TAG + round_number,
 	      my_info.inter_comm,
 	      &request);
   }
@@ -304,18 +300,20 @@ bool sender_round(Problem& Pb,
   for (size_t id = 0; id < buffers.nreceivers; ++id){
     buffers.copy_receiver_i_to_snd(id);
     
-    /* Send the buffer that is already full  */
     MPI_Isend(buffers.snd,
 	      buffers.snd_size,
 	      MPI_UNSIGNED_CHAR,
 	      id,
-	      ROUND_SND_TAG + round_number, // todo don't forget to add round number to the tag. Also, check ROUND_SND_TAG is the largest tag. // todo edit common_mpi.hpp
+	      ROUND_SND_TAG + round_number,
 	      my_info.inter_comm,
 	      &request);
+
+    MPI_Wait(&request, MPI_STATUSES_IGNORE); // wait for the previous send.
   }
 
-  // todo how sender would know a golden collision was found?
-  return false; /* no golden collision was found */
+  
+  // No golden collision was found so far!
+  return false; // let's contiue consuming electricity!
 }
 
 
@@ -333,30 +331,27 @@ void sender(Problem& Pb,
 	    typename Problem::A_t& inp1A,
 	    Types... args) /* two extra arguments if claw problem */
 {
-  using C_t = typename Problem::C_t;
-  /* Pseudo-random number generators for elements */
-
-
-  
   /* ----------------------------- sender buffers ---------------------------- */
+  // Sender initialize its memory that contains element to be sent to receivers.
   sender_buffers buffers(my_info.nelements_buffer,
 			 my_info.nreceivers,
 			 Pb.C.size);
   
-  
-
-  
+    
   
   // ======================================================================== +
   //                                 STEP 1                                   +
   // ------------------------------------------------------------------------ +
   //      Initialization, and  agreeing on mix_function and walk function     +
   // ------------------------------------------------------------------------ +
-  /* Top seeds to be agreed among all processes */
-  u64 seed1;
+  /* Seeds that are shared between all processes.
+   * A seed for the mixer_function (mixes input)
+   * A seed for the byte hasher.
+   */
+  u64 seed1; 
   u64 seed2;
-
   seed_agreement(my_info, seed1, seed2);
+  
   // ------------------------------------------------------------------------+
   // Create my local PRNG that agrees with everyone globally.
   /* Then we generate the next seeds using prng (deterministic process) */
@@ -371,26 +366,27 @@ void sender(Problem& Pb,
   PearsonHash byte_hasher{byte_hasher_seed};
   
   /* variable to generate families of functions f_i: C -> C */
-  /* typename Problem::I_t */
-  auto i = Pb.mix_default();
+  typename Problem::I_t fn_index = Pb.mix_default();
   // -------------------------------------------------------------------------+
 
   PRNG prng_elm;
 
+  
   // ======================================================================== +
   //                                 STEP 2                                   +
   // ------------------------------------------------------------------------ +
-
-   while (true){
-     sender_round(Pb,
-		  my_info,
-		  difficulty,
-		  byte_hasher,
-		  buffers,
-		  inp_St,
-		  inp0_pt, inp1_pt, out0_pt, out1_pt, inp_mixed,
-		  inp0A, inp1A,
-		  args...);
+  bool found_golden = false;
+  for (size_t round_number = 0; not found_golden; ++round_number) {
+    found_golden = sender_round(Pb,
+				my_info,
+				round_number,
+				difficulty,
+				byte_hasher,
+				buffers,
+				inp_St,
+				inp0_pt, inp1_pt, out0_pt, out1_pt, inp_mixed,
+				inp0A, inp1A,
+				args...);
      
 
      /* Update seeds  */
@@ -398,7 +394,7 @@ void sender(Problem& Pb,
      byte_hasher_seed = byte_hasher_seed_gen.rand();
 
      /* update mix_function */
-     i = Pb.mix_sample(prng_mix);
+     fn_index = Pb.mix_sample(prng_mix);
      
      /* update byte_hasher (claw) */
      byte_hasher.update_table(byte_hasher_seed);

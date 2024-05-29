@@ -38,8 +38,10 @@
 
 namespace mitm {
 enum process_type{ SENDER,  RECEIVER };
-enum MITM_MPI_TAGS {INTERCOM_TAG, ROUND_SND_TAG}; // to be extended ...
-
+// enum MITM_MPI_TAGS {INTERCOM_TAG, ROUND_SND_TAG}; // to be extended ...
+#define INTERCOM_TAG 0
+#define ROUND_SND_TAG 1
+  
 /* A wrapper to MPI data associated with a process. */
 struct MITM_MPI_data{
   MPI_Comm global_comm; // Global communicator. Kept just in case, todo to be removed!
@@ -188,12 +190,13 @@ void seed_agreement(MITM_MPI_data& my_info,
 		    u64& byte_hasher_seed)
 {
   u64 seeds[2] = {0};
+  // This is sender No. 0, assuming round robin distribution of ranks.
   int emitter_rank = my_info.nreceivers;
 
   // if my intercomm rank = 0, i.e. I am the leader
   // I am resposible for sending the initial seed.
   if (my_info.my_rank_global == emitter_rank){
-     seeds[0] = read_urandom<u64>();
+    seeds[0] = read_urandom<u64>();
     seeds[1] = read_urandom<u64>();
   }
   
