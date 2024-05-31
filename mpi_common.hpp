@@ -49,6 +49,7 @@ struct MITM_MPI_data{
   MPI_Comm inter_comm;  // splitted into two: senders and receivers.
   size_t const nelements_buffer = 1000; // #elements stored in buffer during send/receive
   size_t nelements_mem_receiver; // How many elements can be stored across all dictionaries.
+  size_t msg_size = 0; // todo initialize this variable. // Size of msg with tag ROUND_SND_TAG + i where i = 0, 1, ...
   int nprocesses;      // Total number of processes.
   int nsenders;         // Total number of senders .
   int nreceivers;       // Total number of receivers.

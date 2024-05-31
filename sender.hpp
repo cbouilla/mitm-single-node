@@ -281,7 +281,7 @@ bool sender_round(Problem& Pb,
     buffers.clear_buf(buf_id); // reset the buffer counter.
 
     if (i > 0) // skip MPI_Wait in the first round
-      MPI_Wait(&request, MPI_STATUSES_IGNORE); // wait for the previous send.
+      MPI_Wait(&request, MPI_STATUS_IGNORE); // wait for the previous send.
 
     // todo copy buffers to snd buffer!!!
     buffers.copy_receiver_i_to_snd(buf_id);
@@ -311,6 +311,21 @@ bool sender_round(Problem& Pb,
     MPI_Wait(&request, MPI_STATUSES_IGNORE); // wait for the previous send.
   }
 
+  // Tell everyone I have completed this round!
+
+
+  int done = 1; /* dummy variable */
+
+  MPI_Iallreduce(&done,
+		 NULL, // Don't receive anything
+		 1, // send one int
+		 MPI_INT,
+		 MPI_SUM, // reduction operation
+		 my_info.inter_comm, // get the data from senders
+		 &request);
+
+  // Barrier among ALL processes until they are all completed this round.
+  MPI_Wait(&request, MPI_STATUSES_IGNORE); // wait for the previous send.
   
   // No golden collision was found so far!
   return false; // let's contiue consuming electricity!

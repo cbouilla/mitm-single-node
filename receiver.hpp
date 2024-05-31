@@ -1,4 +1,4 @@
-#ifndef MITM_MPI_RECEIVER
+ #ifndef MITM_MPI_RECEIVER
 #define MITM_MPI_RECEIVER
 
 #include <cstddef>
@@ -21,8 +21,77 @@
 
 
 namespace mitm {
+
 /* One round of computation of receiver  */
-template <typename Problem, typename... Types> bool receiver_round() {}
+template <typename Problem, typename DIGEST_T, typename... Types>
+bool receiver_round(Problem& Pb,
+		    MITM_MPI_data& my_info,
+		    size_t round_number,
+		    int const difficulty,
+		    PearsonHash const& byte_hasher,
+		    Dict<DIGEST_T, typename Problem::C_t, Problem>& dict,
+		    u8* rcv_buf,
+		    typename Problem::I_t& fn_idx,
+		    typename Problem::C_t& inp_St, // Startign point in chain
+		    typename Problem::C_t* inp0_pt,
+		    typename Problem::C_t* inp1_pt,
+		    typename Problem::C_t* out0_pt,
+		    typename Problem::C_t* out1_pt,
+		    typename Problem::C_t& inp_mixed,
+		    typename Problem::A_t& inp0A,
+		    typename Problem::A_t& inp1A,
+		    Types... args)
+{
+  // Keep posted to senders when they are done.
+  int ndones = 0;
+  MPI_Request request_finish{};
+  MPI_Request request{};
+  int round_completed = false; // todo check false maps to zero and not zero = 1
+  int receive_completed = false;
+
+  
+  MPI_Iallreduce(NULL, /* Don't send anything */
+		 &ndones, /* receive sum_{done process} (1) */
+		 1, // Receive one int
+		 MPI_INT,
+		 MPI_SUM, // reduction operation
+		 my_info.inter_comm, // get the data from senders
+		 &request_finish);
+
+  // Listen to received messages.
+  while (not round_completed){
+    MPI_Irecv(rcv_buf,
+	      my_info.msg_size,
+	      MPI_UNSIGNED_CHAR,
+	      MPI_ANY_SOURCE,
+	      ROUND_SND_TAG + round_number,
+	      my_info.inter_comm,
+	      &request);
+
+    // de-serialize the received message into inputs, output_digests, chain_lengths
+
+    /* query those elements in the dictionary, if collision found treat this
+    * collision on the spot (call a function that calls a function to treat
+    * a collision since we may leave collision treatmenets to another processes)
+    */
+
+    /* Assume we only check if all senders completed, if not, then check if 
+     * a receive was completed. This lead to a deadlock!
+     * Example: Assume all senders completed, except one that is going to
+     *          send to another receiver. If we wait for MPI_Irecv to complete
+     *          we would wait forever since all senders are completed except 
+     *          one not assigned to this receiver.
+     */
+    while (not (round_completed or receive_completed) ){
+      MPI_Test(&request, &receive_completed, MPI_STATUS_IGNORE);
+      MPI_Test(&request_finish, &round_completed, MPI_STATUS_IGNORE);
+      if (request_finish)
+	return false; // we have not found golden collision yet!
+    }
+  }
+  // If that happens to be everyone, then exit the function.
+
+}
 
 
 
