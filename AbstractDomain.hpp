@@ -39,7 +39,7 @@ public:
   bool is_equal(const t &x, const t &y) const;
 
   void serialize(const t &x, u8 *out) const;   /* write this to out */
-  void unserialize(const u8 *in, t &x) const;        /* read this from in */
+  void deserialize(const u8 *in, t &x) const;        /* read this from in */
   void copy(const t& inp, t& out) const; /* deepcopy inp to out */
 
 

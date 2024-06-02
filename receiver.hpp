@@ -2,6 +2,7 @@
 #define MITM_MPI_RECEIVER
 
 #include <cstddef>
+#include <cstring>
 #include <exception>
 #include <iostream>
 #include <string>
@@ -21,6 +22,48 @@
 
 
 namespace mitm {
+
+/* Deserialize a message, query the dictionary,
+ * 
+ */
+template <typename Problem, typename DIGEST_T, typename... Types>
+bool treat_received_msg(Problem& Pb,
+			int nmsgs,
+			size_t round_number,
+			int const difficulty,
+			PearsonHash const& byte_hasher,
+			Dict<DIGEST_T, typename Problem::C_t, Problem>& dict,
+			u8* rcv_buf,
+			typename Problem::I_t& fn_idx,
+			typename Problem::C_t& inp_St, // Startign point in chain
+			typename Problem::C_t* inp0_pt,
+			typename Problem::C_t* inp1_pt,
+			typename Problem::C_t* out0_pt,
+			typename Problem::C_t* out1_pt,
+			typename Problem::C_t& inp_mixed,
+			typename Problem::A_t& inp0A,
+			typename Problem::A_t& inp1A,
+			Types... args)
+{
+
+  for (int msg_i = 0; msg_i < nmsgs; ++msg_i){
+    // 1- Deserialize // todo start from here
+    /* todo (critical) change the demos to respect the documentation.
+     * Changes:
+     * length -> size
+     * unserialize -> deserialize
+     * treat_collision -> treat_match that calls:
+     *  treat_collision (collision_enging) and treat_claw (claw_engine)
+     */
+    //Pb.C.deserialize(&rcv_buf[msg_i*Pb.C.size], inp_St);
+    // Get  the digest
+    // 2- Query the dictionary
+    // 3- treat collision if any
+    // todo rename treat_collision to treat_match then inside treat_collision or treat_claw
+    // repeat for the number of messages received
+  }
+}
+
 
 /* One round of computation of receiver  */
 template <typename Problem, typename DIGEST_T, typename... Types>
@@ -44,6 +87,9 @@ bool receiver_round(Problem& Pb,
 {
   // Keep posted to senders when they are done.
   int ndones = 0;
+  // todo find a way to make it shared between sender and receiver!
+  int counter_size = 2;
+  u16 nmsgs = 0; // # triples received 
   MPI_Request request_finish{};
   MPI_Request request{};
   int round_completed = false; // todo check false maps to zero and not zero = 1
@@ -68,7 +114,28 @@ bool receiver_round(Problem& Pb,
 	      my_info.inter_comm,
 	      &request);
 
-    // de-serialize the received message into inputs, output_digests, chain_lengths
+    // Get the actual number of messages received
+    std::memcpy(&nmsgs,
+		&rcv_buf[my_info.msg_size - counter_size],
+		counter_size);
+    
+    treat_received_msg(Pb,
+		       nmsgs,
+		       round_number,
+		       difficulty,
+		       byte_hasher,
+		       dict,
+		       rcv_buf,
+		       fn_idx,
+		       inp_St, // Startign point in chain
+		       inp0_pt,
+		       inp1_pt,
+		       out0_pt,
+		       out1_pt,
+		       inp_mixed,
+		       inp0A,
+		       inp1A,
+		       args...);
 
     /* query those elements in the dictionary, if collision found treat this
     * collision on the spot (call a function that calls a function to treat

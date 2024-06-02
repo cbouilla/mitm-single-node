@@ -162,10 +162,12 @@ struct sender_buffers {
 		inp_size * counters[id]);
 
     // Finally add how many elements were copied.
-    size_t const offset_ctr = offset_out + offset_chain + (inp_size * counters[id]);
+    size_t const offset_ctr = offset_out + offset_chain + (inp_size * nelements_snd_max);
+    // i.e. offset_ctr = snd_size - counter_size
     std::memcpy(&snd[offset_ctr],
 		&counters[id],
 		counter_size);
+    // TODO (important): make snd_size and counter_size shared earlier in the process
   }
 
 };
