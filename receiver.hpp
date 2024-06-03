@@ -18,6 +18,8 @@
 #include "include/counters.hpp"
 #include "dict.hpp"
 #include "engine.hpp"
+#include "claw_engine.hpp"
+#include "collision_engine.hpp"
 #include "mpi_common.hpp"
 
 
@@ -49,11 +51,16 @@ bool treat_received_msg(Problem& Pb,
   // why not wrap all of this into a struct
   size_t const offset_inp = 0; // todo correct this
   size_t const offset_out = 0; // todo correct this
+
+  // todo pass them as parameters?
+  u64 digest = 0; 
   size_t chain_length0 = 0;
   size_t chain_length1 = 0; 
+
+  // Basic information about the queried triples
   bool matched = false;
-  
-  u64 digest = 0; // todo pass it as a parameter?
+  bool found_golden = false;
+
   for (int msg_i = 0; msg_i < nmsgs; ++msg_i){
     // 1- Deserialize // todo start from here
     Pb.C.deserialize(&rcv_buf[offset_inp + msg_i*Pb.C.size], inp_St);
@@ -82,10 +89,25 @@ bool treat_received_msg(Problem& Pb,
       
     // 3- treat collision if any
     if (matched)
-      continue; // todo continue from here 
+      found_golden = treat_collision(Pb,
+				  byte_hasher,
+				  fn_idx,
+				  inp0_pt,
+				  out0_pt,
+				  chain_length0,
+				  inp1_pt, /* todo fix this */
+				  out1_pt,
+				  chain_length1,
+				  inp_mixed,
+				  inp0A, 
+				  inp1A,
+				  args...); /* for claw args := inp0B, inp1B */
+
+
     // todo rename treat_collision to treat_match then inside treat_collision or treat_claw
     // repeat for the number of messages received
   }
+  return found_golden;
 }
 
 
@@ -118,7 +140,8 @@ bool receiver_round(Problem& Pb,
   MPI_Request request{};
   int round_completed = false; // todo check false maps to zero and not zero = 1
   int receive_completed = false;
-
+  bool found_golden = false;
+  
   
   MPI_Iallreduce(NULL, /* Don't send anything */
 		 &ndones, /* receive sum_{done process} (1) */
@@ -143,28 +166,28 @@ bool receiver_round(Problem& Pb,
 		&rcv_buf[my_info.msg_size - counter_size],
 		counter_size);
     
-    treat_received_msg(Pb,
-		       nmsgs,
-		       round_number,
-		       difficulty,
-		       byte_hasher,
-		       dict,
-		       rcv_buf,
-		       fn_idx,
-		       inp_St, // Startign point in chain
-		       inp0_pt,
-		       inp1_pt,
-		       out0_pt,
-		       out1_pt,
-		       inp_mixed,
-		       inp0A,
-		       inp1A,
-		       args...);
+    found_golden = treat_received_msg(Pb,
+				      nmsgs,
+				      round_number,
+				      difficulty,
+				      byte_hasher,
+				      dict,
+				      rcv_buf,
+				      fn_idx,
+				      inp_St, // Startign point in chain
+				      inp0_pt,
+				      inp1_pt,
+				      out0_pt,
+				      out1_pt,
+				      inp_mixed,
+				      inp0A,
+				      inp1A,
+				      args...);
 
-    /* query those elements in the dictionary, if collision found treat this
-    * collision on the spot (call a function that calls a function to treat
-    * a collision since we may leave collision treatmenets to another processes)
-    */
+    if (found_golden)
+      // we found the golden pair, they are inp0A,  inp1A (collision),
+      return true; // or  inp0A, inp1B (claw), inp1B is inside args... sorry :( 
+
 
     /* Assume we only check if all senders completed, if not, then check if 
      * a receive was completed. This lead to a deadlock!
@@ -219,26 +242,6 @@ void reciever(Problem& Pb,
   u8* work_buf = new u8[buf_size];
 
   
-  /* ---------------- data inserted/extracted from dictionarry -------------- */
-  // u64 out0_digest = 0;
-  // size_t chain_length1 = 0;
-  // // C_t* out1_pt,
-  
-  // /*--------------------------- Collisions counters --------------------------*/
-  // /* How many steps does it take to get a distinguished point from  an input */
-  // size_t chain_length0 = 0;
-  // Counters ctr{}; /* various non-essential counters */
-
-  // /* ----------------------------- Query Results ---------------------------- */
-  // bool found_a_collision = false;
-  
-  // /* We should have ration 1/3 real collisions and 2/3 false collisions */
-  // bool found_dist = false;
-
-  // /* we found a pair of inputs that lead to the golden collisoin or golden claw! */
-  // bool found_golden_pair = false;
-
-
 
   // ======================================================================== //
   //                                 STEP 1                                   //
@@ -247,6 +250,10 @@ void reciever(Problem& Pb,
   u64 mixer_seed;
   u64 byte_hasher_seed;
 
+  /* for MPI tags to block communication when different version of the function 
+  * is used. */
+  size_t round_number = 0;
+
   seed_agreement(my_info, mixer_seed, byte_hasher_seed);
 
   /* Now, mixing function and byte_hasher are the same among all processes */
@@ -254,7 +261,7 @@ void reciever(Problem& Pb,
   PearsonHash byte_hasher{byte_hasher_seed}; /* todo update PearsonHash to accept a seed */
   /* variable to generate families of functions f_i: C -> C */
   /* typename Problem::I_t */
-  auto i = Pb.mix_default();
+  typename Problem::I_t fn_idx = Pb.mix_default();
   
   /* Generating a starting point should be independent in each process,
    * otherwise, we are repeatign the same work in each process!   */
@@ -262,17 +269,35 @@ void reciever(Problem& Pb,
 
   // ======================================================================== //
   //                                 STEP 2                                   //
+  //                        receiver, treat, and repeat!                      //
   // ------------------------------------------------------------------------ //
 
 
-  // ======================================================================== //
-  //                                 STEP 3                                   //
-  // ------------------------------------------------------------------------ //
-  bool found_golden_inputs = false;
+  bool found_golden = false;
   
-  while (not found_golden_inputs){
-    found_golden_inputs = receiver_round<Problem,  Types...>();
-
+  while (not found_golden){
+    // Main computation step
+    found_golden = receiver_round(Pb,
+				  my_info,
+				  round_number,
+				  difficulty,
+				  byte_hasher,
+				  dict,
+				  rcv_buf,
+				  fn_idx,
+				  inp_St,
+				  inp0_pt,
+				  inp1_pt,
+				  out0_pt,
+				  out1_pt,
+				  inp_mixed,
+				  inp0A,
+				  inp1A,
+				  args...);
+    if (found_golden)
+      break; // exit the loop
+    
+    // Preparation and synchronization
     /* Update seeds  */
     /* Clear receiv buffers */
     std::memset(rcv_buf, 0, my_info.nelements_buffer * Pb.C.size);
