@@ -46,8 +46,19 @@ bool treat_received_msg(Problem& Pb,
 			Types... args)
 {
 
+  // why not wrap all of this into a struct
+  size_t const offset_inp = 0; // todo correct this
+  size_t const offset_out = 0; // todo correct this
+  size_t chain_length0 = 0;
+  size_t chain_length1 = 0; 
+  bool matched = false;
+  
+  u64 digest = 0; // todo pass it as a parameter?
   for (int msg_i = 0; msg_i < nmsgs; ++msg_i){
     // 1- Deserialize // todo start from here
+    Pb.C.deserialize(&rcv_buf[offset_inp + msg_i*Pb.C.size], inp_St);
+    
+    
     /* todo (critical) change the demos to respect the documentation.
      * Changes:
      * length -> size
@@ -55,10 +66,23 @@ bool treat_received_msg(Problem& Pb,
      * treat_collision -> treat_match that calls:
      *  treat_collision (collision_enging) and treat_claw (claw_engine)
      */
-    //Pb.C.deserialize(&rcv_buf[msg_i*Pb.C.size], inp_St);
     // Get  the digest
+    std::memcpy(&digest,
+		&rcv_buf[offset_out + msg_i*sizeof(digest)],
+		sizeof(digest));
+    
     // 2- Query the dictionary
+    matched = dict.pop_insert(digest,
+			      inp_St,
+			      chain_length0,
+			      *inp1_pt,
+			      chain_length1,
+			      Pb);
+
+      
     // 3- treat collision if any
+    if (matched)
+      continue; // todo continue from here 
     // todo rename treat_collision to treat_match then inside treat_collision or treat_claw
     // repeat for the number of messages received
   }
