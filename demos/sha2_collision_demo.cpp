@@ -179,10 +179,10 @@ public:
   using t = SHA2_out_repr;
 
     
-  const static int length = NBYTES_C;
+  const static int size = NBYTES_C;
   int a[NBYTES_C];
   
-  const static size_t n_elements = (1LL<<length)*8;
+  const static size_t n_elements = (1LL<<size)*8;
   /* todo: randomize */
   inline
   void randomize(t& x, mitm::PRNG& prng)
@@ -217,7 +217,7 @@ public:
   }
 
   inline
-  void unserialize(const u8* in, t& out) const
+  void deserialize(const u8* in, t& out) const
   {
     bits_memcpy(out.data, in, NBITS_C);
   }

@@ -187,7 +187,7 @@ bool is_serialize_inverse_of_unserialize(Problem Pb, PRNG& prng)
 {
   /// Test that unserialize(serialize(r)) == r for a randomly chosen r
   using C_t = typename Problem::C_t;
-  const size_t length = Pb.C.length;
+  const size_t length = Pb.C.size;
 
   C_t orig{};
   C_t copy{};
@@ -199,7 +199,7 @@ bool is_serialize_inverse_of_unserialize(Problem Pb, PRNG& prng)
     /* */
     Pb.C.randomize(orig, prng);
     Pb.C.serialize(orig, serial);
-    Pb.C.unserialize(serial, copy);
+    Pb.C.deserialize(serial, copy);
 
     if (not Pb.C.is_equal(copy, orig)){
       std::cerr << "Error at testing unserial(serial(x)) == x \n";

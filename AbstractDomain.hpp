@@ -28,8 +28,7 @@ template<class repr>           /* repr must support comparisons, and assignment 
 class AbstractDomain {
 public:
 
-  int length;  /* nbytes needed to encode an element */
-  int size; // todo change the name of length to size
+  int size; /* nbytes needed to encode an element */ 
   size_t n_elements; /* how many elements in the domain */
   using t = repr;            /* t is the machine representation of elements of the domain */
 
