@@ -89,26 +89,54 @@ namespace mitm {
  * In case of claw: an additional arguments:
  * 1) inpB_pt
  */
-// template <typename Problem, typename... Types >
-// bool treat_collision(Problem& Pb,
-// 		     typename Problem::I_t& i,
-// 		     typename Problem::C_t*& inp0_pt,
-// 		     typename Problem::C_t*& out0_pt, /* inp0 calculation buffer */
-// 		     const u64 inp0_chain_len,
-// 		     typename Problem::C_t*& inp1_pt,
-// 		     typename Problem::C_t*& out1_pt, /* inp1 calculation buffer */
-// 		     const u64 inp1_chain_len,
-// 		     typename Problem::C_t& inp_mixed,
-// 		     typename Problem::A_t& inp0_A,
-// 		     typename Problem::A_t& inp1_A,
-// 		     Types... args) /* for claw args := inp0B, inp1B */
-// {
-//   std::cerr << "Internal Error: should not use general implementation of if `treate_collision`!\n";
-//   std::terminate(); /* Never use this implementation! */
-//}
+template <typename Problem, typename... Types >
+bool treat_match(Problem& Pb,
+		     PearsonHash& byte_hasher,
+		     typename Problem::I_t& fn_index,
+		     typename Problem::C_t*& inp0_pt,
+		     typename Problem::C_t*& out0_pt, /* inp0 calculation buffer */
+		     const u64 inp0_chain_len,
+		     typename Problem::C_t*& inp1_pt,
+		     typename Problem::C_t*& out1_pt, /* inp1 calculation buffer */
+		     const u64 inp1_chain_len,
+		     typename Problem::C_t& inp_mixed,
+		     typename Problem::A_t& inp0A,
+		     typename Problem::A_t& inp1A, /* <- dummy arg */
+		     Types... args) /* for claw args := inp0B, inp1B */
 
+{
+  /* A match found for a collisions. Function found in collision_engine.hpp */
+  if constexpr (sizeof...(args) == 0)
+    treat_collision(Pb,
+		    byte_hasher,
+		    fn_index,
+		    inp0_pt,
+		    out0_pt,
+		    inp0_chain_len,
+		    inp1_pt, /* todo fix this */
+		    out1_pt,
+		    inp1_chain_len,
+		    inp_mixed,
+		    inp0A,
+		    inp1A);
 
+  /* A match found for claw. Function found in claw_engine.hpp */
+  if constexpr (sizeof...(args) == 2)
+    treat_claw(Pb,
+	       byte_hasher,
+	       fn_index,
+	       inp0_pt,
+	       out0_pt,
+	       inp0_chain_len,
+	       inp1_pt, /* todo fix this */
+	       out1_pt,
+	       inp1_chain_len,
+	       inp_mixed,
+	       inp0A,
+	       inp1A,
+	       args...); /* for claw args := inp0B, inp1B */
 
+}
 
 
   
@@ -493,19 +521,19 @@ void search_generic(Problem& Pb,
 	 * 1) inpA 
 	 * 2) inpB
 	 */
-	found_golden_pair = treat_collision(Pb,
-					    byte_hasher,
-					    i,
-					    inp0_pt,
-					    out0_pt,
-					    chain_length0,
-					    inp1_pt, /* todo fix this */
-					    out1_pt,
-					    chain_length1,
-					    inp_mixed,
-					    inp0A, 
-					    inp1A,
-					    args...); /* for claw args := inp0B, inp1B */
+	found_golden_pair = treat_match(Pb,
+					byte_hasher,
+					i,
+					inp0_pt,
+					out0_pt,
+					chain_length0,
+					inp1_pt, /* todo fix this */
+					out1_pt,
+					chain_length1,
+					inp_mixed,
+					inp0A, 
+					inp1A,
+					args...); /* for claw args := inp0B, inp1B */
         #ifdef CLAW_DEBUG
 	// 0xdeadbeef tag for debugging
 	if (found_golden_A_and_use_f && found_golden_B_and_use_g){

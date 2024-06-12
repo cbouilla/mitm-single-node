@@ -188,7 +188,7 @@ bool pullback_to_A_B(Problem& Pb,
  * robinhood, and use the provided golden collision criterion.
  */ 
 template <typename Problem>  
-bool treat_collision(Problem& Pb,
+bool treat_claw(Problem& Pb,
 		     PearsonHash& byte_hasher,
 		     typename Problem::I_t& i,
 		     typename Problem::C_t*& inp0_pt,

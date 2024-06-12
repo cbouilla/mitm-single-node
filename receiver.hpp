@@ -30,7 +30,8 @@ namespace mitm {
  */
 template <typename Problem, typename DIGEST_T, typename... Types>
 bool treat_received_msg(Problem& Pb,
-			int nmsgs,
+			int const max_nmsgs,
+			int const nmsgs,
 			size_t round_number,
 			int const difficulty,
 			PearsonHash const& byte_hasher,
@@ -48,36 +49,43 @@ bool treat_received_msg(Problem& Pb,
 			Types... args)
 {
 
-  // why not wrap all of this into a struct
-  size_t const offset_inp = 0; // todo correct this
-  size_t const offset_out = 0; // todo correct this
+  // Don't change these two without changing them in sender.hpp
+  // todo these choices were determined when the dictionary was created!
+  using OUT_T = u64; 
+  using CHAIN_LENGTH_T = u32;
 
-  // todo pass them as parameters?
-  u64 digest = 0; 
-  size_t chain_length0 = 0;
-  size_t chain_length1 = 0; 
+  // Received buffer:
+  // [outputs||chain_lengths||inputs]
+  // Index of the first chain_lengths in receive buffer
+  size_t const offset_out = 0; 
+  size_t const offset_chain_lengths = max_nmsgs * sizeof(OUT_T);
+  size_t const offset_inp = offset_chain_lengths + (max_nmsgs * sizeof(OUT_T) );
+
+  // Extracted data from 
+  OUT_T digest = 0; 
+  CHAIN_LENGTH_T chain_length0 = 0;
+  CHAIN_LENGTH_T chain_length1 = 0; 
 
   // Basic information about the queried triples
   bool matched = false;
   bool found_golden = false;
 
   for (int msg_i = 0; msg_i < nmsgs; ++msg_i){
-    // 1- Deserialize // todo start from here
-    Pb.C.deserialize(&rcv_buf[offset_inp + msg_i*Pb.C.size], inp_St);
-    
-    
-    /* todo (critical) change the demos to respect the documentation.
-     * Changes:
-     * length -> size
-     * unserialize -> deserialize
-     * treat_collision -> treat_match that calls:
-     *  treat_collision (collision_enging) and treat_claw (claw_engine)
-     */
-    // Get  the digest
+    // 1- Extract data
+    // 1.a digest
     std::memcpy(&digest,
 		&rcv_buf[offset_out + msg_i*sizeof(digest)],
-		sizeof(digest));
-    
+		sizeof(OUT_T));
+
+    // 1.b chain_length
+    std::memcpy(&chain_length0,
+		&rcv_buf[offset_chain_lengths + msg_i*sizeof(OUT_T)],
+		sizeof(CHAIN_LENGTH_T));
+
+    // 1.c input
+    Pb.C.deserialize(&rcv_buf[offset_inp + msg_i*Pb.C.size], inp_St);
+
+
     // 2- Query the dictionary
     matched = dict.pop_insert(digest,
 			      inp_St,
@@ -89,23 +97,19 @@ bool treat_received_msg(Problem& Pb,
       
     // 3- treat collision if any
     if (matched)
-      found_golden = treat_collision(Pb,
-				  byte_hasher,
-				  fn_idx,
-				  inp0_pt,
-				  out0_pt,
-				  chain_length0,
-				  inp1_pt, /* todo fix this */
-				  out1_pt,
-				  chain_length1,
-				  inp_mixed,
-				  inp0A, 
-				  inp1A,
-				  args...); /* for claw args := inp0B, inp1B */
-
-
-    // todo rename treat_collision to treat_match then inside treat_collision or treat_claw
-    // repeat for the number of messages received
+      found_golden = treat_match(Pb,
+				 byte_hasher,
+				 fn_idx,
+				 inp0_pt,
+				 out0_pt,
+				 chain_length0,
+				 inp1_pt, /* todo fix this, todo: what's wrong with it?! */
+				 out1_pt,
+				 chain_length1,
+				 inp_mixed,
+				 inp0A, 
+				 inp1A,
+				 args...); /* for claw args := inp0B, inp1B */
   }
   return found_golden;
 }
@@ -133,12 +137,12 @@ bool receiver_round(Problem& Pb,
 {
   // Keep posted to senders when they are done.
   int ndones = 0;
-  // todo find a way to make it shared between sender and receiver!
+  // todo find a way to share the counter_size between senders and receivers?
   int counter_size = 2;
   u16 nmsgs = 0; // # triples received 
   MPI_Request request_finish{};
   MPI_Request request{};
-  int round_completed = false; // todo check false maps to zero and not zero = 1
+  int round_completed = false; // todo check that "false"" maps to zero and "not zero" to 1
   int receive_completed = false;
   bool found_golden = false;
   

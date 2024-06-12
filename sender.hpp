@@ -31,15 +31,16 @@ namespace mitm {
  * 2) sending buffers that are ready to be sent to specific receivers.
  * Note: OUT_T is the digest of the output, we limit ourselves to 64bit digest.
  *       CHAIN_LENGTH_T choosen to be u32 since we expect difficulty to be less 32bits
- */ // inputs don't need to be templated since they are sequence of bytes.
-//template <typename OUT_T = u64, typename CHAIN_LENGTH_T = u32>
+ */ 
 struct sender_buffers {
 
-  using OUT_T = u64;
+  // These two has to agree with the same convention in receiver.hpp
+  // Maybe move them up to mpi_common.hpp
+  using OUT_T = u64; 
   using CHAIN_LENGTH_T = u32;
+  
   // Assume there are `n` receivers, per receiver we send `m` elements, each of
-  // size `l`.
-  // Then to get the ith element that will be sent to receiver `r`:
+  // size `l`. Then to get the ith element that will be sent to receiver `r`:
   u8* inputs;   // ith input  <-  inputs[(r * m * l) +  i * l]
   u64* outputs; // ith output <- outputs[(r * m)     +  i]
   u32* chain_lengths; // ith chain length <- chain_length[(r * m)  +  i]
