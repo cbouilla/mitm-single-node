@@ -3,7 +3,7 @@
 #include "AbstractDomain.hpp"
 #include "AbstractCollisionProblem.hpp"
 #include "engine.hpp"
-#include "prng.hpp"
+#include "include/prng.hpp"
 #include <boost/stacktrace.hpp>
 
 namespace mitm {

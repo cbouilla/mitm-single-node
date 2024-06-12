@@ -43,6 +43,22 @@ AbstractClawProblem.hpp     AbstractCollisionProblem.hpp
                    \         /
                     --+   +--
                        \ /
+    		        |       common_mpi.hpp
+                        x        /
+                       / \      /
+                      /   \    /
+                     |     |  /
+                 +----     - / -+
+                 |          /   |
+                 |         /    |
+                 |        /     |
+          receiver.hpp-> + <-sender.hpp
+                  ^           ^
+                   \         /
+                    --+   +--
+                       \ /
+                        |
+                parallel_engine.hpp
                         |
                      mitm.hpp
                         ^

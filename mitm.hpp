@@ -1,6 +1,8 @@
 #ifndef MITM
 #define MITM
 
+#include "include/memory.hpp"
+
 #include "AbstractDomain.hpp"
 #include "AbstractClawProblem.hpp"
 #include "AbstractCollisionProblem.hpp"
@@ -8,7 +10,13 @@
 #include "claw_engine.hpp"
 #include "collision_engine.hpp"
 #include "naive_engine.hpp"
-#include "include/memory.hpp"
+// todo Add compilation guard for MPI
+// ##################################
+#include "mpi_common.hpp"
+#include "sender.hpp"
+#include "receiver.hpp"
+#include "parallel_engine.hpp"
+// ##################################
 #include <cstddef>
 
 
@@ -103,6 +111,57 @@ void collision_search(Problem& Pb,
   
 }
 
+/*
+ * Given a problem that follows AbstractDomain, and AbstractCollisionProblem.
+ * Try to find two inputs x and y s.t. f(x) = f(y), where:
+ * f: A -> C
+ */
+template <typename Problem>
+void parallell_collision_search(Problem& Pb)
+{
+  using A_t = typename Problem::A_t;
+  using C_t = typename Problem::C_t;
+  
+  /* ============================= BUFFERS ================================== */
+  /* Input/Output containers */
+  /* 1st set of buffers: Related to input0 as a starting point */
+  /* either tmp0 or  output0 */
+  C_t inp0_or_out0_buffer0{};
+  C_t inp0_or_out0_buffer1{};
+
+
+  /* 2nd set of buffers: Related to input1 as a starting point */
+  /* When we potentially find a collision, we need 2 buffers for (inp1, out1) */
+  /* We will use the initial value of inp1 once, thus we don't need to gaurd  */
+  /* in an another variable untouched */
+  C_t inp1_or_out1_buffer0{};
+  C_t inp1_or_out1_buffer1{};
+
+
+  /* -------------------------- Passed variables ---------------------------- */
+  C_t inp0_st{}; /* starting input on the chain */
+
+  /* Always points to the region that contains the output,  */
+  C_t* inp0_pt = &inp0_or_out0_buffer0; /* even if it's not the same address*/
+  C_t* inp1_pt = &inp1_or_out1_buffer0;
+
+  /* Always points to the region that contains the output */
+  C_t* out0_pt = &inp0_or_out0_buffer1;/* even if it's not the same address*/
+  C_t* out1_pt = &inp1_or_out1_buffer1;
+
+  C_t inp_mixed{};
+ 
+  /* Use these variables to print the full collision */
+  A_t inp0A{};
+  A_t inp1A{};
+
+
+  /* note the search_engine has different arguments than claw_search */
+  parallel_search(Pb, inp0_st, inp0_pt, inp1_pt, out0_pt, out1_pt, inp_mixed, inp0A, inp1A);
+  
+}
+
+  
 
 
 
@@ -190,6 +249,73 @@ void claw_search(Problem& Pb,
 		 inp1A,
 		 inp0B, /* Last two inputs are args... in search generic */
 		 inp1B);
+}
+
+
+
+/*
+ * Given a problem that follows AbstractDomain, and AbstractClawProblem.
+ * Try to find two inputs x_A and x_B s.t. f(x_A) = g(x_B), i.e.
+ * a claw between f and g.
+ */
+template <typename Problem>
+void parallel_claw_search(Problem& Pb)
+{
+  using A_t = typename Problem::A_t;
+  using B_t = typename Problem::B_t;
+  using C_t = typename Problem::C_t;
+
+
+
+  /* ============================= BUFFERS ================================== */
+  /* Input/Output containers */
+  /* 1st set of buffers: Related to input0 as a starting point */
+  /* either tmp0 or  output0 */
+  C_t inp0_or_out0_buffer0{};
+  C_t inp0_or_out0_buffer1{};
+
+
+  /* 2nd set of buffers: Related to input1 as a starting point */
+  /* When we potentially find a collision, we need 2 buffers for (inp1, out1) */
+  /* We will use the initial value of inp1 once, thus we don't need to gaurd  */
+  /* in an another variable untouched */
+  C_t inp1_or_out1_buffer0{};
+  C_t inp1_or_out1_buffer1{};
+
+
+  /* -------------------------- Passed variables ---------------------------- */
+  C_t inp0_st{}; /* starting input on the chain */
+
+  /* Always points to the region that contains the output,  */
+  C_t* inp0_pt = &inp0_or_out0_buffer0; /* even if it's not the same address*/
+  C_t* inp1_pt = &inp1_or_out1_buffer0;
+
+  /* Always points to the region that contains the output */
+  C_t* out0_pt = &inp0_or_out0_buffer1;/* even if it's not the same address*/
+  C_t* out1_pt = &inp1_or_out1_buffer1;
+
+ 
+  C_t inp_mixed{};
+  
+  
+  /* Use these variables to print the full collision */
+  A_t inp0A{};
+  B_t inp0B{};
+  A_t inp1A{};
+  B_t inp1B{};
+
+
+  parallel_search(Pb,
+		  inp0_st,
+		  inp0_pt,
+		  inp1_pt,
+		  out0_pt,
+		  out1_pt,
+		  inp_mixed,
+		  inp0A,
+		  inp1A,
+		  inp0B,
+		  inp1B);
 }
 
 

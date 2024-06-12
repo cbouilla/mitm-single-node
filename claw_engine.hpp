@@ -3,7 +3,7 @@
 #include "AbstractDomain.hpp"
 #include "AbstractClawProblem.hpp"
 #include "engine.hpp"
-#include "prng.hpp"
+#include "include/prng.hpp"
 #include <boost/stacktrace/stacktrace_fwd.hpp>
 #include <stack>
 #include <vector>
