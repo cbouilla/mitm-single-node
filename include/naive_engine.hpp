@@ -9,7 +9,8 @@
 #include <execution>
 #include <omp.h>
 #include<functional>
-#include "AbstractDomain.hpp"
+
+#include "../docs/AbstractDomain.hpp"
 
 namespace mitm {
 

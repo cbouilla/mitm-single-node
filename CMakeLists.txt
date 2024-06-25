@@ -54,52 +54,20 @@ cmake_print_variables(CMAKE_CXX_COMPILER_ID)
 include_directories(include)
 
 
-# add_executable(sha2_collision_1collision_demo
-#         demos/sha2_collision_1collision_demo.cpp
-# 	demos/sha256_x86.c # demos/sha256.c
-# 	mitm.hpp
-# 	engine.hpp
-# 	naive_engine.hpp
-# 	collision_engine.hpp
-# 	AbstractCollisionProblem.hpp
-# 	AbstractDomain.hpp
-#         dict.hpp
-#       	include/memory.hpp
-# 	include/prng.hpp
-# 	include/timing.hpp)
-
 
 
 add_executable(sha2_collision_demo
-        demos/sha2_collision_demo.cpp
-	demos/sha256_x86.c # demos/sha256.c
-	mitm.hpp
-	engine.hpp
-	naive_engine.hpp
-	collision_engine.hpp
-	AbstractCollisionProblem.hpp
-	AbstractDomain.hpp
-        dict.hpp
-      	include/memory.hpp
-	include/prng.hpp
-	include/timing.hpp)
+        examples/sha2_collision_demo.cpp
+	examples/sha256_x86.c # examples/sha256.c
+	mitm.hpp)
 
 target_compile_definitions(sha2_collision_demo PUBLIC COLLISION_DEBUG)
 
 
 add_executable(sha2_claw_demo
-        demos/sha2_claw_demo.cpp
-	demos/sha256_x86.c
-	mitm.hpp
-	engine.hpp
-	naive_engine.hpp
-	collision_engine.hpp
-	AbstractCollisionProblem.hpp
-	AbstractDomain.hpp
-        dict.hpp
-      	include/memory.hpp
-	include/prng.hpp
-	include/timing.hpp)
+        examples/sha2_claw_demo.cpp
+	examples/sha256_x86.c
+	mitm.hpp)
 
 # Debugging the execution if the results don't add up
 target_compile_definitions(sha2_claw_demo PUBLIC CLAW_DEBUG)
@@ -133,10 +101,10 @@ target_link_libraries(sha2_collision_demo
 # # Link TBB to your executable
 
 # #[[
-# add_executable(test demos/basic_demo.cpp mitm_sequential.hpp
+# add_executable(test examples/basic_demo.cpp mitm_sequential.hpp
 #         dict.hpp
 #         dict.hpp
-#         demos/basic_demo.cpp)]]
+#         examples/basic_demo.cpp)]]
 
 
 # add this block to after `add_executable(...)`

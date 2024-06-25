@@ -1,14 +1,19 @@
 #ifndef MITM_CLAW_ENGINE
 #define MITM_CLAW_ENGINE
-#include "AbstractDomain.hpp"
-#include "AbstractClawProblem.hpp"
-#include "engine.hpp"
-#include "include/prng.hpp"
-#include <boost/stacktrace/stacktrace_fwd.hpp>
+
 #include <stack>
 #include <vector>
 
+#include <boost/stacktrace/stacktrace_fwd.hpp>
 #include <boost/stacktrace.hpp>
+
+#include "../docs/AbstractDomain.hpp"
+#include "../docs/AbstractClawProblem.hpp"
+
+#include "engine.hpp"
+#include "util/prng.hpp"
+
+
 namespace mitm {
 /*****************************************************************************/
 #ifdef CLAW_DEBUG

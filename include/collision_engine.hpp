@@ -1,9 +1,9 @@
 #ifndef MITM_COLLISION_ENGINE
 #define MITM_COLLISION_ENGINE
-#include "AbstractDomain.hpp"
-#include "AbstractCollisionProblem.hpp"
+#include "../docs/AbstractDomain.hpp"
+#include "../docs/AbstractCollisionProblem.hpp"
 #include "engine.hpp"
-#include "include/prng.hpp"
+#include "util/prng.hpp"
 #include <boost/stacktrace.hpp>
 
 namespace mitm {

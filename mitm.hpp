@@ -1,15 +1,19 @@
 #ifndef MITM
 #define MITM
 
-#include "include/memory.hpp"
 
-#include "AbstractDomain.hpp"
-#include "AbstractClawProblem.hpp"
-#include "AbstractCollisionProblem.hpp"
-#include "engine.hpp"
-#include "claw_engine.hpp"
-#include "collision_engine.hpp"
-#include "naive_engine.hpp"
+
+#include "docs/AbstractDomain.hpp"
+#include "docs/AbstractClawProblem.hpp"
+#include "docs/AbstractCollisionProblem.hpp"
+
+#include "include/util/memory.hpp"
+
+#include "include/engine.hpp"
+#include "include/claw_engine.hpp"
+#include "include/collision_engine.hpp"
+#include "include/naive_engine.hpp"
+
 // todo Add compilation guard for MPI
 // ##################################
 #include "mpi_common.hpp"
@@ -17,6 +21,7 @@
 #include "receiver.hpp"
 #include "parallel_engine.hpp"
 // ##################################
+
 #include <cstddef>
 
 

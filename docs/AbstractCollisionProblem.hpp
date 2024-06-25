@@ -2,7 +2,7 @@
 #define MITM_ABSTRACT_COLLISION
 #include "AbstractDomain.hpp"
 #include <type_traits>
-#include "include/prng.hpp"
+#include "../include/util/prng.hpp"
 
 namespace mitm {
 /*

@@ -10,16 +10,19 @@
 #include <cmath>
 #include <mpi.h>
 
-#include "AbstractDomain.hpp"
-#include "AbstractClawProblem.hpp"
-#include "AbstractCollisionProblem.hpp"
-#include "include/prng.hpp"
-#include "include/memory.hpp"
-#include "include/counters.hpp"
+#include "../docs/AbstractDomain.hpp"
+#include "../docs/AbstractClawProblem.hpp"
+#include "../docs/AbstractCollisionProblem.hpp"
+
+#include "util/prng.hpp"
+#include "util/memory.hpp"
+
+#include "counters.hpp"
 #include "dict.hpp"
 #include "engine.hpp"
 #include "claw_engine.hpp"
 #include "collision_engine.hpp"
+
 #include "mpi_common.hpp"
 
 
