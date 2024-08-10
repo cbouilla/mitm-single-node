@@ -19,6 +19,8 @@ cmake/*
 .idea
 .idea/*
 
+build
+
 # Prerequisites
 *.d
 
@@ -64,3 +66,5 @@ obj/*
 # clion junk, a sad editor
 .idea*
 .idea/*
+
+venv

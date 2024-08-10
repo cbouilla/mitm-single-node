@@ -1,161 +1,162 @@
 #ifndef MITM_COUNTERS
 #define MITM_COUNTERS
-#include "util/timing.hpp"
-#include "util/folder_creator.hpp"
-#include <cstddef>
-#include <numeric>
+
+#include "common.hpp"
+
 #include <string>
 #include <vector>
-#include <fstream>
+#include <cmath>
 
 namespace mitm {
+
 /* Non-essential counters but helpful to have, e.g. n_collisions/sec */
 struct Counters {
-  size_t const interval = (1LL<<15); // for printing only
-  size_t n_updates = 0; // #times dict were flushed
-  size_t n_collisions = 0;
-  size_t n_points = 0;
-  
-  // each entry contains number of distinguished point between
-  size_t n_dist_points_previous = 0;
-  std::vector<size_t> n_distinguished_points = {0};
+ 	const u64 interval = 1LL << 16; // for printing only
+ 	const double min_delay = 0.1;   // for printing only
+ 	
+ 	/* problem characteristics */
+ 	u64 w;                          // #slots
+ 	int pb_n;
 
-  double start_time;
-  double end_time;
-  double dist_previous_time;
-  double update_previous_time;
-  double elapsed = 0;
+ 	/* stats for the full computation */
+	u64 n_flush = 0;                // #times dict were flushed
+	u64 n_points = 0;               // #function evaluation in total
+	u64 n_points_trails = 0;        // #function evaluation to find DP
+	u64 n_dp = 0;                   // for this i
+	u64 n_collisions = 0;           // for this i
+	u64 bad_dp = 0;
+	u64 bad_probe = 0;
+	u64 bad_walk = 0;
+	u64 bad_collision = 0;
+	double start_time;
+	double end_time;
 
-  Counters()
-      : start_time(wtime()), dist_previous_time(wtime()),
-        update_previous_time(wtime())
-        {}
+	/* stats for this i */
+	double last_update;             // timestamp of the last flush
+	u64 n_dp_i = 0;                 // since last flush
+	u64 n_collisions_i = 0;         // since last flush
 
-  Counters(double interval)
-    : interval(interval),
-      dist_previous_time(wtime()),
-      update_previous_time(wtime())
-  {}
+	/* display management */
+	u64 n_dp_prev = 0;              // #DP found since last display
+	double last_display;
+	
+	void ready(int n, u64 _w)
+	{
+		pb_n = n;
+		w = _w;
+		double now = wtime();
+		start_time = now;
+		start_time = now;
+		last_display = now;
+		last_update = now;
+	}
 
+	void dp_failure()
+	{ 
+		#pragma omp atomic
+		bad_dp += 1; 
+	}
+	
+	void probe_failure()
+	{
+		#pragma omp atomic		
+		bad_probe += 1;
+	}
+	
+	void walk_failure() {
+		#pragma omp atomic		
+		bad_walk += 1;
+	}
+	
+	void collision_failure() {
+		#pragma omp atomic		
+		bad_collision += 1;
+	}
 
-  void increment_n_distinguished_points()
-  {
-    ++n_distinguished_points[n_updates];
-    size_t n = n_distinguished_points[n_updates] - n_dist_points_previous;
+	void display()
+	{
+		double now = wtime();
+		double delta = now - last_display;
+		if (delta >= min_delay) {
+			u64 N = 1ull << pb_n;
+			double rate = (n_dp - n_dp_prev) / delta;
+			char hrate[4];
+			human_format(rate, hrate);
+			printf("\r#i = %" PRId64 " (%.02f*n/w).  %s DP/sec.  #DP (this i / total) %.02f*w / %.02f*n.  #coll (this i / total) %.02f*w / %0.2f*n.  Total #f=2^%.02f",
+			 		n_flush, (double) n_flush * w / N, 
+			 		hrate, 
+			 		(double) n_dp_i / w, (double) n_dp / N,
+			 		(double) n_collisions_i / w, (double) n_collisions / N,
+			 		std::log2(n_points));
+			fflush(stdout);
+			n_dp_prev = n_dp;
+			last_display = wtime();
+		}
+	}
 
-    if (n_distinguished_points[n_updates] % interval == 0){
+	void function_evaluation()
+	{
+		#pragma omp atomic
+		n_points += 1;
+	}
 
-      elapsed = wtime() - dist_previous_time;
-      printf("\r%lu=2^%0.2f iter took:"
-	     " %0.2f sec, i.e. %0.2f ≈ 2^%0.2f iter/sec",
-	     n, std::log2(n),
-	     elapsed, n/elapsed, std::log2(n/elapsed) );
+	// call this when a new DP is found
+	void found_distinguished_point(u64 chain_len)
+	{
+		#pragma omp atomic
+		n_dp += 1;
+		#pragma omp atomic
+		n_dp_i += 1;
+		#pragma omp atomic
+		n_points_trails += chain_len;
+		if ((n_dp % interval == interval - 1))
+			#pragma omp critical(counters)
+			display();
+	}
 
-      fflush(stdout);
-      n_dist_points_previous = n_distinguished_points[n_updates];
-      dist_previous_time = wtime();
-    }
-  }
+	void found_collision() {
+		#pragma omp atomic
+		n_collisions += 1;
+		#pragma omp atomic
+		n_collisions_i += 1;
+	}
 
-  
-  void increment_n_updates()
-  {
-    elapsed = wtime() - update_previous_time;
+	// call this when the dictionnary is flushed / a new mixing function tried
+	void flush_dict()
+	{
+		#pragma omp critical(counters)
+		{
+		/*double elapsed = wtime() - last_update;
+		printf("\nUpdating the mixing function. The previous version:\n");
+		printf(" - lasted %0.2f sec\n", elapsed);
+		printf(" - 2^%0.2f function evaluations\n", std::log2(n_points));
+		printf(" - generated %" PRId64 " ≈ 2^%0.2f distinguished points\n", n_dp[n_flush], std::log2(n_dp[n_flush]));
+		printf(" - found %" PRId64 " ≈ 2^%0.2f collisions\n", n_collisions[n_flush], std::log2(n_collisions[n_flush]));
+		printf(" - %" PRId64 " DP failure, %" PRId64 " probe failure, %" PRId64 " walk failure, %" PRId64 " collision failure\n", 
+			bad_dp, bad_probe, bad_walk, bad_collision);
+		printf("Currently totaling 2^%.02f iterations\n", std::log2(n_points));
+		*/
+		n_flush += 1;
+		n_dp_i = 0;
+		n_dp_prev = 0;
+		n_collisions_i = 0;
+		last_update = wtime();
+		bad_dp = bad_probe = bad_walk = bad_collision = 0;
+		}
+	}
 
-    /* new entry to */
-    printf("\nUpdating the iteration function.\n"
-	   "the previous iteration:\n"
-	   " - lasted %0.2f sec\n"
-	   " - generated %lu ≈ 2^%0.2f distinguished points\n",
-	   elapsed,
-	   n_distinguished_points[n_updates],
-	   std::log2(n_distinguished_points[n_updates]));
-    
-    ++n_updates;
-    n_distinguished_points.emplace_back(0);
-    update_previous_time = wtime();
-  }
+	void done()
+	{
+		end_time = wtime();
+		double total_time = end_time - start_time;
+		printf("----------------------------------------\n");
+		printf("Took %0.2f sec to find the golden inputs\n", total_time);
+		printf("Used %" PRId64 " ≈ 2^%0.2f mixing functions\n", 1+n_flush, std::log2(1+n_flush));
+		printf("Evaluated f() %" PRId64 " ≈ 2^%0.2f times\n", n_points, std::log2(n_points));
+		printf("  - %" PRId64 " ≈ 2^%0.2f times to find DPs\n", n_points_trails, std::log2(n_points_trails));
 
-
-  void increment_collisions(size_t n = 1) {n_collisions += n;}
-
-  
-  void save_summary_stats(std::string problem_type,
-			  size_t A_size,
-			  size_t B_size,
-			  size_t C_size,
-			  double log2_nwords, // how many words are stored in dict 
-			  int difficulty)
-  {
-    end_time = wtime();
-    double total_time = end_time - start_time;
-    printf("----------------------------------------\n"
-	   "Took %0.2f sec to find the golden inputs.\n"
-	   "Saving the counters ...\n",
-	   total_time);
-    /* open folder (create it if it doesn't exist )*/
-    std::ofstream summary;
-    std::string d_name = "data/";
-    std::string f_name = d_name + problem_type + "_summary.csv";
-    create_folder_if_not_exist(d_name);
-    int file_status = create_file_if_not_exist(f_name);
-
-      
-    /* open the summary file */
-    summary.open(f_name, std::ios::app);
-
-
-    std::string column_names = "";
-    /* common suffix for both problems*/
-    std::string suffix = "log2(nwords),difficulty,#points,#distinguished_points,log2(#distinguished_points),#collisions,log2(#collisions),#updates,time(sec)\n";
-    /* Depending on the problem, we have different column names */
-    if (problem_type == "claw")
-      column_names = "C_size,A_size,B_size," + suffix;
-    if (problem_type == "collision")
-      column_names = "C_size,A_size," + suffix ;
-
-    /* Write column names to the file only if the file did not exist before */
-    if (file_status == 2)
-      summary << column_names;
-
-    /* compute some stats */
-    size_t total_distinguished_points
-      = std::accumulate(n_distinguished_points.begin(),
-			n_distinguished_points.end(),
-			static_cast<size_t>(0)); // starting value.
-
-    double log2_n_distinguished_points = std::log2(total_distinguished_points);
-    double log2_n_collisions = std::log2(n_collisions);
-
-    /* write all those stats to the summary file */
-    std::string B_data = "";
-    /* Special case: Collision Problem doesn't have B */
-    if (B_size != 0) /* B_size passed as 0 when this function is called by a
-		      * collision problem */
-      B_data = std::to_string(B_size) +  ", ";
-    
-    std::string summary_data = std::to_string(C_size) + ", "
-                             + std::to_string(A_size) + ", "
-                             + B_data
-                             + std::to_string(log2_nwords) + ", "
-                             + std::to_string(difficulty)  + ", "
-                             + std::to_string(n_points)  + ", "
-                             + std::to_string(total_distinguished_points)  + ", "
-                             + std::to_string(log2_n_distinguished_points) + ", "
-                             + std::to_string(n_collisions) + ", "
-                             + std::to_string(log2_n_collisions) + ", "
-                             + std::to_string(n_updates) + ", "
-                             + std::to_string(total_time)
-                             + "\n";
-
-    
-    summary << summary_data;
-    summary.close();
-
-    std::cout << "Successfully saved stats in " << f_name << "\n"
-	      << "Format:\n"
-	      << column_names
-	      << summary_data;
+		printf("Found %" PRId64 " ≈ 2^%0.2f distinguished points\n", n_dp, std::log2(n_dp));
+		printf("Found %" PRId64 " ≈ 2^%0.2f collisions\n", n_collisions, std::log2(n_collisions));
   }
 };  
 }

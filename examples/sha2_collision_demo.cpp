@@ -1,462 +1,115 @@
-#include "../mitm.hpp"
-#include <algorithm>
-#include <cstddef>
-#include <cstdint>
-#include <cstdlib>
-#include <cstring>
-#include <iostream>
-#include <iomanip>
-#include <array>
-#include <string>
-#include <vector>
-#include "../include/permutations/AES.hpp"
-#include "bits_lib.hpp"
+#include <cassert>
+#include <getopt.h>
+#include <err.h>
 
-/* For debugging */
-#include <unordered_map>
+#include "mitm.hpp"
 
 /* We would like to call C function defined in `sha256.c` */
 extern "C"{
- void sha256_process(uint32_t state[8], const uint8_t data[], uint32_t length);
- }
-
-
-
-
-/* More aesthitically pleasing than uintXY_t */
-using u8  = uint8_t ;
-using u16 = uint16_t;
-using u32 = uint32_t;
-using u64 = uint64_t;
-using i8  = int8_t ;
-using i16 = int16_t;
-using i32 = int32_t;
-using i64 = int64_t;
-
-
-#define CEIL(a, b) (((a) + (b)-1) / (b))
-
-#define NBITS_A 16
-#define NBITS_C 16
-
-#define NBYTES_A CEIL(NBITS_A, 8)
-#define NBYTES_C CEIL(NBITS_C, 8)
-/* stop here. */
-
-
-
-/*
- * repr is an encapsulation of whatever data used.
- */
-struct SHA2_out_repr {
-  // u8 data[NBYTES_C]; /* output */
-  u8 data[64]; /* output */
-
-  /* Constructor */
-  SHA2_out_repr()  {
-    for (size_t i = 0; i < NBYTES_C; ++i)
-      data[i] = 0;
-
-    /* These parts is always zero! */
-    for (size_t i = NBYTES_A; i < 64; ++i)
-      data[i] = 0;
-
-  }
-
-  /* I. destructor */
-  ~SHA2_out_repr(){}; /* no dynamic memory to be removed */
-  
-  /* II. copy constructor */
-  SHA2_out_repr(SHA2_out_repr const& other) {
-    for (size_t i = 0; i < NBYTES_C; ++i)
-      data[i] = other.data[i];
-  }
-
-  /* III. copy assignement  */
-  SHA2_out_repr& operator=(SHA2_out_repr const& other) {
-    for (size_t i = 0; i < NBYTES_C; ++i)
-      data[i] = other.data[i];
-
-    return *this;
-  }
-
-  /****************************************************************************/
-
-};
-
-
-
-struct SHA2_A_inp_repr {
-  /* This is the active input */
-  // u8 data[NBYTES_A]; /* output */
-  /* but for convenience in writing f we make it as  following: */
-  u8 data[64]; /* output */
-  /* Constructor */
-  SHA2_A_inp_repr()  {
-    for (size_t i = 0; i < NBYTES_A; ++i)
-      data[i] = 0;
-
-    /* These parts is always zero! */
-    for (size_t i = NBYTES_A; i < 64; ++i)
-      data[i] = 0;
-
-  }
-
-    /* II. copy constructor */
-  SHA2_A_inp_repr(SHA2_A_inp_repr const& other) {
-    for (size_t i = 0; i < NBYTES_A; ++i)
-      data[i] = other.data[i];
-  }
-
-  /* III. copy assignement  */
-  SHA2_A_inp_repr& operator=(SHA2_A_inp_repr const& other) {
-    for (size_t i = 0; i < NBYTES_A; ++i)
-      data[i] = other.data[i];
-
-    return *this;
-  }
-
-
-};
-
-
-
-
-
-
-/* Implement << operator for SHA2_inp_repr and SHA2_out_repr */
-std::ostream& operator<<(std::ostream& os, const SHA2_A_inp_repr& x)
-{
-  
-  for (size_t i = 0; i < NBYTES_A;++i) {
-    os << "0x" << std::setfill('0') << std::setw(2)
-       <<  std::hex << static_cast<unsigned int>( x.data[i] ) << ", ";
-  }
-  return os;
+        void sha256_process(u32 state[8], const u8 data[], u32 length);
 }
 
 
-
-std::ostream& operator<<(std::ostream& os, const SHA2_out_repr& x)
-{
-  for (size_t i = 0; i < NBYTES_C; ++i) {
-    os << "0x" << std::setfill('0') << std::setw(2)
-       <<  std::hex << static_cast<unsigned int>( x.data[i]) << ", ";
-  }
-  return os;
-}
-
-
-#ifdef COLLISION_DEBUG
-// /* Specific Hash for C_t aka SHA2_out_repr to enable the usage of
-//  * std::unordered_map */
-// template<>
-// struct std::hash<SHA2_out_repr>
-// {
-//     std::size_t operator()(const SHA2_out_repr& s) const noexcept
-//     {
-//       size_t digest = 0;
-//       for (int i = 0; i < NBYTES_C; ++i)
-// 	digest ^= s.data[i];
-//       return digest;
-//     }
-// };
-
-// bool operator==(const SHA2_out_repr& lhs, const SHA2_out_repr& rhs) {
-//     // Compare lhs and rhs for equality
-//   return (bits_memcmp(lhs.data, rhs.data, NBITS_C) == 0);
-// }
-#endif 
-
-/*
- * Implement functions related to inp/out as specified in AbstractDomain
- */
-class SHA2_OUT_DOMAIN : mitm::AbstractDomain<SHA2_out_repr>
-{
-public:
-  // Not only a shortcut, it's necessry to avoid error when specializing a class
-  // In template: 't' is a private member of 'mitm::AbstractDomain<SHA2_out_repr>'
-  using t = SHA2_out_repr;
-
-    
-  const static int size = NBYTES_C;
-  int a[NBYTES_C];
-  
-  const static size_t n_elements = (1LL<<size)*8;
-  /* todo: randomize */
-  inline
-  void randomize(t& x, mitm::PRNG& prng)
-  {
-    constexpr u8 rem_bits = NBITS_C % 8;
-    constexpr u8 mask = (1 << rem_bits) - 1;
-
-    for(int i = 0; i < NBYTES_C; ++i )
-      x.data[i] = prng.rand(); /* a bit overkill to call rand on a single byte! */
-
-    /* remove execessive bits */
-    if (rem_bits > 0){
-      x.data[NBYTES_C - 1] = x.data[NBYTES_C - 1] & mask;
-    }
-
-    // #ifdef COLLISION_DEBUG
-    // starting_points[x] += 1;
-    // #endif
-  }
-
-  
-  inline
-  bool is_equal(t const& x, t const& y) const
-  {
-    return ( bits_memcmp(x.data, y.data, NBITS_C) == 0);
-  }
-
-  inline
-  void serialize(const t& in, u8* out) const
-  {
-    bits_memcpy(out, in.data, NBITS_C);
-  }
-
-  inline
-  void deserialize(const u8* in, t& out) const
-  {
-    bits_memcpy(out.data, in, NBITS_C);
-  }
-
-
-  inline
-  void copy(const t& in, t& out)
-  {
-    bits_memcpy(out.data, in.data, NBITS_C);
-  }
-
-  
-  inline
-  u64 hash(const t& x) const
-  {
-    /* Take into account all bytes of the output */
-    /* each bit k in position 64*r + l, contributes to the l poisition in the digest */
-    u64 digest = 0;
-    for (int i = 0; i < NBYTES_C; ++i)
-      digest ^= ((u64) x.data[i])<<((8*i)%64);
-
-    return digest;
-  }
-
-public:
-  // #ifdef COLLISION_DEBUG
-  // std::unordered_map<t, size_t> starting_points{};
-  // #endif
-};
+int n = 20;         // default problem size (easy)
+u64 seed = 0x1337;  // default fixed seed
 
 
 ////////////////////////////////////////////////////////////////////////////////
-// AbstractClawProblem <I, A_t, C_t>
-class SHA2_Problem
-  : mitm::AbstractCollisionProblem<std::array<u8, 16>,
-				   SHA2_A_inp_repr,
-				   SHA2_OUT_DOMAIN>
-{
-public:
-  SHA2_OUT_DOMAIN C; /* Output related functions */
+class SHA2CollisionProblem : mitm::AbstractCollisionProblem {
+private:
+  u64 mask;
+  /* cheating */
+  u64 golden_x, golden_y;
 
-  /* These types shorthand are essential ! */
-  using I_t = std::array<u8, 16>; /* 1st tempalte type */
-  using A_t = SHA2_A_inp_repr; /* 2nd template type */
-  using C_t = SHA2_out_repr; /* 4th template type */
-  using Dom_C = SHA2_OUT_DOMAIN;
+  const u32 sha256_IV[8] = {
+        0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
+        0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19
+  };
 
-  size_t nbits_A = NBITS_A;
-  size_t nbits_C = NBITS_C;
-  
-  
-  /****************************************************************************/
-  // INIT
-    SHA2_Problem()
-  {
-
-    
-    std::random_device rd;  // a seed source for the random number engine
-    std::mt19937 gen(rd()); // mersenne_twister_engine seeded with rd()
-    std::uniform_int_distribution<> distrib(0, 255); /* a random byte value*/
-
-    constexpr u8 rem_bits = NBITS_A % 8;
-    constexpr u8 mask     =  (1 << rem_bits) - 1;
-    
-    /* Fill golden_input with uniform garbage, truly golden data. */
-    for (int i = 0; i < NBYTES_A; ++i){
-      golden_inp0.data[i] = distrib(gen);
-      golden_inp1.data[i] = distrib(gen);
-    }
-
-    /* clear the rest of the bits */
-    if (rem_bits > 0 ){
-      golden_inp0.data[NBYTES_A - 1] = golden_inp0.data[NBYTES_A - 1] & mask;
-      golden_inp1.data[NBYTES_A - 1] = golden_inp1.data[NBYTES_A - 1] & mask;
-    }
-
-    
-      
-
-    /* It's enough to compute golden_out for inp0, by def f(inp1) = golden_out */
-    f(golden_inp0, golden_out);
-
-    /* Check our constant work */
-    C_t y0;
-    C_t y1;
-    f(golden_inp0, y0);
-    f(golden_inp1, y1);
-    
-    std::cout << "\n========================================\n"
-	      << "Does the golden pair collide? " << C.is_equal(y0, y1) << "\n"      
-	      << "golden_inpA = " << golden_inp0 << "\n"
-      	      << "golden_inpB = " << golden_inp1 << "\n"
-	      << "golden_out  = " << golden_out  << "\n"
-	      << "========================================\n";
-  }
-  /****************************************************************************/
-  
-  inline
-  void f(const A_t& x, C_t& y) const
-  {
-    /* Artifically make golden_inp1 collides with golden_inp0 */
-    if (is_equal_A(x, golden_inp1)){
-      bits_memcpy(y.data, golden_out.data, NBITS_C);
-      return;
-    }
-
-    /* Otherwise use normal sha2 */
-    u32 state[8] = { 0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
-		     0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19};
-    sha256_process(state, x.data, 64);
-    bits_memcpy(y.data, state, NBITS_C);
-  }
-
-
-  inline
-  void send_C_to_A(C_t& inp_C, A_t& out_A) const
-  {
-    /* remove any junk in A */
-    std::memset(out_A.data, 0, 64);
-    bits_memcpy(out_A.data, inp_C.data, NBITS_C);
-  }
-
-
-  void mix(I_t const& key_static, C_t const& x, C_t& y) const
-  {
-    // std::cout << "before mix x = " << x << ", "
-    // 	      << "y = " << y << "\n";
-
-    char unsigned data[16] = {0};
-    unsigned char key[16] = {0};
-
-    std::memcpy(key, key_static.data(), 16);
-    bits_memcpy(data, x.data, NBITS_C);
-
-    Cipher::Aes<128> aes(key);
-    aes.encrypt_block(data);
-    bits_memcpy(y.data, data, NBITS_C);
-  }
-
-  
-  I_t mix_default() const {return I_t {0}; }
-  I_t mix_sample(mitm::PRNG& rng) const
-  {
-    I_t key_static{};
-    /* get a "random" key */
-    for (int k = 0; k <  16; ++k) 
-      key_static[k] = rng.rand();
-
-    return key_static;    
-  }
-
-
-  /* assuming that f(x0) == f(x1) == y, is (x0, x1) an acceptable outcome? */
-  bool is_good_pair(C_t const &z,  A_t const &x0,  A_t const &x1)
-  {
-    /* TOO strong condition */
-    // return (C.is_equal(golden_out, z)
-    // 	    and is_equal_A(golden_inp0, x0)
-    // 	    and is_equal_A(golden_inp1, x1));
-
-    return C.is_equal(golden_out, z);
-  }
-
+  mitm::PRNG &prng;
 
 public:
-  /* A simple equality test for the type A_t, since it's not required by mitm */
-  bool is_equal_A(A_t const& inp0, A_t const& inp1) const{
-    return (bits_memcmp(inp0.data, inp1.data, NBITS_C) == 0); /* i.e. return not not_equal */
+  int n;
+
+  u64 f(u64 x) const
+  {
+    assert((x & mask) == x);
+    u32 data[8];
+    for (int i = 0; i < 8; i++)
+        data[i] = sha256_IV[i];
+    u64 msg[8];
+    for (int i = 0; i < 8; i++)
+        msg[i] = 0;
+    if (x == golden_y)
+        x = golden_x;
+    msg[0] = x;
+    sha256_process(data, (const u8*) msg, 64);
+    return (data[0] ^ ((u64) data[1] << 32)) & mask;
   }
 
-  // #ifdef COLLISION_DEBUG
-  // void clear_starting_points()
-  // {
-  //   /* next time try to zeroize all values*/
-  //   C.starting_points.clear();
-  // }
-  // #endif
+  SHA2CollisionProblem(int n, mitm::PRNG &prng) : prng(prng), n(n)
+  {
+    mask = (1ull << n) - 1;
+    golden_x = prng.rand() & mask;
+    golden_y = prng.rand() & mask;
+    while (golden_y == golden_x)
+        golden_y = prng.rand() & mask;
+    assert(golden_x != golden_y);
+    assert(f(golden_x) == f(golden_y));
+  }
 
-public:
-  C_t golden_out ; /* We look for point that equals this */
-  A_t golden_inp0; /* We will edit f so that */
-  A_t golden_inp1;
-  C_t constant{};
-
-
-
+  bool is_good_pair(u64 x0, u64 x1) const 
+  {
+    return (x0 == golden_x) && (x1 == golden_y);
+  }
 };
 
-/* This function enables us to compute how many bytes needed to have nslots
- * in the dictionary. The calculation method depends on how the dictionary is
- * implemented. It works for now on our simple dictionary.
- */
-size_t calculate_nbytes_given(size_t nslots)
-{
-  /* sizeof(Value) + sizeof(Key) + sizeof(Chainlength)*/
-  size_t triple_size = sizeof(SHA2_out_repr) + sizeof(u64) + sizeof(u64);
 
-  return triple_size*nslots;
+mitm::Parameters process_command_line_options(int argc, char **argv)
+{
+    struct option longopts[5] = {
+        {"ram", required_argument, NULL, 'r'},
+        {"difficulty", required_argument, NULL, 'd'},
+        {"n", required_argument, NULL, 'n'},
+        {"seed", required_argument, NULL, 's'},
+        {NULL, 0, NULL, 0}
+    };
+
+    mitm::Parameters params;
+
+    for (;;) {
+        int ch = getopt_long(argc, argv, "", longopts, NULL);
+        switch (ch) {
+        case -1:
+            return params;
+        case 'r':
+            params.nbytes_memory = mitm::human_parse(optarg);
+            break;
+        case 'd':
+            params.difficulty = std::stoi(optarg);
+            break;
+        case 'n':
+            n = std::stoi(optarg);
+            break;
+        case 's':
+            seed = std::stoull(optarg, 0);
+            break;
+        default:
+            errx(1, "Unknown option %s\n", optarg);
+        }
+    }
 }
 
 
 int main(int argc, char* argv[])
 {
-  SHA2_Problem Pb;
+        mitm::Parameters params = process_command_line_options(argc, argv);
+        mitm::PRNG prng(seed);
+        printf("sha2-collision demo! seed=%016" PRIx64 ", n=%d\n", seed, n); 
 
-  std::cout << "sha2 collision demo! |inp_A| = " << NBYTES_A << "bytes, "
-	    << "|out| = " << NBYTES_C << "bytes\n";
-
-
-  if (argc == 2){
-    /* ./sha2_collision_demo log2_nslots  */
-    
-    /*  Get the value of difficulty as a string */
-    
-    std::string log2_nslots_str = argv[1];
-    size_t log2_nslots = std::stoull(log2_nslots_str);
-    size_t nbytes_dict = calculate_nbytes_given(1LL<<log2_nslots);
-
-    printf("nslots = 2^%lu\n", log2_nslots);
-
-    /* Main work: */
-    mitm::collision_search(Pb, nbytes_dict);
-
-  } else if (argc == 3) {
-    /* ./sha2_collision_demo log2_nslots difficulty */
-    std::string log2_nslots_str = argv[1];
-    std::string d_str = argv[2];
-    int difficulty = std::stoi(d_str);
-    size_t log2_nslots = std::stoull(log2_nslots_str);
-    size_t nbytes_dict = calculate_nbytes_given(1LL<<log2_nslots);
-
-    printf("nslots = 2^%lu, difficulty = %d\n", log2_nslots, difficulty);
-
-    /* Main work */
-    mitm::collision_search(Pb, nbytes_dict, difficulty);
-  } else {
-    mitm::collision_search(Pb);    
-  }
-
-
+        SHA2CollisionProblem pb(n, prng);
+        auto collision = mitm::collision_search(pb, params, prng);
+        printf("f(%" PRIx64 ") = g(%" PRIx64 ")\n", collision.first, collision.second);
+        
+        return EXIT_SUCCESS;
 }
-

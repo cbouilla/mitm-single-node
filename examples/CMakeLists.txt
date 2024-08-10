@@ -1,0 +1,19 @@
+
+add_executable(sha2_collision_demo
+    sha2_collision_demo.cpp
+	sha256_x86.c)
+target_link_libraries(sha2_collision_demo PUBLIC OpenMP::OpenMP_CXX)
+target_include_directories(sha2_collision_demo PRIVATE ../include)
+
+add_executable(sha2_claw_demo
+    sha2_claw_demo.cpp
+	sha256_x86.c)
+target_link_libraries(sha2_claw_demo PUBLIC OpenMP::OpenMP_CXX)
+target_include_directories(sha2_claw_demo PRIVATE ../include)
+
+add_executable(double_speck32_demo
+    double_speck32_demo.cpp
+    speck3264.c)
+target_link_libraries(double_speck32_demo PUBLIC OpenMP::OpenMP_CXX)
+target_include_directories(double_speck32_demo PRIVATE ../include)
+
