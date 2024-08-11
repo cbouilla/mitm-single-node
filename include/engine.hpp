@@ -16,11 +16,64 @@
 
 namespace mitm {
 
+class Parameters {
+public:
+    double difficulty = -1;   /* -log2(proportion of distinguished points). -1 == auto-choose */
+    u64 nbytes_memory = 0;    /* how much RAM for the dictionary. 0 == use everything */
+    double beta = 10;         /* use function variant for beta*w distinguished points */
+    u64 threshold;            /* any integer less than this is a DP */
+    u64 dp_max_it;            /* how many iterations to find a DP */
+
+    static double optimal_theta(double log2_w, int n)
+    {
+        return std::log2(2.25) + 0.5 * (log2_w - n);
+    }
+
+    void finalize(int n)
+    {
+         /* If the user did not specify how much memory to be use, use all the RAM */
+        if (nbytes_memory == 0) {
+            nbytes_memory = get_available_memory();
+            char hm[8];
+            human_format(nbytes_memory, hm);
+            printf("AUTO-TUNING: using %sB of RAM\n", hm);
+        }
+        u64 nslots = Dict<std::pair<u64, u64>>::get_nslots(nbytes_memory);
+        double log2_w = std::log2(nslots);
+        double theta = optimal_theta(log2_w, n);
+        /* auto-choose the difficulty if not set */
+        if (difficulty < 0) {
+            difficulty = -theta;
+            if (difficulty < 0)
+                difficulty = 0;
+            printf("AUTO-TUNING: setting difficulty %.2f\n", difficulty);
+        } else {
+            printf("NOTICE: using difficulty=%.2f vs ``optimal''=%.2f\n", difficulty, theta);
+        }
+        threshold = std::pow(2., n - difficulty);
+        dp_max_it = 20 * std::pow(2., difficulty);
+
+        /* display warnings if problematic choices were made */
+        if (difficulty < 0) {
+            printf("***** WARNING *****\n***** WARNING *****\n***** WARNING *****\n");
+            printf("---> negative difficulty (reset to 0)\n");
+            printf("***** WARNING *****\n***** WARNING *****\n***** WARNING *****\n");            
+        }
+        if (n - difficulty < log2_w) {
+            printf("***** WARNING *****\n***** WARNING *****\n***** WARNING *****\n");
+            printf("---> Too much memory (2^%.2f slots) but only 2^%.2f possible distinguished points\n",
+                log2_w, n - difficulty);
+            printf("***** WARNING *****\n***** WARNING *****\n***** WARNING *****\n");
+        }
+    }
+};
+
+
 /******************************************************************************/
 
-inline bool is_distinguished_point(u64 digest, u64 mask)
+inline bool is_distinguished_point(u64 x, u64 threshold)
 {
-    return (mask & digest) == 0;
+    return x <= threshold;
 }
 
 
@@ -30,18 +83,16 @@ inline bool is_distinguished_point(u64 digest, u64 mask)
  * Then return `true`. If the iterations limit is passed, returns `false`.
  */
 template<typename ConcreteProblem>
-std::optional<std::pair<u64,u64>> generate_dist_point(const ConcreteProblem& Pb, u64 i, u64 difficulty, u64 x)
+std::optional<std::pair<u64,u64>> generate_dist_point(const ConcreteProblem& Pb, u64 i, const Parameters &params, u64 x)
 {
-    u64 mask = (1ull << difficulty) - 1;    
     /* The probability, p, of NOT finding a distinguished point after the loop is
      * Let: theta := 2^-d
      * difficulty, N = k*2^difficulty then,
      * p = (1 - theta)^N =>  let ln(p) <= -k
      */
-    constexpr u64 k = 40;
-    for (u64 j = 0; j < k * (mask + 1); j++) {
+    for (u64 j = 0; j < params.dp_max_it; j++) {
         u64 y = Pb.mixf(i, x);
-        if (is_distinguished_point(y, mask))
+        if (is_distinguished_point(y, params.threshold))
             return std::make_optional(std::pair(y, j+1));
         x = y;
     }
@@ -95,35 +146,29 @@ std::optional<std::tuple<u64,u64,u64>> walk(const ConcreteProblem& Pb, u64 i, u6
   return std::nullopt; /* we did not find a common point */
 }
 
-class Parameters {
-public:
-    int difficulty = -1;      /* -log2(proportion of distinguished points). -1 == auto-choose */
-    u64 nbytes_memory = 0;    /* how much RAM for the dictionary. 0 == use everything */
-    double beta = 10;         /* use function variant for beta*w distinguished points */
-
-    static double optimal_theta(double log2_w, int n)
+template<typename ConcreteProblem>
+double benchmark(const ConcreteProblem& Pb)
+{
+    u64 x = 0;
+    u64 i = 42;
+    u64 threshold = (1ull << (Pb.n - 1));
+    double start = wtime();
+    u64 N = 1000000;
+    u64 total = 0;
+    #pragma omp parallel reduction(+:total)
     {
-        return std::log2(2.25) + 0.5 * (log2_w - n);
+        total = N;
+        for (u64 j = 0; j < N; j++) {
+            u64 y = Pb.mixf(i, x);
+            if (is_distinguished_point(y, threshold))
+                x = j;
+            else
+                x = y;
+        }
     }
+    return total / (wtime() - start);
+}
 
-    void finalize(int n)
-    {
-         /* If the user did not specify how much memory to be use, use all the RAM */
-        if (nbytes_memory == 0) {
-            nbytes_memory = get_available_memory();
-            char hm[4];
-            human_format(nbytes_memory, hm);
-            printf("AUTO-TUNING: using %sB of RAM\n", hm);
-        }
-        if (difficulty < 0) {
-            u64 nslots = Dict<std::pair<u64, u64>>::get_nslots(nbytes_memory);
-            double theta = optimal_theta(std::log2(nslots), n);
-            difficulty = std::max(0., std::round(-theta));
-            printf("AUTO-TUNING: setting difficulty to %d (rounded from %.2f)\n", difficulty, -theta);
-        }
-        /* TODO: display warnings if problematic choices were made ; */
-    }
-};
 
 /*
  *  The sequence of mixing function is deterministic given `prng`  
@@ -134,7 +179,14 @@ std::tuple<u64,u64,u64> search_generic(const ConcreteProblem& Pb, Parameters &pa
     Counters &ctr = Pb.ctr; 
     params.finalize(Pb.n);
 
-    printf("Started collision search with seed=%016" PRIx64 ", difficulty=%d\n", prng.seed, params.difficulty);
+    printf("Benchmarking... ");
+    fflush(stdout);
+    double it_per_s = benchmark(Pb);
+    char hitps[8];
+    human_format(it_per_s, hitps);
+    printf("%s iteration/s (using all cores)\n", hitps);
+
+    printf("Starting collision search with seed=%016" PRIx64 ", difficulty=%.2f\n", prng.seed, params.difficulty);
 
     Dict<std::pair<u64, u64>> dict(params.nbytes_memory);
     double log2_w = std::log2(dict.n_slots);
@@ -142,45 +194,46 @@ std::tuple<u64,u64,u64> search_generic(const ConcreteProblem& Pb, Parameters &pa
     
     ctr.ready(Pb.n, dict.n_slots);
 
-    double theta = Parameters::optimal_theta(log2_w, Pb.n);
-    printf("``Optimal'' difficulty = %0.2f \n", -theta);
-   
-    printf("Expected iterations / collision = (2^%0.2f + 2^%d) \n", 
+    printf("Expected iterations / collision = (2^%0.2f + 2^%.2f) \n", 
         Pb.n - params.difficulty - log2_w, 1 + params.difficulty);
 
-    printf("Expected #iterations = (2^%0.2f + 2^%d) \n", 
+    printf("Expected #iterations = (2^%0.2f + 2^%.2f) \n", 
         (Pb.n - 1) + (Pb.n - params.difficulty - log2_w), Pb.n + params.difficulty);
 
 
-    u64 i = 0;    /* index of families of mixing functions */
+    u64 i = 0;                 /* index of families of mixing functions */
     std::optional<std::tuple<u64,u64,u64>> solution;    /* (i, x0, x1)  */
     const u64 points_per_version = params.beta * dict.n_slots;
-    
+    u64 n_dist_points = 0;     /* #DP found with this i */
+
     printf("Generating %.1f*w = %" PRId64 " = 2^%0.2f distinguished point / version\n", 
         params.beta, points_per_version, std::log2(points_per_version));
 
     u64 root_seed = prng.rand();
 
-    #pragma omp parallel
-    {
-    int tid = omp_get_thread_num();
-    
+    #pragma omp parallel    
     for (;;) {
         /* These simulations show that if 10w distinguished points are generated
          * for each version of the function, and theta = 2.25sqrt(w/n) then ...
          */
-        PRNG tprng(root_seed, tid);
-        // printf("thread %d using $$$ = %" PRIx64 "\n", tid, tprng.rand());
 
-        #pragma omp for schedule(static)
-        for (u64 n_dist_points = 0; n_dist_points < points_per_version; n_dist_points++) {
-            /* start a new chain from a fresh random starting point */
-            u64 start0 = tprng.rand() & Pb.mask;
-            auto dp = generate_dist_point(Pb, i, params.difficulty, start0);
+        for (;;) {
+            u64 tmp;
+            #pragma omp atomic read
+            tmp = n_dist_points;
+            if (tmp > points_per_version)
+                break;
+
+            /* start a new chain from a fresh "random" starting point */
+            u64 start0 = (root_seed + n_dist_points) & Pb.mask;
+            auto dp = generate_dist_point(Pb, i, params, start0);
             if (not dp) {
                 ctr.dp_failure();
                 continue;       /* bad chain start */
             }
+
+            #pragma omp atomic
+            n_dist_points += 1;
 
             auto [end, len0] = *dp;
             ctr.found_distinguished_point(len0);
@@ -205,7 +258,7 @@ std::tuple<u64,u64,u64> search_generic(const ConcreteProblem& Pb, Parameters &pa
 
             ctr.found_collision();
             if (Pb.mix_good_pair(i, x0, x1)) {
-                printf("\nthread %d Found golden collision!\n", tid);
+                printf("\nFound golden collision!\n");
                 solution = std::make_optional(std::tuple(i, x0, x1));
             }
         }
@@ -213,17 +266,18 @@ std::tuple<u64,u64,u64> search_generic(const ConcreteProblem& Pb, Parameters &pa
         if (solution)
             break;
 
+        #pragma omp barrier
+
         /* change the mixing function */
         #pragma omp single
         {
+            n_dist_points = 0;
             i = prng.rand() & Pb.mask; 
             dict.flush();
             ctr.flush_dict();
             root_seed = prng.rand();
-            // printf("Trying with mixing function i=%" PRIx64 "\n", i);
         }
     } // main loop
-    } // omp
     return *solution;
 }
 

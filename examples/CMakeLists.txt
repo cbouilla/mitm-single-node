@@ -17,3 +17,10 @@ add_executable(double_speck32_demo
 target_link_libraries(double_speck32_demo PUBLIC OpenMP::OpenMP_CXX)
 target_include_directories(double_speck32_demo PRIVATE ../include)
 
+add_executable(double_speck64_demo
+    double_speck64_demo.cpp
+    speck64128.c)
+target_link_libraries(double_speck64_demo PUBLIC OpenMP::OpenMP_CXX)
+target_include_directories(double_speck64_demo PRIVATE ../include)
+
+

@@ -38,6 +38,7 @@ struct Counters {
 
 	/* display management */
 	u64 n_dp_prev = 0;              // #DP found since last display
+	u64 n_points_prev = 0;          // #function eval since last display
 	double last_display;
 	
 	void ready(int n, u64 _w)
@@ -79,17 +80,21 @@ struct Counters {
 		double delta = now - last_display;
 		if (delta >= min_delay) {
 			u64 N = 1ull << pb_n;
-			double rate = (n_dp - n_dp_prev) / delta;
-			char hrate[4];
-			human_format(rate, hrate);
-			printf("\r#i = %" PRId64 " (%.02f*n/w).  %s DP/sec.  #DP (this i / total) %.02f*w / %.02f*n.  #coll (this i / total) %.02f*w / %0.2f*n.  Total #f=2^%.02f",
+			double dprate = (n_dp - n_dp_prev) / delta;
+			char hdprate[8];
+			human_format(dprate, hdprate);
+			double frate = (n_points - n_points_prev) / delta;
+			char hfrate[8];
+			human_format(frate, hfrate);
+			printf("\r#i = %" PRId64 " (%.02f*n/w). %s f/sec.  %s DP/sec.  #DP (this i / total) %.02f*w / %.02f*n.  #coll (this i / total) %.02f*w / %0.2f*n.  Total #f=2^%.02f",
 			 		n_flush, (double) n_flush * w / N, 
-			 		hrate, 
+			 		hfrate, hdprate, 
 			 		(double) n_dp_i / w, (double) n_dp / N,
 			 		(double) n_collisions_i / w, (double) n_collisions / N,
 			 		std::log2(n_points));
 			fflush(stdout);
 			n_dp_prev = n_dp;
+			n_points_prev = n_points;
 			last_display = wtime();
 		}
 	}
@@ -124,8 +129,7 @@ struct Counters {
 	// call this when the dictionnary is flushed / a new mixing function tried
 	void flush_dict()
 	{
-		#pragma omp critical(counters)
-		{
+		display();
 		/*double elapsed = wtime() - last_update;
 		printf("\nUpdating the mixing function. The previous version:\n");
 		printf(" - lasted %0.2f sec\n", elapsed);
@@ -138,11 +142,9 @@ struct Counters {
 		*/
 		n_flush += 1;
 		n_dp_i = 0;
-		n_dp_prev = 0;
 		n_collisions_i = 0;
 		last_update = wtime();
 		bad_dp = bad_probe = bad_walk = bad_collision = 0;
-		}
 	}
 
 	void done()
@@ -153,8 +155,11 @@ struct Counters {
 		printf("Took %0.2f sec to find the golden inputs\n", total_time);
 		printf("Used %" PRId64 " ≈ 2^%0.2f mixing functions\n", 1+n_flush, std::log2(1+n_flush));
 		printf("Evaluated f() %" PRId64 " ≈ 2^%0.2f times\n", n_points, std::log2(n_points));
-		printf("  - %" PRId64 " ≈ 2^%0.2f times to find DPs\n", n_points_trails, std::log2(n_points_trails));
-
+		printf("  - %" PRId64 " ≈ 2^%0.2f times to find DPs (%.1f%%)\n", 
+			n_points_trails, std::log2(n_points_trails), 100.0 * n_points_trails / n_points);
+		u64 n_points_walk = n_points - n_points_trails;
+		printf("  - %" PRId64 " ≈ 2^%0.2f times in walks (%.1f%%)\n", 
+			n_points_walk, std::log2(n_points_walk), 100.0 * n_points_walk / n_points);
 		printf("Found %" PRId64 " ≈ 2^%0.2f distinguished points\n", n_dp, std::log2(n_dp));
 		printf("Found %" PRId64 " ≈ 2^%0.2f collisions\n", n_collisions, std::log2(n_collisions));
   }

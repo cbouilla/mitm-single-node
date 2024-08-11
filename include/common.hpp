@@ -104,7 +104,34 @@ public:
     PRNG() : seed(read_urandom()), seq(0) { setseed(); }
 };
 
-  
+#if 0
+/* deterministic RNG based on SPECK-128-128 */
+class PRF {
+    const u64 k;
+
+#define ROTL64(x,r) (((x)<<(r)) | (x>>(64-(r))))
+#define ROTR64(x,r) (((x)>>(r)) | ((x)<<(64-(r))))
+#define ER64(x,y,k) (x=ROTR64(x,8), x+=y, x^=k, y=ROTL64(y,3), y^=x)
+
+static void Speck128128EncryptExpandKey(u64 Pt[],u64 Ct[],u64 K[])
+{
+    u64 i,B=K[1],A=K[0];
+    Ct[0]=Pt[0]; Ct[1]=Pt[1];
+    for(i=0;i<32;) {
+        ER64(Ct[1],Ct[0],A);
+        ER64(B,A,i++);
+    }
+}
+
+    PRF(u64 k) : k(k);
+
+    void operator() (u64 x)
+    {
+        u64 Pt[2]
+    }
+}
+#endif
+
 /* represent n in 4 bytes */
 void human_format(u64 n, char *target)
 {
