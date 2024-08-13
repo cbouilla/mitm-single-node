@@ -24,28 +24,10 @@ public:
 template<typename ConcreteProblem>
 static double benchmark(const ConcreteProblem& Pb)
 {
-    u64 i = 42;
-    u64 threshold = (1ull << (Pb.n - 1));
-    double start = wtime();
-    u64 total = 0;
-    u64 k = 1000;
-    #pragma omp parallel reduction(+:total)
-    {
-        u64 x = 0;
-        double delta = 0.;
-        while (delta < 1.) {
-            for (u64 j = 0; j < k; j++) {
-                u64 y = Pb.mixf(i, x);
-                if (is_distinguished_point(y, threshold))
-                    x = j;
-                else
-                    x = y;
-            }
-            total += k;
-            delta = wtime() - start;
-        }
-    }
-    return total / (wtime() - start);
+    double rate = 0;
+    #pragma omp parallel reduction(+:rate)
+    rate = sequential_benchmark(Pb);
+    return rate;
 }
 
 
@@ -58,18 +40,18 @@ static std::tuple<u64,u64,u64> run(const ConcreteProblem& Pb, Parameters &params
     printf("Benchmarking... ");
     fflush(stdout);
     double it_per_s = benchmark(Pb);
+    // NOT DRY wrt MPI
     char hitps[8];
     human_format(it_per_s, hitps);
     printf("%s iteration/s (using all cores)\n", hitps);
 
-
     Dict<std::pair<u64, u64>> dict(params.nbytes_memory);
     params.finalize(Pb.n, dict.n_slots);
+    ctr.ready(Pb.n, dict.n_slots);
     double log2_w = std::log2(dict.n_slots);
 
     printf("Starting collision search with seed=%016" PRIx64 ", difficulty=%.2f\n", prng.seed, params.difficulty);
     printf("Initialized a dict with %" PRId64 " slots = 2^%0.2f slots\n", dict.n_slots, log2_w);
-    ctr.ready(Pb.n, dict.n_slots);
     printf("Expected iterations / collision = (2^%0.2f + 2^%.2f) \n", 
         Pb.n - params.difficulty - log2_w, 1 + params.difficulty);
     printf("Expected #iterations = (2^%0.2f + 2^%.2f) \n", 

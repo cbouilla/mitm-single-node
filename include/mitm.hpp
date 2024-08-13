@@ -7,7 +7,7 @@
 
 #include "common.hpp"
 #include "AbstractCollisionProblem.hpp"
-#include "omp_engine.hpp"
+#include "engine_common.hpp"
 
 namespace mitm {
 
@@ -51,10 +51,9 @@ public:
 template <typename Engine, typename AbstractProblem>
 std::pair<u64, u64> collision_search(const AbstractProblem& Pb, Parameters &params, PRNG &prng)
 {
-    Counters ctr;
+    Counters ctr(params.verbose);
     ConcreteCollisionProblem wrapper(Pb, ctr);
 
-    /* note the search_engine has different arguments than claw_search */
     auto [i, x, y] = Engine::run(wrapper, params, prng);
     u64 a = wrapper.mix(i, x);
     u64 b = wrapper.mix(i, y);
@@ -65,21 +64,6 @@ std::pair<u64, u64> collision_search(const AbstractProblem& Pb, Parameters &para
     ctr.done();
     return std::pair(a, b);
 }
-
-#if 0
-/* turn-key version */
-template <typename AbstractProblem>
-auto collision_search(const AbstractProblem& Pb)
-{
-    return collision_search(Pb, Parameters(), PRNG());
-}
-
-template <typename AbstractProblem>
-auto collision_search(const AbstractProblem& Pb, Parameters &params)
-{
-    return collision_search(Pb, params, PRNG());
-}
-#endif 
 
 /****************************************************************************************/
 
@@ -141,7 +125,7 @@ public:
 template <typename Engine, class Parameters, typename Problem>
 std::pair<u64, u64> claw_search(const Problem& Pb, Parameters &params, PRNG &prng)
 {
-    Counters ctr;
+    Counters ctr(params.verbose);
     ClawWrapper wrapper(Pb, ctr);
 
     auto [i, a, b] = Engine::run(wrapper, params, prng);

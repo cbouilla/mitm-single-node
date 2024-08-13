@@ -7,7 +7,6 @@
 
 #include "common.hpp"
 #include "engine_common.hpp"
-#include "omp_engine.hpp"
 #include "mpi_common.hpp"
 
 namespace mitm {
@@ -27,16 +26,21 @@ private:
 	std::vector<MPI_Request> request;   /* for the OUTGOING buffers */
 
 	/* wait until the i-th passive buffer has been fully sent */
-	void wait_send(int i)
+	void wait_send(int i, Counters &ctr)
 	{
+		double start = wtime();
 		MPI_Wait(&request[i], MPI_STATUS_IGNORE);
+		ctr.send_wait += wtime() - start;
 		outgoing[i].clear();
 	}
 
 	/* initiate transmission of the i-th OUTGOING buffer */
-	void start_send(int i)
+	void start_send(int i, Counters &ctr)
 	{
-		MPI_Issend(outgoing[i].data(), 3 * outgoing[i].size(), MPI_UINT64_T, i, TAG_POINTS, params.inter_comm, &request[i]);
+		if (outgoing[i].size() == 0)  // do NOT send empty buffers. These are interpreted as "I am done"
+			return;
+		MPI_Issend(outgoing[i].data(), outgoing[i].size(), MPI_UINT64_T, i, TAG_POINTS, params.inter_comm, &request[i]);
+		ctr.bytes_sent += outgoing[i].size() * sizeof(u64);
 	}
 
 public:
@@ -53,13 +57,13 @@ public:
 	}
 
 	/* add a new item to the send buffer. Send if necessary */
-	void push(u64 start, u64 end, u64 len, int rank)
+	void push(u64 start, u64 end, u64 len, int rank, Counters &ctr)
 	{
-		if (ready[rank].size() == 3*capacity) {
+		if (ready[rank].size() == 3 * capacity) {
 			/* ready buffer is full. */
-			wait_send(rank);      // finish sending the outgoing buffer
+			wait_send(rank, ctr);      // finish sending the outgoing buffer
 			std::swap(ready[rank], outgoing[rank]);
-			start_send(rank);     // start sending
+			start_send(rank, ctr);     // start sending
 		}
 		ready[rank].push_back(start);
 		ready[rank].push_back(end);
@@ -67,22 +71,24 @@ public:
 	}
 
 	/* send and empty all buffers, even if they are incomplete */
-	void flush()
+	void flush(Counters &ctr)
 	{
 		int n = params.n_recv;
 		// finish sending all the outgoing buffers
+		double start = wtime();
 		MPI_Waitall(n, request.data(), MPI_STATUSES_IGNORE);
 
 		// send all the (incomplete) ready buffers
 		for (int i = 0; i < n; i++) {
 			std::swap(ready[i], outgoing[i]);
-			start_send(i);
+			start_send(i, ctr);
 		}
 		MPI_Waitall(n, request.data(), MPI_STATUSES_IGNORE);
 
 		// finally tell all receivers that we are done
 		for (int i = 0; i < n; i++)
-			MPI_Send(NULL, 0, MPI_INT, i, TAG_NO_MORE_DATA, params.inter_comm);
+			MPI_Send(NULL, 0, MPI_UINT64_T, i, TAG_POINTS, params.inter_comm);
+		ctr.send_wait += wtime() - start;
 	}
 };
 
@@ -104,11 +110,28 @@ void sender(const ConcreteProblem& Pb, const MpiParameters &params)
 			return;      // controller tells us to stop
 
 		u64 i = msg[0];
-		for (u64 start = msg[1] + params.local_rank;; start += params.n_send) {
+		for (u64 j = msg[1] + 3*params.local_rank;; j += 3*params.n_send) {   // add an odd number to avoid problems mod 2^n...
 			steps += 1;
 
+			/* call home? */
+            if ((steps % 10000 == 0) && (wtime() - last_ping >= params.ping_delay)) {
+				steps = 0;
+				last_ping = wtime();
+            	u64 stats[4] = {ctr.n_points, ctr.n_dp, (u64) (ctr.send_wait * 1e6), ctr.bytes_sent};
+            	MPI_Send(stats, 4, MPI_UINT64_T, 0, TAG_SENDER_CALLHOME, params.world_comm);
+            	ctr.reset();
+
+            	int assignment;
+            	MPI_Recv(&assignment, 1, MPI_INT, 0, TAG_ASSIGNMENT, params.world_comm, MPI_STATUS_IGNORE);
+            	if (assignment == NEW_VERSION) {        /* new broadcast */
+            	   	sendbuf.flush(ctr);   
+            		break;
+            	}
+            }
+
 			/* start a new chain from a fresh "random" starting point */
-            auto dp = generate_dist_point(Pb, i, params, start & Pb.mask);
+			u64 start = j & Pb.mask;
+            auto dp = generate_dist_point(Pb, i, params, start);
             if (not dp) {
                 ctr.dp_failure();
                 continue;       /* bad chain start */
@@ -119,24 +142,8 @@ void sender(const ConcreteProblem& Pb, const MpiParameters &params)
 
             u64 hash = (end * 0xdeadbeef) % 0x7fffffff;
             int target_recv = ((int) hash) % params.n_recv;
-            sendbuf.push(start, end, len, target_recv);
-		
-            if ((steps >= 1000) && (wtime() - last_ping >= 1)) {
-				/* call home */
-				last_ping = wtime();
-            	u64 buffer[1] = {ctr.n_dp_i};
-            	MPI_Send(buffer, 1, MPI_UINT64_T, 0, TAG_SENDER_CALLHOME, params.world_comm);
-            	int assignment;
-            	MPI_Recv(&assignment, 1, MPI_INT, 0, TAG_ASSIGNMENT, params.world_comm, MPI_STATUS_IGNORE);
-            	if (assignment == KEEP_GOING)
-            		continue;
-            	sendbuf.flush();   
-            	if (assignment == NEW_VERSION)        /* new broadcast */
-            		break;
-            }
+            sendbuf.push(start, end, len, target_recv, ctr);
 		}
-
-		ctr.flush_dict();
 	}
 }
 

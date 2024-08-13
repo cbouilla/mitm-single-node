@@ -17,24 +17,27 @@ namespace mitm {
 class Parameters {
 public:
     u64 nbytes_memory = 0;        /* how much RAM to use on each machine */
-
     double difficulty = -1;       /* -log2(proportion of distinguished points). -1 == auto-choose */
     double beta = 10;             /* use function variant for beta*w distinguished points */
+    int n_nodes = 1;              /* #hosts (with shared RAM) */
+    bool verbose = 1;             /* print progress information */
+
     u64 threshold;                /* any integer less than this is a DP */
     u64 dp_max_it;                /* how many iterations to find a DP */
     u64 points_per_version;       /* #DP per version of the function */
-    int n_nodes = 1;              /* #hosts (with shared RAM) */
+    u64 nslots;                   /* entries in the dict */
 
     static double optimal_theta(double log2_w, int n)
     {
         return std::log2(2.25) + 0.5 * (log2_w - n);
     }
 
-    void finalize(int n, u64 nslots)
+    void finalize(int n, u64 _nslots)
     {
         if (nbytes_memory == 0)
             errx(1, "the size of the dictionnary must be specified");
 
+        nslots = _nslots;
         double log2_w = std::log2(nslots * n_nodes);
         double theta = optimal_theta(log2_w, n);
         /* auto-choose the difficulty if not set */
@@ -42,21 +45,23 @@ public:
             difficulty = -theta;
             if (difficulty < 0)
                 difficulty = 0;
-            printf("AUTO-TUNING: setting difficulty %.2f\n", difficulty);
+            if (verbose)
+                printf("AUTO-TUNING: setting difficulty %.2f\n", difficulty);
         } else {
-            printf("NOTICE: using difficulty=%.2f vs ``optimal''=%.2f\n", difficulty, theta);
+            if (verbose)
+                printf("NOTICE: using difficulty=%.2f vs ``optimal''=%.2f\n", difficulty, theta);
         }
         threshold = std::pow(2., n - difficulty);
         dp_max_it = 20 * std::pow(2., difficulty);
         points_per_version = beta * nslots;
 
         /* display warnings if problematic choices were made */
-        if (difficulty <= 0) {
+        if (verbose && difficulty <= 0) {
             printf("***** WARNING *****\n***** WARNING *****\n***** WARNING *****\n");
             printf("---> zero difficulty (use the naive technique!)\n");
             printf("***** WARNING *****\n***** WARNING *****\n***** WARNING *****\n");            
         }
-        if (n - difficulty < log2_w) {
+        if (verbose && n - difficulty < log2_w) {
             printf("***** WARNING *****\n***** WARNING *****\n***** WARNING *****\n");
             printf("---> Too much memory (2^%.2f slots) but only 2^%.2f possible distinguished points\n",
                 log2_w, n - difficulty);
@@ -73,6 +78,31 @@ inline bool is_distinguished_point(u64 x, u64 threshold)
     return x <= threshold;
 }
 
+/* try to iterate for 1s. Return #it/s */
+template<typename ConcreteProblem>
+static double sequential_benchmark(const ConcreteProblem& Pb)
+{
+    u64 i = 42;
+    u64 threshold = (1ull << (Pb.n - 1));
+    double start = wtime();
+    u64 total = 0;
+    u64 k = 1000;
+    u64 x = 0;
+    double delta = 0.;
+    
+    while (delta < 1.) {
+        for (u64 j = 0; j < k; j++) {
+            u64 y = Pb.mixf(i, x);
+            if (is_distinguished_point(y, threshold))
+                x = j;
+            else
+                x = y;
+        }
+        total += k;
+        delta = wtime() - start;
+    }
+    return total / delta;
+}
 
 /*
  * Given an input, iterate functions either F or G until a distinguished point

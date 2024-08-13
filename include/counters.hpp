@@ -12,12 +12,8 @@ namespace mitm {
 /* Non-essential counters but helpful to have, e.g. n_collisions/sec */
 struct Counters {
  	const u64 interval = 1LL << 16; // for printing only
- 	const double min_delay = 0.1;   // for printing only
+ 	const double min_delay = 1;   // for printing only
  	
- 	/* problem characteristics */
- 	u64 w;                          // #slots
- 	int pb_n;
-
  	/* stats for the full computation */
 	u64 n_flush = 0;                // #times dict were flushed
 	u64 n_points = 0;               // #function evaluation in total
@@ -31,16 +27,39 @@ struct Counters {
 	double start_time;
 	double end_time;
 
+	/* waiting times for MPI implementation */
+	double send_wait = 0.;          // time sender processes wait for the receiver to be ready
+	double recv_wait = 0.;          // time the receivers wait for data from the senders
+	u64 bytes_sent = 0;
+
 	/* stats for this i */
 	double last_update;             // timestamp of the last flush
 	u64 n_dp_i = 0;                 // since last flush
 	u64 n_collisions_i = 0;         // since last flush
 
 	/* display management */
+ 	u64 w;                          // #slots
+ 	int pb_n;
+	bool display_active = 1;
 	u64 n_dp_prev = 0;              // #DP found since last display
 	u64 n_points_prev = 0;          // #function eval since last display
+	u64 bytes_sent_prev = 0;
 	double last_display;
 	
+	Counters() {}
+	Counters(bool display_active) : display_active(display_active) {}
+
+	// only useful for MPI engine
+	void reset()
+	{
+		n_points = 0;
+		n_dp = 0;
+		n_collisions = 0;
+		send_wait = 0;
+		recv_wait = 0;
+		bytes_sent = 0;
+	}
+
 	void ready(int n, u64 _w)
 	{
 		pb_n = n;
@@ -76,6 +95,8 @@ struct Counters {
 
 	void display()
 	{
+		if (not display_active)
+			return;
 		double now = wtime();
 		double delta = now - last_display;
 		if (delta >= min_delay) {
@@ -86,15 +107,21 @@ struct Counters {
 			double frate = (n_points - n_points_prev) / delta;
 			char hfrate[8];
 			human_format(frate, hfrate);
-			printf("\r#i = %" PRId64 " (%.02f*n/w). %s f/sec.  %s DP/sec.  #DP (this i / total) %.02f*w / %.02f*n.  #coll (this i / total) %.02f*w / %0.2f*n.  Total #f=2^%.02f",
+			double nrate = (bytes_sent - bytes_sent_prev) / delta;
+			char hnrate[8];
+			human_format(nrate, hnrate);
+			printf("\r#i = %" PRId64 " (%.02f*n/w). %s f/sec.  %s DP/sec.  #DP (this i / total) %.02f*w / %.02f*n.  #coll (this i / total) %.02f*w / %0.2f*n.  Total #f=2^%.02f.  S/R wait %.02fs / %.02fs.  S->R %sB/s",
 			 		n_flush, (double) n_flush * w / N, 
 			 		hfrate, hdprate, 
 			 		(double) n_dp_i / w, (double) n_dp / N,
 			 		(double) n_collisions_i / w, (double) n_collisions / N,
-			 		std::log2(n_points));
+			 		std::log2(n_points),
+			 		send_wait, recv_wait,
+			 		hnrate);
 			fflush(stdout);
 			n_dp_prev = n_dp;
 			n_points_prev = n_points;
+			bytes_sent_prev = bytes_sent;
 			last_display = wtime();
 		}
 	}
@@ -115,8 +142,8 @@ struct Counters {
 		#pragma omp atomic
 		n_points_trails += chain_len;
 		if ((n_dp % interval == interval - 1))
-			#pragma omp critical(counters)
-			display();
+			 #pragma omp critical(counters)
+			 display();
 	}
 
 	void found_collision() {
@@ -150,6 +177,8 @@ struct Counters {
 	void done()
 	{
 		end_time = wtime();
+		if (not display_active)
+			return;
 		double total_time = end_time - start_time;
 		printf("----------------------------------------\n");
 		printf("Took %0.2f sec to find the golden inputs\n", total_time);

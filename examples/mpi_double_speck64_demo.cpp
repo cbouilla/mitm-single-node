@@ -5,7 +5,7 @@
 #include <mpi.h>
 
 #include "mitm.hpp"
-#include "mpi_engine.hpp"
+#include "engine_mpi.hpp"
 
 /* We would like to call C function defined in `sha256.c` */
 extern "C"{
@@ -134,12 +134,13 @@ int main(int argc, char* argv[])
     process_command_line_options(argc, argv, params);
     params.setup(MPI_COMM_WORLD);
 
-    // mitm::PRNG prng(seed);
-    // if (params.master)
-    //     printf("double-speck64 demo! seed=%016" PRIx64 ", n=%d\n", prng.seed, n); 
-    // DoubleSpeck64_Problem Pb(n, prng);
-    // auto claw = mitm::claw_search<mitm::MpiEngine>(Pb, params, prng);
-    // printf("f(%" PRIx64 ") = g(%" PRIx64 ")\n", claw.first, claw.second);
+    mitm::PRNG prng(seed);
+    if (params.role == mitm::CONTROLLER)
+        printf("double-speck64 demo! seed=%016" PRIx64 ", n=%d\n", prng.seed, n); 
+    DoubleSpeck64_Problem Pb(n, prng);
+    auto claw = mitm::claw_search<mitm::MpiEngine>(Pb, params, prng);
+    if (params.role == mitm::CONTROLLER)
+        printf("f(%" PRIx64 ") = g(%" PRIx64 ")\n", claw.first, claw.second);
     
     MPI_Finalize();    
     return EXIT_SUCCESS;

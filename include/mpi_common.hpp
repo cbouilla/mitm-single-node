@@ -10,7 +10,7 @@
 
 namespace mitm {
 
-enum tags {TAG_INTERCOMM, TAG_POINTS, TAG_SENDER_CALLHOME, TAG_RECEIVER_CALLHOME, TAG_ASSIGNMENT, TAG_NO_MORE_DATA, TAG_SOLUTION};
+enum tags {TAG_INTERCOMM, TAG_POINTS, TAG_SENDER_CALLHOME, TAG_RECEIVER_CALLHOME, TAG_ASSIGNMENT, TAG_SOLUTION};
 enum role {CONTROLLER, SENDER, RECEIVER, UNDECIDED};
 enum assignment {KEEP_GOING, NEW_VERSION};
 
@@ -18,6 +18,7 @@ class MpiParameters : public Parameters {
 public:
 	int recv_per_node = 1;
 	int buffer_capacity = 1500;            // somewhat arbitrary
+	double ping_delay = 0.1;
 
 	MPI_Comm world_comm;
 	MPI_Comm inter_comm;
@@ -32,8 +33,11 @@ public:
 		int size, rank;
 		MPI_Comm_size(world_comm, &size);
 		MPI_Comm_rank(world_comm, &rank);
-		if (rank == 0)
+		verbose = 0;
+		if (rank == 0) {
 			role = CONTROLLER;
+			verbose = 1;
+		}
 	
 		/* create a subcommunicator inside each node */
 		MPI_Comm node_comm;
