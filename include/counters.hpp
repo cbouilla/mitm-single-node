@@ -180,7 +180,7 @@ struct Counters {
 		if (not display_active)
 			return;
 		double total_time = end_time - start_time;
-		printf("----------------------------------------\n");
+		printf("\n----------------------------------------\n");
 		printf("Took %0.2f sec to find the golden inputs\n", total_time);
 		printf("Used %" PRId64 " ≈ 2^%0.2f mixing functions\n", 1+n_flush, std::log2(1+n_flush));
 		printf("Evaluated f() %" PRId64 " ≈ 2^%0.2f times\n", n_points, std::log2(n_points));
