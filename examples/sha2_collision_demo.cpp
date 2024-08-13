@@ -108,7 +108,7 @@ int main(int argc, char* argv[])
         printf("sha2-collision demo! seed=%016" PRIx64 ", n=%d\n", seed, n); 
 
         SHA2CollisionProblem pb(n, prng);
-        auto collision = mitm::collision_search(pb, params, prng);
+        auto collision = mitm::collision_search<mitm::OpenMPEngine>(pb, params, prng);
         printf("f(%" PRIx64 ") = g(%" PRIx64 ")\n", collision.first, collision.second);
         
         return EXIT_SUCCESS;

@@ -2,7 +2,10 @@
 #include <getopt.h>
 #include <err.h>
 
+#include <mpi.h>
+
 #include "mitm.hpp"
+#include "mpi_engine.hpp"
 
 /* We would like to call C function defined in `sha256.c` */
 extern "C"{
@@ -55,7 +58,7 @@ public:
     mask = (1ull << n) - 1;
     u64 khi = prng.rand() & mask;
     u64 klo = prng.rand() & mask;
-    printf("Secret keys = %016" PRIx64 " %016" PRIx64 "\n", khi, klo);
+    // printf("Secret keys = %016" PRIx64 " %016" PRIx64 "\n", khi, klo);
     u32 Ka[4] = {(u32) (khi & 0xffffffff), (u32) ((khi >> 32)), 0, 0};
     u32 Kb[4] = {(u32) (klo & 0xffffffff), (u32) ((klo >> 32)), 0, 0};
     u32 rka[27];
@@ -89,17 +92,15 @@ public:
 };
 
 
-mitm::Parameters process_command_line_options(int argc, char **argv)
+mitm::Parameters process_command_line_options(int argc, char **argv, mitm::MpiParameters &params)
 {
     struct option longopts[5] = {
         {"ram", required_argument, NULL, 'r'},
-        {"difficulty", required_argument, NULL, 'd'},
         {"n", required_argument, NULL, 'n'},
         {"seed", required_argument, NULL, 's'},
+        {"recv-per-node", required_argument, NULL, 'e'},
         {NULL, 0, NULL, 0}
     };
-
-    mitm::Parameters params;
 
     for (;;) {
         int ch = getopt_long(argc, argv, "", longopts, NULL);
@@ -109,14 +110,14 @@ mitm::Parameters process_command_line_options(int argc, char **argv)
         case 'r':
             params.nbytes_memory = mitm::human_parse(optarg);
             break;
-        case 'd':
-            params.difficulty = std::stoi(optarg);
-            break;
         case 'n':
             n = std::stoi(optarg);
             break;
         case 's':
             seed = std::stoull(optarg, 0);
+            break;
+        case 'e':
+            params.recv_per_node = std::stoi(optarg);
             break;
         default:
             errx(1, "Unknown option %s\n", optarg);
@@ -127,13 +128,19 @@ mitm::Parameters process_command_line_options(int argc, char **argv)
 
 int main(int argc, char* argv[])
 {
-        mitm::Parameters params = process_command_line_options(argc, argv);
-        mitm::PRNG prng(seed);
-        printf("double-speck64 demo! seed=%016" PRIx64 ", n=%d\n", prng.seed, n); 
+    MPI_Init(NULL, NULL);
 
-        DoubleSpeck64_Problem Pb(n, prng);            
-        auto claw = mitm::claw_search<mitm::OpenMPEngine>(Pb, params, prng);
-        printf("f(%" PRIx64 ") = g(%" PRIx64 ")\n", claw.first, claw.second);
-        
-        return EXIT_SUCCESS;
+    mitm::MpiParameters params;
+    process_command_line_options(argc, argv, params);
+    params.setup(MPI_COMM_WORLD);
+
+    // mitm::PRNG prng(seed);
+    // if (params.master)
+    //     printf("double-speck64 demo! seed=%016" PRIx64 ", n=%d\n", prng.seed, n); 
+    // DoubleSpeck64_Problem Pb(n, prng);
+    // auto claw = mitm::claw_search<mitm::MpiEngine>(Pb, params, prng);
+    // printf("f(%" PRIx64 ") = g(%" PRIx64 ")\n", claw.first, claw.second);
+    
+    MPI_Finalize();    
+    return EXIT_SUCCESS;
 }

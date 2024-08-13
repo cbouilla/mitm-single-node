@@ -7,28 +7,14 @@
 
 #include "common.hpp"
 #include "AbstractCollisionProblem.hpp"
-#include "engine.hpp"
-
-
-
-// todo Add compilation guard for MPI
-// ##################################
-// #include "mpi_common.hpp"
-// #include "sender.hpp"
-// #include "receiver.hpp"
-// #include "parallel_engine.hpp"
-// ##################################
-
-//#include <cstddef>
-
+#include "omp_engine.hpp"
 
 namespace mitm {
-
 
 //=============================================================================+
 //------------------- DISTINGUISHED POINTS ENGINES ----------------------------|
 
-template <class AbstractProblem>
+template <typename AbstractProblem>
 class ConcreteCollisionProblem {
 public:
     const AbstractProblem &pb;
@@ -39,7 +25,7 @@ public:
     ConcreteCollisionProblem(const AbstractProblem &pb, Counters &ctr) : pb(pb), ctr(ctr), n(pb.n), mask((1ull << pb.n) - 1)
     {
         static_assert(std::is_base_of<AbstractCollisionProblem, AbstractProblem>::value,
-         "problem not derived from mitm::AbstractCollisionProblem");
+            "problem not derived from mitm::AbstractCollisionProblem");
     }
 
     /* randomization by a family of permutations of {0, 1}^n */
@@ -62,14 +48,14 @@ public:
 };
 
 
-template <typename AbstractProblem>
+template <typename Engine, typename AbstractProblem>
 std::pair<u64, u64> collision_search(const AbstractProblem& Pb, Parameters &params, PRNG &prng)
 {
     Counters ctr;
     ConcreteCollisionProblem wrapper(Pb, ctr);
 
     /* note the search_engine has different arguments than claw_search */
-    auto [i, x, y] = search_generic(wrapper, params, prng);
+    auto [i, x, y] = Engine::run(wrapper, params, prng);
     u64 a = wrapper.mix(i, x);
     u64 b = wrapper.mix(i, y);
     assert(a != b);
@@ -80,6 +66,7 @@ std::pair<u64, u64> collision_search(const AbstractProblem& Pb, Parameters &para
     return std::pair(a, b);
 }
 
+#if 0
 /* turn-key version */
 template <typename AbstractProblem>
 auto collision_search(const AbstractProblem& Pb)
@@ -92,7 +79,7 @@ auto collision_search(const AbstractProblem& Pb, Parameters &params)
 {
     return collision_search(Pb, params, PRNG());
 }
-
+#endif 
 
 /****************************************************************************************/
 
@@ -104,7 +91,11 @@ public:
     const int n;
     const u64 mask;
 
-    ClawWrapper(const AbstractProblem& pb, Counters &ctr) : pb(pb), ctr(ctr), n(pb.n), mask((1ull << pb.n) - 1) {}
+    ClawWrapper(const AbstractProblem& pb, Counters &ctr) : pb(pb), ctr(ctr), n(pb.n), mask((1ull << pb.n) - 1)
+    {
+        static_assert(std::is_base_of<AbstractClawProblem, AbstractProblem>::value,
+            "problem not derived from mitm::AbstractClawProblem");
+    }
 
     /* pick either f() or g() */
     bool choose(u64 i, u64 x) const
@@ -147,13 +138,13 @@ public:
     }
 };
 
-template <typename Problem>
-std::pair<u64, u64> claw_search(const Problem& Pb, Parameters params = Parameters(), PRNG prng = PRNG())
+template <typename Engine, class Parameters, typename Problem>
+std::pair<u64, u64> claw_search(const Problem& Pb, Parameters &params, PRNG &prng)
 {
     Counters ctr;
     ClawWrapper wrapper(Pb, ctr);
 
-    auto [i, a, b] = search_generic(wrapper, params, prng);
+    auto [i, a, b] = Engine::run(wrapper, params, prng);
     auto [u, v] = wrapper.swap(i, a, b);
     u64 x0 = wrapper.mix(i, u);
     u64 x1 = wrapper.mix(i, v);

@@ -22,8 +22,8 @@ struct Counters {
 	u64 n_flush = 0;                // #times dict were flushed
 	u64 n_points = 0;               // #function evaluation in total
 	u64 n_points_trails = 0;        // #function evaluation to find DP
-	u64 n_dp = 0;                   // for this i
-	u64 n_collisions = 0;           // for this i
+	u64 n_dp = 0;                   // since beginning
+	u64 n_collisions = 0;           // since beginning
 	u64 bad_dp = 0;
 	u64 bad_probe = 0;
 	u64 bad_walk = 0;
