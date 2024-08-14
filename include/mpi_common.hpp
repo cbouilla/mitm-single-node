@@ -14,6 +14,65 @@ enum tags {TAG_INTERCOMM, TAG_POINTS, TAG_SENDER_CALLHOME, TAG_RECEIVER_CALLHOME
 enum role {CONTROLLER, SENDER, RECEIVER, UNDECIDED};
 enum assignment {KEEP_GOING, NEW_VERSION};
 
+
+class MpiCounters : public BaseCounters {
+public:
+    MpiCounters() {}
+    MpiCounters(bool display_active) : BaseCounters(display_active) {}
+
+	/* waiting times for MPI implementation */
+	double send_wait = 0.;          // time sender processes wait for the receiver to be ready
+	double recv_wait = 0.;          // time the receivers wait for data from the senders
+	u64 bytes_sent = 0;
+
+	/* display management */
+	u64 bytes_sent_prev = 0;
+	
+	void reset()
+	{
+		n_points = 0;
+		n_dp = 0;
+		n_collisions = 0;
+		send_wait = 0;
+		recv_wait = 0;
+		bytes_sent = 0;
+	}
+
+	void display()
+	{
+		if (not display_active)
+			return;
+		double now = wtime();
+		double delta = now - last_display;
+		if (delta >= min_delay) {
+			u64 N = 1ull << pb_n;
+			double dprate = (n_dp - n_dp_prev) / delta;
+			char hdprate[8];
+			human_format(dprate, hdprate);
+			double frate = (n_points - n_points_prev) / delta;
+			char hfrate[8];
+			human_format(frate, hfrate);
+			double nrate = (bytes_sent - bytes_sent_prev) / delta;
+			char hnrate[8];
+			human_format(nrate, hnrate);
+			printf("\r#i = %" PRId64 " (%.02f*n/w). %s f/sec.  %s DP/sec.  #DP (this i / total) %.02f*w / %.02f*n.  #coll (this i / total) %.02f*w / %0.2f*n.  Total #f=2^%.02f.  S/R wait %.02fs / %.02fs.  S->R %sB/s",
+			 		n_flush, (double) n_flush * w / N, 
+			 		hfrate, hdprate, 
+			 		(double) n_dp_i / w, (double) n_dp / N,
+			 		(double) n_collisions_i / w, (double) n_collisions / N,
+			 		std::log2(n_points),
+			 		send_wait, recv_wait,
+			 		hnrate);
+			fflush(stdout);
+			n_dp_prev = n_dp;
+			n_points_prev = n_points;
+			bytes_sent_prev = bytes_sent;
+			last_display = wtime();
+		}
+	}
+};  
+
+
 class MpiParameters : public Parameters {
 public:
 	int recv_per_node = 1;

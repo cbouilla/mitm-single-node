@@ -66,7 +66,7 @@ public:
 	 * Only call this when complete() returned false (otherwise, this will wait forever)
 	 * This may destroy the content of all "ready" buffers, so that they have to be processed first
 	 */
-	std::vector<Buffer *> wait(Counters &ctr)
+	std::vector<Buffer *> wait(MpiCounters &ctr)
 	{
 		assert(n_active_senders > 0);
 		int n = params.n_send;
@@ -100,7 +100,7 @@ template<typename ConcreteProblem>
 void receiver(const ConcreteProblem& Pb, const MpiParameters &params)
 {
 	RecvBuffers recvbuf(params);
-    Counters &ctr = Pb.ctr; 
+    MpiCounters &ctr = Pb.ctr; 
     Dict<std::pair<u64, u64>> dict(params.nbytes_memory / params.recv_per_node);
 
     double last_ping = wtime();

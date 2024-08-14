@@ -19,6 +19,7 @@ namespace mitm {
 
 class MpiEngine {
 public:
+using Counters = MpiCounters;
 
 /* try to iterate for 1s. Return #it/s */
 template<typename ConcreteProblem>
@@ -26,6 +27,9 @@ static double benchmark(const ConcreteProblem& Pb, MpiParameters &params)
 {
 	MPI_Barrier(params.world_comm);
 	double rate = sequential_benchmark(Pb);
+	int rank;
+	MPI_Comm_rank(params.world_comm, &rank);
+	printf("rank %d, rate = %.0f it/s\n", rank, rate);
 	MPI_Allreduce(MPI_IN_PLACE, &rate, 1, MPI_DOUBLE, MPI_SUM, params.world_comm);
 	return rate;
 }

@@ -14,7 +14,7 @@ namespace mitm {
 //=============================================================================+
 //------------------- DISTINGUISHED POINTS ENGINES ----------------------------|
 
-template <typename AbstractProblem>
+template <typename AbstractProblem, typename Counters>
 class ConcreteCollisionProblem {
 public:
     const AbstractProblem &pb;
@@ -51,7 +51,7 @@ public:
 template <typename Engine, typename AbstractProblem>
 std::pair<u64, u64> collision_search(const AbstractProblem& Pb, Parameters &params, PRNG &prng)
 {
-    Counters ctr(params.verbose);
+    typename Engine::Counters ctr(params.verbose);
     ConcreteCollisionProblem wrapper(Pb, ctr);
 
     auto [i, x, y] = Engine::run(wrapper, params, prng);
@@ -67,7 +67,7 @@ std::pair<u64, u64> collision_search(const AbstractProblem& Pb, Parameters &para
 
 /****************************************************************************************/
 
-template <typename AbstractProblem>
+template <class AbstractProblem, class Counters>
 class ClawWrapper {
 public:
     const AbstractProblem& pb;   // AbstractClawProblem
@@ -125,7 +125,7 @@ public:
 template <typename Engine, class Parameters, typename Problem>
 std::pair<u64, u64> claw_search(const Problem& Pb, Parameters &params, PRNG &prng)
 {
-    Counters ctr(params.verbose);
+    typename Engine::Counters ctr(params.verbose);
     ClawWrapper wrapper(Pb, ctr);
 
     auto [i, a, b] = Engine::run(wrapper, params, prng);

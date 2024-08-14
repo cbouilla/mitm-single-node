@@ -26,7 +26,7 @@ private:
 	std::vector<MPI_Request> request;   /* for the OUTGOING buffers */
 
 	/* wait until the i-th passive buffer has been fully sent */
-	void wait_send(int i, Counters &ctr)
+	void wait_send(int i, MpiCounters &ctr)
 	{
 		double start = wtime();
 		MPI_Wait(&request[i], MPI_STATUS_IGNORE);
@@ -35,7 +35,7 @@ private:
 	}
 
 	/* initiate transmission of the i-th OUTGOING buffer */
-	void start_send(int i, Counters &ctr)
+	void start_send(int i, MpiCounters &ctr)
 	{
 		if (outgoing[i].size() == 0)  // do NOT send empty buffers. These are interpreted as "I am done"
 			return;
@@ -57,7 +57,7 @@ public:
 	}
 
 	/* add a new item to the send buffer. Send if necessary */
-	void push(u64 start, u64 end, u64 len, int rank, Counters &ctr)
+	void push(u64 start, u64 end, u64 len, int rank, MpiCounters &ctr)
 	{
 		if (ready[rank].size() == 3 * capacity) {
 			/* ready buffer is full. */
@@ -71,7 +71,7 @@ public:
 	}
 
 	/* send and empty all buffers, even if they are incomplete */
-	void flush(Counters &ctr)
+	void flush(MpiCounters &ctr)
 	{
 		int n = params.n_recv;
 		// finish sending all the outgoing buffers
@@ -97,7 +97,7 @@ template<typename ConcreteProblem>
 void sender(const ConcreteProblem& Pb, const MpiParameters &params)
 {
 	SendBuffers sendbuf(params);
-    Counters &ctr = Pb.ctr; 
+    MpiCounters &ctr = Pb.ctr; 
 
     u64 steps = 0;
     double last_ping = wtime();

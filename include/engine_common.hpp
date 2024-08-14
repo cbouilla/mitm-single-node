@@ -86,7 +86,7 @@ static double sequential_benchmark(const ConcreteProblem& Pb)
     u64 threshold = (1ull << (Pb.n - 1));
     double start = wtime();
     u64 total = 0;
-    u64 k = 1000;
+    u64 k = 100000;
     u64 x = 0;
     double delta = 0.;
     
@@ -174,7 +174,7 @@ std::optional<std::tuple<u64,u64,u64>> walk(const ConcreteProblem& Pb, u64 i, u6
 }
 
 
-template<class ConcreteProblem>
+template<class ConcreteProblem, class Counters>
 std::optional<std::tuple<u64,u64,u64>> process_distinguished_point(
     const ConcreteProblem &Pb, Counters &ctr, Dict<std::pair<u64, u64>> &dict, 
     u64 i, u64 start0, u64 end, u64 len0)

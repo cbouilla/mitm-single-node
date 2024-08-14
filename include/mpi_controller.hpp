@@ -14,7 +14,7 @@ namespace mitm {
 template<typename ConcreteProblem>
 std::tuple<u64,u64,u64> controller(const ConcreteProblem& Pb, const MpiParameters &params, PRNG &prng)
 {
-	Counters &ctr = Pb.ctr;
+	MpiCounters &ctr = Pb.ctr;
     std::optional<std::tuple<u64,u64,u64>> solution;    /* (i, x0, x1)  */
 	u64 stop = 0;
 	ctr.ready(Pb.n, params.nslots);

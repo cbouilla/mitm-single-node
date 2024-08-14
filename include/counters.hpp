@@ -10,7 +10,8 @@
 namespace mitm {
 
 /* Non-essential counters but helpful to have, e.g. n_collisions/sec */
-struct Counters {
+class BaseCounters {
+public:
  	const u64 interval = 1LL << 16; // for printing only
  	const double min_delay = 1;   // for printing only
  	
@@ -38,16 +39,16 @@ struct Counters {
 	u64 n_collisions_i = 0;         // since last flush
 
 	/* display management */
+	bool display_active = 1;
  	u64 w;                          // #slots
  	int pb_n;
-	bool display_active = 1;
 	u64 n_dp_prev = 0;              // #DP found since last display
 	u64 n_points_prev = 0;          // #function eval since last display
 	u64 bytes_sent_prev = 0;
 	double last_display;
 	
-	Counters() {}
-	Counters(bool display_active) : display_active(display_active) {}
+	BaseCounters() {}
+	BaseCounters(bool display_active) : display_active(display_active) {}
 
 	// only useful for MPI engine
 	void reset()
@@ -73,23 +74,19 @@ struct Counters {
 
 	void dp_failure()
 	{ 
-		#pragma omp atomic
 		bad_dp += 1; 
 	}
 	
 	void probe_failure()
 	{
-		#pragma omp atomic		
 		bad_probe += 1;
 	}
 	
 	void walk_failure() {
-		#pragma omp atomic		
 		bad_walk += 1;
 	}
 	
 	void collision_failure() {
-		#pragma omp atomic		
 		bad_collision += 1;
 	}
 
@@ -128,28 +125,21 @@ struct Counters {
 
 	void function_evaluation()
 	{
-		#pragma omp atomic
 		n_points += 1;
 	}
 
 	// call this when a new DP is found
 	void found_distinguished_point(u64 chain_len)
 	{
-		#pragma omp atomic
 		n_dp += 1;
-		#pragma omp atomic
 		n_dp_i += 1;
-		#pragma omp atomic
 		n_points_trails += chain_len;
 		if ((n_dp % interval == interval - 1))
-			 #pragma omp critical(counters)
 			 display();
 	}
 
 	void found_collision() {
-		#pragma omp atomic
 		n_collisions += 1;
-		#pragma omp atomic
 		n_collisions_i += 1;
 	}
 
@@ -157,16 +147,6 @@ struct Counters {
 	void flush_dict()
 	{
 		display();
-		/*double elapsed = wtime() - last_update;
-		printf("\nUpdating the mixing function. The previous version:\n");
-		printf(" - lasted %0.2f sec\n", elapsed);
-		printf(" - 2^%0.2f function evaluations\n", std::log2(n_points));
-		printf(" - generated %" PRId64 " ≈ 2^%0.2f distinguished points\n", n_dp[n_flush], std::log2(n_dp[n_flush]));
-		printf(" - found %" PRId64 " ≈ 2^%0.2f collisions\n", n_collisions[n_flush], std::log2(n_collisions[n_flush]));
-		printf(" - %" PRId64 " DP failure, %" PRId64 " probe failure, %" PRId64 " walk failure, %" PRId64 " collision failure\n", 
-			bad_dp, bad_probe, bad_walk, bad_collision);
-		printf("Currently totaling 2^%.02f iterations\n", std::log2(n_points));
-		*/
 		n_flush += 1;
 		n_dp_i = 0;
 		n_collisions_i = 0;

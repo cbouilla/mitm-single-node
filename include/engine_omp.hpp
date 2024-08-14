@@ -17,8 +17,66 @@
 
 namespace mitm {
 
+/* Non-essential counters but helpful to have, e.g. n_collisions/sec */
+class OmpCounters : public BaseCounters {
+public:
+    OmpCounters() {}
+    OmpCounters(bool display_active) : BaseCounters(display_active) {}
+
+    void dp_failure()
+    { 
+        #pragma omp atomic
+        bad_dp += 1; 
+    }
+    
+    void probe_failure()
+    {
+        #pragma omp atomic      
+        bad_probe += 1;
+    }
+    
+    void walk_failure() {
+        #pragma omp atomic      
+        bad_walk += 1;
+    }
+    
+    void collision_failure() {
+        #pragma omp atomic      
+        bad_collision += 1;
+    }
+
+    void function_evaluation()
+    {
+        #pragma omp atomic                // PROBLEM! This likely entails a significant performance penalty...
+        n_points += 1;
+    }
+
+    // call this when a new DP is found
+    void found_distinguished_point(u64 chain_len)
+    {
+        #pragma omp atomic
+        n_dp += 1;
+        #pragma omp atomic
+        n_dp_i += 1;
+        #pragma omp atomic
+        n_points_trails += chain_len;
+        if ((n_dp % interval == interval - 1))
+             #pragma omp critical(counters)
+             display();
+    }
+
+    void found_collision() {
+        #pragma omp atomic
+        n_collisions += 1;
+        #pragma omp atomic
+        n_collisions_i += 1;
+    }
+};  
+
+
 class OpenMPEngine {
 public:
+using Counters = OmpCounters;
 
 /* try to iterate for 1s. Return #it/s */
 template<typename ConcreteProblem>
@@ -26,7 +84,11 @@ static double benchmark(const ConcreteProblem& Pb)
 {
     double rate = 0;
     #pragma omp parallel reduction(+:rate)
-    rate = sequential_benchmark(Pb);
+    {
+        rate = sequential_benchmark(Pb);
+        #pragma omp critical
+        printf("thread %d, rate=%.0f it/s\n", omp_get_thread_num(), rate);
+    }
     return rate;
 }
 
@@ -39,11 +101,15 @@ static std::tuple<u64,u64,u64> run(const ConcreteProblem& Pb, Parameters &params
 
     printf("Benchmarking... ");
     fflush(stdout);
+    double it_per_s_seq = sequential_benchmark(Pb);
     double it_per_s = benchmark(Pb);
     // NOT DRY wrt MPI
-    char hitps[8];
+    char hitps[8], hitps_seq[8];
+    human_format(it_per_s_seq, hitps_seq);
     human_format(it_per_s, hitps);
-    printf("%s iteration/s (using all cores)\n", hitps);
+
+    int nthreads = omp_get_max_threads();
+    printf("%s it/s (one thread).  %s it/s (%d threads)\n", hitps_seq, hitps, nthreads);
 
     Dict<std::pair<u64, u64>> dict(params.nbytes_memory);
     params.finalize(Pb.n, dict.n_slots);
