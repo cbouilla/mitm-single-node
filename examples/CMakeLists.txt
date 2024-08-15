@@ -30,4 +30,10 @@ if(MPI_CXX_FOUND)
     target_link_libraries(mpi_double_speck64_demo PUBLIC OpenMP::OpenMP_CXX)
     target_include_directories(mpi_double_speck64_demo PRIVATE ../include)
     target_link_libraries(mpi_double_speck64_demo PUBLIC MPI::MPI_CXX)
+
+    add_executable(mpi_naive_double_speck64_demo
+        mpi_naive_double_speck64_demo.cpp
+        speck64128.c)
+    target_include_directories(mpi_naive_double_speck64_demo PRIVATE ../include)
+    target_link_libraries(mpi_naive_double_speck64_demo PUBLIC MPI::MPI_CXX)
 endif()
