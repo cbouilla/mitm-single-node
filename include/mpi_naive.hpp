@@ -178,7 +178,7 @@ std::vector<std::pair<u64, u64>> naive_mpi_claw_search(AbstractProblem &Pb)
 
         if (rank == 0) {
             char frate[8], nrate[8];
-            double delta = wtime() - start;
+            double delta = wtime() - phase_start;
             human_format(K * (round + 1) / delta, frate);
             human_format(8 * K * (round + 1) / delta, nrate);
             printf("\rRound %" PRId64 " / %" PRId64 ".  Wait/round = %.3fs.  %s f()/s.  Net=%sB/s", 
