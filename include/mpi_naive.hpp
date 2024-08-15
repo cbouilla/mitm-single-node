@@ -80,12 +80,12 @@ std::vector<std::pair<u64, u64>> naive_mpi_claw_search(AbstractProblem &Pb)
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     MPI_Comm_size(MPI_COMM_WORLD, &size);
 
-    double start = wtime();
+    //    double start = wtime();
     u64 N = 1ull << Pb.n;
-    CompactDict dict(2 * N/size);
+    CompactDict dict(1.5 * N/size);
     std::vector<std::pair<u64, u64>> result;
 
-    const u64 alpha = 10000;    // expected #values received in each round by each process
+    const u64 alpha = 16384;    // expected #values received in each round by each process
     const u64 K = alpha*size;   // total values generated in each round
     // entries for each target follows binomial law (#values, 1/size);
 
@@ -117,7 +117,8 @@ std::vector<std::pair<u64, u64>> naive_mpi_claw_search(AbstractProblem &Pb)
         if (rank == 0)
             printf("Starting phase %d\n", phase);
         double phase_start = wtime();
-
+	double last_display = phase_start;
+	
         const u64 nrounds = (N + K - 1) / K;
         for (u64 round = 0; round < nrounds; round ++) {
             // reset sendcounts
@@ -176,13 +177,15 @@ std::vector<std::pair<u64, u64>> naive_mpi_claw_search(AbstractProblem &Pb)
                 }
             }
 
-        if (rank == 0) {
+	double now = wtime();
+        if (rank == 0 && now - last_display >= 0.5) {
             char frate[8], nrate[8];
-            double delta = wtime() - phase_start;
+            double delta = now - phase_start;
+	    last_display = now;
             human_format(K * (round + 1) / delta, frate);
             human_format(8 * K * (round + 1) / delta, nrate);
-            printf("\rRound %" PRId64 " / %" PRId64 ".  Wait/round = %.3fs.  %s f()/s.  Net=%sB/s", 
-                    round, nrounds, wait/(1+round), frate, nrate);
+            printf("\rRound %" PRId64 " / %" PRId64 ".  Wait/round = %.3fs (%.1f%%).  %s f()/s.  Net=%sB/s", 
+		   round, nrounds, wait/(1+round), 100.*wait/(1+round) / delta, frate, nrate);
 
             fflush(stdout);
         }
