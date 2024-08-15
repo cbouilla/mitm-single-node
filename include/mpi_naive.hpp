@@ -29,7 +29,7 @@ public:
     {
         A.resize(n_slots, {0xffffffff, 0});
     }
-  
+
     void insert(u64 key, u64 value)
     {
         u64 h = (key ^ (key >> 32)) % n_slots;
@@ -64,7 +64,7 @@ public:
         while (A[h].k == key) {
             h += 1;
             if (h == n_slots)
-                h = 0;            
+                h = 0;
         }
         return std::pair(lo, h);
     }
@@ -75,23 +75,23 @@ std::vector<std::pair<u64, u64>> naive_mpi_claw_search(AbstractProblem &Pb)
 {
     static_assert(std::is_base_of<AbstractClawProblem, AbstractProblem>::value,
         "problem not derived from mitm::AbstractClawProblem");
-  
+
     int rank, size;
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     MPI_Comm_size(MPI_COMM_WORLD, &size);
 
-    //    double start = wtime();
+    double start = wtime();
     u64 N = 1ull << Pb.n;
-    CompactDict dict(1.5 * N/size);
+    CompactDict dict((1.25 * N) / size);
     std::vector<std::pair<u64, u64>> result;
 
-    const u64 alpha = 16384;    // expected #values received in each round by each process
+    const u64 alpha = 2048;    // expected #values received in each round by each process
     const u64 K = alpha*size;   // total values generated in each round
     // entries for each target follows binomial law (#values, 1/size);
 
     // generate K values :
     // each bucket <= alpha + sqrt(210 * alpha)   with proba 2^{-100}
-    int limit = alpha + std::sqrt(210 * alpha);
+    int limit = alpha + std::sqrt(120 * alpha);
     if (rank == 0)
         printf("limit=%d\n", limit);
 
@@ -109,7 +109,6 @@ std::vector<std::pair<u64, u64>> naive_mpi_claw_search(AbstractProblem &Pb)
         human_format(16 * size * limit, hsize);
         printf("Buffer size (per process) = %s\n", hsize);
     }
-    double wait = 0;
 
     for (int phase = 0; phase < 2; phase++) {
         // phase 0 == fill the dict with f()
@@ -118,7 +117,8 @@ std::vector<std::pair<u64, u64>> naive_mpi_claw_search(AbstractProblem &Pb)
             printf("Starting phase %d\n", phase);
         double phase_start = wtime();
 	double last_display = phase_start;
-	
+	double wait = 0;
+
         const u64 nrounds = (N + K - 1) / K;
         for (u64 round = 0; round < nrounds; round ++) {
             // reset sendcounts
@@ -140,7 +140,7 @@ std::vector<std::pair<u64, u64>> naive_mpi_claw_search(AbstractProblem &Pb)
                 sendbuffer[offset] = x;
                 sendcounts[target] += 1;
             }
-    
+
         double start_comm = wtime();
 
         // exchange buffer sizes;
@@ -184,15 +184,17 @@ std::vector<std::pair<u64, u64>> naive_mpi_claw_search(AbstractProblem &Pb)
 	    last_display = now;
             human_format(K * (round + 1) / delta, frate);
             human_format(8 * K * (round + 1) / delta, nrate);
-            printf("\rRound %" PRId64 " / %" PRId64 ".  Wait/round = %.3fs (%.1f%%).  %s f()/s.  Net=%sB/s", 
-		   round, nrounds, wait/(1+round), 100.*wait/(1+round) / delta, frate, nrate);
+            printf("Round %" PRId64 " / %" PRId64 ".  Wait/round = %.3fs (%.1f%%).  %s f()/s.  Net=%sB/s\n",
+		   round, nrounds, wait/(1+round), 100.*wait / delta, frate, nrate);
 
             fflush(stdout);
         }
     }
     if (rank == 0)
-        printf("\nPhase: %.1fs\n", wtime() - phase_start);
+        printf("Phase: %.1fs\n", wtime() - phase_start);
     }
+    if (rank == 0)
+        printf("Total: %.1fs\n", wtime() - start);
     return result;
 }
 
