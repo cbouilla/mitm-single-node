@@ -4,7 +4,7 @@
 
 #include <mpi.h>
 
-#include "mpi_naive.hpp"
+#include "mpi_naive_isend.hpp"
 
 /* We would like to call C function defined in `sha256.c` */
 extern "C"{
@@ -91,11 +91,12 @@ public:
 };
 
 
-void process_command_line_options(int argc, char **argv)
+void process_command_line_options(int argc, char **argv, mitm::MpiParameters &params)
 {
-    struct option longopts[3] = {
+    struct option longopts[4] = {
         {"n", required_argument, NULL, 'n'},
         {"seed", required_argument, NULL, 's'},
+        {"recv-per-node", required_argument, NULL, 'e'},
         {NULL, 0, NULL, 0}
     };
 
@@ -110,6 +111,9 @@ void process_command_line_options(int argc, char **argv)
         case 's':
             seed = std::stoull(optarg, 0);
             break;
+        case 'e':
+            params.recv_per_node = std::stoi(optarg);
+            break;
         default:
             errx(1, "Unknown option %s\n", optarg);
         }
@@ -122,17 +126,15 @@ int main(int argc, char* argv[])
     MPI_Init(NULL, NULL);
     int rank;
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-//    mitm::MpiParameters params;
-    process_command_line_options(argc, argv);
-//    params.setup(MPI_COMM_WORLD);
-//    if (params.role == mitm::CONTROLLER)
+    mitm::MpiParameters params;
+    process_command_line_options(argc, argv, params);
+    params.setup(MPI_COMM_WORLD, 0);  // no controller process
     mitm::PRNG prng(seed);
-    if (rank == 0)
+    if (params.verbose)
         printf("double-speck64 demo! seed=%016" PRIx64 ", n=%d\n", prng.seed, n); 
     DoubleSpeck64_Problem Pb(n, prng);
-    auto claws = mitm::naive_mpi_claw_search(Pb);
-    //if (params.role == mitm::CONTROLLER)
-    if (rank == 0)
+    auto claws = mitm::naive_mpi_claw_search(Pb, params);
+    if (params.verbose)
         for (auto it = claws.begin(); it != claws.end(); it++) {
             auto [x0, x1] = *it;
             printf("f(%" PRIx64 ") = g(%" PRIx64 ")\n", x0, x1);

@@ -70,6 +70,175 @@ public:
     }
 };
 
+
+/* Manages send buffers for a collection of receiver processes, with double-buffering */
+class SendBuffers {
+    using Buffer = std::vector<u64>;
+public:
+    double wait = 0.;
+    u64 bytes_sent = 0;
+
+private:
+    const size_t capacity;
+    int n;
+
+    std::vector<Buffer> ready;
+    std::vector<Buffer> outgoing;
+    std::vector<MPI_Request> request;   /* for the OUTGOING buffers */
+
+    /* wait until the i-th passive buffer has been fully sent */
+    void wait_send(int i)
+    {
+        double start = wtime();
+        MPI_Wait(&request[i], MPI_STATUS_IGNORE);
+        wait += wtime() - start;
+        outgoing[i].clear();
+    }
+
+    /* initiate transmission of the i-th OUTGOING buffer */
+    void start_send(int i)
+    {
+        if (outgoing[i].size() == 0)  // do NOT send empty buffers. These are interpreted as "I am done"
+            return;
+        MPI_Issend(outgoing[i].data(), outgoing[i].size(), MPI_UINT64_T, i, 0, MPI_COMM_WORLD, &request[i]);
+        bytes_sent += outgoing[i].size() * sizeof(u64);
+    }
+
+public:
+    SendBuffers(size_t capacity) : capacity(capacity)
+    {
+        MPI_Comm_size(MPI_COMM_WORLD, &n);
+        ready.resize(n);
+        outgoing.resize(n);
+        request.resize(n, MPI_REQUEST_NULL);
+        for (int i = 0; i < n; i++) {
+            ready[i].reserve(capacity);
+            outgoing[i].reserve(capacity);
+        }
+    }
+
+    ~SendBuffers()
+    {
+        for (int i = 0; i < n; i++)
+            assert(request[i] == MPI_REQUEST_NULL);
+    }
+
+    /* add a new item to the send buffer. Send if necessary */
+    void push(u64 x, int rank)
+    {
+        if (ready[rank].size() == capacity) {
+            /* ready buffer is full. */
+            wait_send(rank);      // finish sending the outgoing buffer
+            std::swap(ready[rank], outgoing[rank]);
+            start_send(rank);     // start sending
+        }
+        ready[rank].push_back(x);
+    }
+
+    /* send and empty all buffers, even if they are incomplete */
+    void flush()
+    {
+        // finish sending all the outgoing buffers
+        double start = wtime();
+        MPI_Waitall(n, request.data(), MPI_STATUSES_IGNORE);
+
+        // send all the (incomplete) ready buffers
+        for (int i = 0; i < n; i++) {
+            std::swap(ready[i], outgoing[i]);
+            start_send(i);
+        }
+        MPI_Waitall(n, request.data(), MPI_STATUSES_IGNORE);
+
+        // finally tell all receivers that we are done
+        for (int i = 0; i < n; i++)
+            MPI_Send(NULL, 0, MPI_UINT64_T, i, 0, MPI_COMM_WORLD);
+        wait += wtime() - start;
+    }
+};
+
+
+
+/* Manage reception buffers for a collection of sender processes, with double-buffering */
+class RecvBuffers {
+    using Buffer = std::vector<u64>;
+public:
+    double wait = 0.;
+    u64 bytes_sent = 0;
+
+private:
+    const size_t capacity;
+    int n;
+
+    std::vector<Buffer> ready;                 // buffers containing points ready to be processed 
+    std::vector<Buffer> incoming;              // buffers waiting for incoming data
+    std::vector<MPI_Request> request;
+    int n_active_senders;                      // # active senders
+
+    /* initiate reception for a specific sender */
+    void listen_sender(int i)
+    {
+        incoming[i].resize(capacity);
+        MPI_Irecv(incoming[i].data(), capacity, MPI_UINT64_T, i, 0, MPI_COMM_WORLD, &request[i]);
+    }
+
+public:
+    RecvBuffers(size_t capacity) : capacity(capacity)
+    {
+        MPI_Comm_size(MPI_COMM_WORLD, &n);
+        ready.resize(n);
+        incoming.resize(n);
+        request.resize(n, MPI_REQUEST_NULL);
+        for (int i = 0; i < n; i++) {
+            ready[i].reserve(capacity);
+            incoming[i].reserve(capacity);
+            listen_sender(i);
+        }
+        n_active_senders = n;
+
+    }
+
+    ~RecvBuffers()
+    {
+        assert(n_active_senders == 0);
+        for (int i = 0; i < n; i++)
+            assert(request[i] == MPI_REQUEST_NULL);
+    }
+
+    /* return true when all senders are done */
+    bool complete()
+    {
+        return (n_active_senders == 0);
+    }
+
+    /* 
+     * return all the ready buffers (since last call).
+     * This may destroy the content of all previously ready buffers, so that they have to be processed first
+     */
+    std::vector<Buffer *> probe()
+    {
+        std::vector<Buffer *> result;
+        int n_done;
+        std::vector<int> rank_done(n);
+        std::vector<MPI_Status> statuses(n);
+        MPI_Testsome(n, request.data(), &n_done, rank_done.data(), statuses.data());
+        
+        for (int i = 0; i < n_done; i++) {
+            int j = rank_done[i];
+            std::swap(incoming[j], ready[j]);
+            int count;
+            MPI_Get_count(&statuses[i], MPI_UINT64_T, &count);
+            if (count == 0) {
+                n_active_senders -= 1;
+            } else {
+                ready[j].resize(count);         // matching message size
+                result.push_back(&ready[j]);
+                listen_sender(j);
+            }
+        }
+        return result;
+    }
+};
+
 template <class AbstractProblem>
 std::vector<std::pair<u64, u64>> naive_mpi_claw_search(AbstractProblem &Pb)
 {

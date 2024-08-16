@@ -14,81 +14,17 @@ namespace mitm {
 
 
 /* Manages send buffers for a collection of receiver processes, with double-buffering */
-class SendBuffers {
-	using Buffer = std::vector<u64>;
-
-private:
-	const MpiParameters &params;
-	const size_t capacity;
-	
-	std::vector<Buffer> ready;
-	std::vector<Buffer> outgoing;
-	std::vector<MPI_Request> request;   /* for the OUTGOING buffers */
-
-	/* wait until the i-th passive buffer has been fully sent */
-	void wait_send(int i, MpiCounters &ctr)
-	{
-		double start = wtime();
-		MPI_Wait(&request[i], MPI_STATUS_IGNORE);
-		ctr.send_wait += wtime() - start;
-		outgoing[i].clear();
-	}
-
-	/* initiate transmission of the i-th OUTGOING buffer */
-	void start_send(int i, MpiCounters &ctr)
-	{
-		if (outgoing[i].size() == 0)  // do NOT send empty buffers. These are interpreted as "I am done"
-			return;
-		MPI_Issend(outgoing[i].data(), outgoing[i].size(), MPI_UINT64_T, i, TAG_POINTS, params.inter_comm, &request[i]);
-		ctr.bytes_sent += outgoing[i].size() * sizeof(u64);
-	}
-
+class SendBuffers : public BaseSendBuffers {
 public:
-	SendBuffers(const MpiParameters &params) : params(params), capacity(params.buffer_capacity)
-	{
-		int n = params.n_recv;
-		ready.resize(n);      /* does this even work? */
-		outgoing.resize(n);
-		request.resize(n, MPI_REQUEST_NULL);
-		for (int i = 0; i < n; i++) {
-			ready[i].reserve(3*capacity);
-			outgoing[i].reserve(3*capacity);
-		}
-	}
+	SendBuffers(const MpiParameters &params) : BaseSendBuffers(params.inter_comm, TAG_POINTS, 3 * params.buffer_capacity) {}
 
 	/* add a new item to the send buffer. Send if necessary */
 	void push(u64 start, u64 end, u64 len, int rank, MpiCounters &ctr)
 	{
-		if (ready[rank].size() == 3 * capacity) {
-			/* ready buffer is full. */
-			wait_send(rank, ctr);      // finish sending the outgoing buffer
-			std::swap(ready[rank], outgoing[rank]);
-			start_send(rank, ctr);     // start sending
-		}
+		switch_when_full(rank, ctr);
 		ready[rank].push_back(start);
 		ready[rank].push_back(end);
 		ready[rank].push_back(len);
-	}
-
-	/* send and empty all buffers, even if they are incomplete */
-	void flush(MpiCounters &ctr)
-	{
-		int n = params.n_recv;
-		// finish sending all the outgoing buffers
-		double start = wtime();
-		MPI_Waitall(n, request.data(), MPI_STATUSES_IGNORE);
-
-		// send all the (incomplete) ready buffers
-		for (int i = 0; i < n; i++) {
-			std::swap(ready[i], outgoing[i]);
-			start_send(i, ctr);
-		}
-		MPI_Waitall(n, request.data(), MPI_STATUSES_IGNORE);
-
-		// finally tell all receivers that we are done
-		for (int i = 0; i < n; i++)
-			MPI_Send(NULL, 0, MPI_UINT64_T, i, TAG_POINTS, params.inter_comm);
-		ctr.send_wait += wtime() - start;
 	}
 };
 
