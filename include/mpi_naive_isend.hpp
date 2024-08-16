@@ -29,7 +29,7 @@ std::vector<std::pair<u64, u64>> naive_mpi_claw_search_isend(AbstractProblem &Pb
     MpiCounters ctr;
     u64 N = 1ull << Pb.n;
     std::vector<std::pair<u64, u64>> result;
-    CompactDict dict((params.role == RECEIVER) ? (1.25 * N) / params.n_recv : 0);
+    CompactDict dict((params.role == RECEIVER) ? (1.5 * N) / params.n_recv : 0);
 
     if (params.verbose) {
         char hbsize[8], hdsize[8];
