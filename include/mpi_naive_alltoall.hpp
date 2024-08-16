@@ -34,7 +34,7 @@ std::vector<std::pair<u64, u64>> naive_mpi_claw_search_alltoall(AbstractProblem 
 	std::vector<std::pair<u64, u64>> result;
 
     // expected #values received in each round by each process
-	const u64 alpha = EXPENSIVE_F ? params.buffer_capacity / 2 : params.buffer_capacity;
+	const u64 alpha = params.buffer_capacity;
 	const u64 K = alpha*size;   // total values generated in each round
 	// entries for each target follows binomial law (#values, 1/size);
 

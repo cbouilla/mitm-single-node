@@ -15,15 +15,15 @@ namespace mitm {
  */
 class AbstractCollisionProblem {
 public:
-  int n;           /* size of the domain, in bits */
+	int n;           /* size of the domain, in bits */
+
+	u64 f(u64 x) const;
   
-  u64 f(u64 x) const;              /* y <--- f(x) */
-  
-  /* assuming that f(x0) == f(x1) and x0 != x1, is (x0, x1) an acceptable outcome? */
-  bool is_good_pair(u64 x0, u64 x1) const
-  { 
-    return true;    // by default, yes.
-  }
+	/* assuming that f(x0) == f(x1) and x0 != x1, is (x0, x1) an acceptable outcome? */
+	bool is_good_pair(u64 x0, u64 x1) const
+	{
+		return true;    // by default, yes.
+	}
 };
 
 /*
@@ -32,10 +32,18 @@ public:
  * The goal is to find x, y s.t. f(x) == g(y) and P(x, y).
  *
  */
-class AbstractClawProblem : AbstractCollisionProblem {
+class AbstractClawProblem {
 public:
-  u64 g(u64 y) const;
-
+	int n;           /* size of the domain, in bits */
+  
+	u64 f(u64 x) const;
+	u64 g(u64 y) const;
+  
+	/* assuming that f(x0) == g(x1), is (x0, x1) an acceptable outcome? */
+	bool is_good_pair(u64 x0, u64 x1) const
+	{ 
+		return true;    // by default, yes.
+	}
 };
 
 }
