@@ -241,7 +241,7 @@ protected:
 	{
 		if (outgoing[i].size() == 0)  // do NOT send empty buffers. These are interpreted as "I am done"
 			return;
-		MPI_Issend(outgoing[i].data(), outgoing[i].size(), MPI_UINT64_T, i, tag, inter_comm, &request[i]);
+		MPI_Isend(outgoing[i].data(), outgoing[i].size(), MPI_UINT64_T, i, tag, inter_comm, &request[i]);
 		ctr.bytes_sent += outgoing[i].size() * sizeof(u64);
 	}
 

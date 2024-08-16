@@ -84,7 +84,7 @@ std::vector<std::pair<u64, u64>> naive_mpi_claw_search(AbstractProblem &Pb, MpiP
     MpiCounters ctr;
     u64 N = 1ull << Pb.n;
     std::vector<std::pair<u64, u64>> result;
-    CompactDict dict((params.role == RECEIVER) ? (1.5 * N) / params.n_recv : 0);
+    CompactDict dict((params.role == RECEIVER) ? (1.25 * N) / params.n_recv : 0);
 
     for (int phase = 0; phase < 2; phase++) {
         // phase 0 == fill the dict with f()
