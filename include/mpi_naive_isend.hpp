@@ -96,6 +96,8 @@ std::vector<std::pair<u64, u64>> naive_mpi_claw_search(AbstractProblem &Pb, MpiP
         double phase_start = wtime();
         ctr.reset();
         
+        double wait;
+
         if (params.role == SENDER) {
             BaseSendBuffers sendbuf(params.inter_comm, TAG_POINTS, params.buffer_capacity);
             u64 lo = params.local_rank * N / params.n_send;
@@ -112,12 +114,8 @@ std::vector<std::pair<u64, u64>> naive_mpi_claw_search(AbstractProblem &Pb, MpiP
             }
             sendbuf.flush(ctr);
 
-            char frate[8], nrate[8];
-            double delta = wtime() - phase_start;
-            human_format(N / params.n_send / delta, frate);
-            human_format(ctr.bytes_sent / delta, nrate);
-            printf("phase %d, sender %d, wait %.3fs (%.1f%%), %s f/s, %sB/s\n", 
-                phase, params.local_rank, ctr.send_wait, 100*ctr.send_wait/delta, frate, nrate);
+            /* aggregate stats over all senders */
+            wait = ctr.send_wait;
         }
 
         if (params.role == RECEIVER) {
@@ -152,7 +150,7 @@ std::vector<std::pair<u64, u64>> naive_mpi_claw_search(AbstractProblem &Pb, MpiP
                                 }
                                 ctr.found_collision();
                                 if (Pb.is_good_pair(y, x)) {
-                                    printf("\nfound golden collision !!!\n");
+                                    // printf("\nfound golden collision !!!\n");
                                     result.push_back(std::pair(y, x));
                                 }
                             }
@@ -161,22 +159,35 @@ std::vector<std::pair<u64, u64>> naive_mpi_claw_search(AbstractProblem &Pb, MpiP
                     }
                 }
             }
-            double delta = wtime() - phase_start;
-            #ifdef EXPENSIVE_F
-            printf("phase %d, receiver %d, wait %.3fs (%.1f%%)\n", 
-                phase, params.local_rank, ctr.recv_wait, 100*ctr.recv_wait/delta);
-            #else
-            char frate[8];
-            human_format(N / params.n_recv / delta, frate);
-            printf("phase %d, receiver %d, wait %.3fs (%.1f%%), %s f/s\n", 
-                phase, params.local_rank, ctr.recv_wait, 100*ctr.recv_wait/delta, frate);
-            #endif
+            wait = ctr.recv_wait;
         } // RECEIVER
         
         // timing
         MPI_Barrier(MPI_COMM_WORLD);
-        if (params.verbose)
-            printf("Phase: %.1fs\n", wtime() - phase_start);
+        double delta = wtime() - phase_start;
+        double wait_min = wait;
+        double wait_max = wait;
+        double wait_avg = wait;
+        MPI_Allreduce(MPI_IN_PLACE, &wait_min, 1, MPI_DOUBLE, MPI_MIN, params.local_comm);
+        MPI_Allreduce(MPI_IN_PLACE, &wait_max, 1, MPI_DOUBLE, MPI_MAX, params.local_comm);
+        MPI_Allreduce(MPI_IN_PLACE, &wait_avg, 1, MPI_DOUBLE, MPI_SUM, params.local_comm);
+        wait_avg /= params.local_size;
+        double wait_std = (wait - wait_avg) * (wait - wait_avg);
+        MPI_Allreduce(MPI_IN_PLACE, &wait_std, 1, MPI_DOUBLE, MPI_SUM, params.local_comm);            
+        wait_std = std::sqrt(wait_std);
+        if (params.local_rank == 0) {
+            printf("phase %d %s, wait min %.2fs max %.2fs avg %.2fs (%.1f%%) std %.2fs.\n",
+                phase, (params.role == SENDER) ? "sender" : "receiver", wait_min, wait_max, wait_avg, 100*wait_avg/delta, wait_std);
+        } 
+        if (params.verbose) {
+            double outgoing_fraction = 1. - ((double) params.recv_per_node) / params.n_recv;
+            double volume = sizeof(u64) * N / params.n_send * outgoing_fraction;  // outgoing bytes per node
+            char frate[8], nrate[8];
+            double delta = wtime() - phase_start;
+            human_format(N / params.n_send / delta, frate);
+            human_format(volume / delta, nrate);
+            printf("phase %d: %.1fs.  %s f/s per process, %sB/s outgoing per node\n", phase, delta, frate, nrate);
+        }
     } // phase
 
     // deal with the results

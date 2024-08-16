@@ -81,11 +81,13 @@ public:
 
 	MPI_Comm world_comm;
 	MPI_Comm inter_comm;
+	MPI_Comm local_comm;                    /* just our side of the intercomm */
 	int role = UNDECIDED;                   /* enum role */
 	int rank, size;                         // for the global communicator
-	int local_rank = 0;                     /* rank among the local group of the inter-communicator */
+	int local_rank, local_size;             /* rank among the local group of the inter-communicator */
 	int n_recv;
 	int n_send;
+	int n_nodes;
 
 	void setup(MPI_Comm comm)
 	{
@@ -111,7 +113,6 @@ public:
 		MPI_Comm_rank(node_comm, &node_rank);
 		MPI_Comm_size(node_comm, &node_size);
 		int is_rank0 = (node_rank == 0) ? 1 : 0;
-		int n_nodes;
 		MPI_Allreduce(&is_rank0, &n_nodes, 1, MPI_INT, MPI_SUM, world_comm);
 		if (verbose) {
 			printf("MPI: detected %d nodes\n", n_nodes);
@@ -194,9 +195,9 @@ public:
 		MPI_Allreduce(MPI_IN_PLACE, last_rank, 2, MPI_INT, MPI_MAX, world_comm);
 
 		/* Create an intra-comm that separates senders and receivers */
-		MPI_Comm tribe_comm;
-		MPI_Comm_split(world_comm, role, 0, &tribe_comm);
-		MPI_Comm_rank(tribe_comm, &local_rank);
+		MPI_Comm_split(world_comm, role, 0, &local_comm);
+		MPI_Comm_rank(local_comm, &local_rank);
+		MPI_Comm_size(local_comm, &local_size);
 		if (role != CONTROLLER) {
 			/* creation of an inter-communicator between senders and receivers */
 			int local_leader;     // in tribe_comm
@@ -208,9 +209,8 @@ public:
 				local_leader = n_send - 1;
 				remote_leader = last_rank[1];
 			}
-			MPI_Intercomm_create(tribe_comm, local_leader, world_comm, remote_leader, TAG_INTERCOMM, &inter_comm);
+			MPI_Intercomm_create(local_comm, local_leader, world_comm, remote_leader, TAG_INTERCOMM, &inter_comm);
 		}
-		MPI_Comm_free(&tribe_comm);
 	}
 };
 
@@ -229,12 +229,6 @@ protected:
 	std::vector<Buffer> ready;
 	std::vector<Buffer> outgoing;
 	std::vector<MPI_Request> request;   /* for the OUTGOING buffers */
-
-	/* wait until the i-th passive buffer has been fully sent */
-	void wait_send(int i, MpiCounters &ctr)
-	{
-		
-	}
 
 	/* initiate transmission of the i-th OUTGOING buffer */
 	void start_send(int i, MpiCounters &ctr)
