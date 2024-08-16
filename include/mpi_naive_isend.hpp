@@ -113,7 +113,7 @@ std::vector<std::pair<u64, u64>> naive_mpi_claw_search_isend(AbstractProblem &Pb
             }
             wait = ctr.recv_wait;
         } // RECEIVER
-        
+
         // timing
         MPI_Barrier(MPI_COMM_WORLD);
         double delta = wtime() - phase_start;
@@ -125,15 +125,15 @@ std::vector<std::pair<u64, u64>> naive_mpi_claw_search_isend(AbstractProblem &Pb
         MPI_Allreduce(MPI_IN_PLACE, &wait_avg, 1, MPI_DOUBLE, MPI_SUM, params.local_comm);
         wait_avg /= params.local_size;
         double wait_std = (wait - wait_avg) * (wait - wait_avg);
-        MPI_Allreduce(MPI_IN_PLACE, &wait_std, 1, MPI_DOUBLE, MPI_SUM, params.local_comm);            
+        MPI_Allreduce(MPI_IN_PLACE, &wait_std, 1, MPI_DOUBLE, MPI_SUM, params.local_comm);
         wait_std = std::sqrt(wait_std);
         if (params.local_rank == 0) {
             printf("phase %d %s, wait min %.2fs max %.2fs avg %.2fs (%.1f%%) std %.2fs.\n",
                 phase, (params.role == SENDER) ? "sender" : "receiver", wait_min, wait_max, wait_avg, 100*wait_avg/delta, wait_std);
-        } 
+        }
         if (params.verbose) {
             double outgoing_fraction = 1. - ((double) params.recv_per_node) / params.n_recv;
-            double volume = sizeof(u64) * N / params.n_send * outgoing_fraction;  // outgoing bytes per node
+            double volume = sizeof(u64) * N / params.n_nodes * outgoing_fraction;  // outgoing bytes per node
             char frate[8], nrate[8];
             double delta = wtime() - phase_start;
             human_format(N / params.n_send / delta, frate);

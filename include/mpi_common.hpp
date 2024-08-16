@@ -46,25 +46,18 @@ public:
     {
         u32 key = bigkey % 0xfffffffb;
         u64 h = (bigkey ^ (bigkey >> 32)) % n_slots;
+        int nkeys = 0;
         for (;;) {
             if (A[h].k == 0xffffffff)
-                return 0;   // empty-slot, fast path
-            if (A[h].k == key)
-                break;
+                return nkeys;
+            if (A[h].k == key) {
+                keys[nkeys] = A[h].v;
+            	nkeys += 1;
+            }
             h += 1;
             if (h == n_slots)
                 h = 0;
         }
-        int nkeys = 0;
-        // here, first matching key.
-        while (A[h].k == key) {
-            keys[nkeys] = A[h].v;
-            nkeys += 1;
-            h += 1;
-            if (h == n_slots)
-                h = 0;
-        }
-        return nkeys;
     }
 };
 

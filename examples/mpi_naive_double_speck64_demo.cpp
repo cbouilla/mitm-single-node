@@ -29,7 +29,7 @@ public:
 
     u32 P[2][2] = {{0, 0}, {0xffffffff, 0xffffffff}};         /* two plaintext-ciphertext pairs */
     u32 C[2][2];
-    
+
     // speck32-64 encryption of P[0], using k
     u64 f(u64 k) const
     {
@@ -72,12 +72,12 @@ public:
     Speck64128Encrypt(mid[0], C[0], rkb);
     Speck64128Encrypt(P[1], mid[1], rka);
     Speck64128Encrypt(mid[1], C[1], rkb);
-  
+
     assert(f(khi) == g(klo));
     assert(is_good_pair(khi, klo));
   }
 
-  bool is_good_pair(u64 khi, u64 klo) const 
+  bool is_good_pair(u64 khi, u64 klo) const
   {
     u32 Ka[4] = {(u32) (khi & 0xffffffff), (u32) ((khi >> 32)), 0, 0};
     u32 Kb[4] = {(u32) (klo & 0xffffffff), (u32) ((klo >> 32)), 0, 0};
