@@ -135,10 +135,13 @@ int main(int argc, char* argv[])
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     mitm::MpiParameters params;
     process_command_line_options(argc, argv, params);
-    params.setup(MPI_COMM_WORLD, 0);  // no controller process
     mitm::PRNG prng(seed);
-    if (params.verbose)
+    if (rank == 0) {
+        printf("************************************************************************\n");
         printf("double-speck64 demo! seed=%016" PRIx64 ", n=%d\n", prng.seed, n); 
+    }
+
+    params.setup(MPI_COMM_WORLD, 0);  // no controller process
     DoubleSpeck64_Problem Pb(n, prng);
     
 #if 0
