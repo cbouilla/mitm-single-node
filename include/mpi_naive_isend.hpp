@@ -73,6 +73,7 @@ public:
     }
 };
 
+#define EXPENSIVE_F
 
 template <class AbstractProblem>
 std::vector<std::pair<u64, u64>> naive_mpi_claw_search(AbstractProblem &Pb, MpiParameters &params)
@@ -103,7 +104,11 @@ std::vector<std::pair<u64, u64>> naive_mpi_claw_search(AbstractProblem &Pb, MpiP
                 u64 z = (phase == 0) ? Pb.f(x) : Pb.g(x);
                 u64 hash = (z * 0xdeadbeef) % 0x7fffffff;
                 int target = ((int) hash) % params.n_recv;
+                #ifdef EXPENSIVE_F
+                sendbuf.push2(x, z, target, ctr);
+                #else
                 sendbuf.push(x, target, ctr);
+                #endif
             }
             sendbuf.flush(ctr);
 
@@ -124,13 +129,19 @@ std::vector<std::pair<u64, u64>> naive_mpi_claw_search(AbstractProblem &Pb, MpiP
                     // printf("got buffer! phase=%d, size=%zd\n", phase, buffer->size());
                     for (auto jt = buffer->begin(); jt != buffer->end(); jt++) {
                         u64 x = *jt;
+                        #ifdef EXPENSIVE_F
+                        jt++;
+                        u64 z = *jt;
+                        #else
+                        u64 z = (phase == 0) ? Pb.f(x) : Pb.g(x);
+                        #endif
+
                         switch (phase) {
-                        case 0: 
-                            dict.insert(Pb.f(x), x);
+                        case 0:
+                            dict.insert(z, x);
                             break;
                         case 1: {
                             // probe dict
-                            u64 z = Pb.g(x);
                             u64 keys[3* Pb.n];
                             int nkeys = dict.probe(z, keys);
                             for (int k = 0; k < nkeys; k++) {
@@ -150,11 +161,16 @@ std::vector<std::pair<u64, u64>> naive_mpi_claw_search(AbstractProblem &Pb, MpiP
                     }
                 }
             }
-            char frate[8];
             double delta = wtime() - phase_start;
+            #ifdef EXPENSIVE_F
+            printf("phase %d, receiver %d, wait %.3fs (%.1f%%)\n", 
+                phase, params.local_rank, ctr.recv_wait, 100*ctr.recv_wait/delta);
+            #else
+            char frate[8];
             human_format(N / params.n_recv / delta, frate);
             printf("phase %d, receiver %d, wait %.3fs (%.1f%%), %s f/s\n", 
                 phase, params.local_rank, ctr.recv_wait, 100*ctr.recv_wait/delta, frate);
+            #endif
         } // RECEIVER
         
         // timing

@@ -17,15 +17,6 @@ namespace mitm {
 class SendBuffers : public BaseSendBuffers {
 public:
 	SendBuffers(const MpiParameters &params) : BaseSendBuffers(params.inter_comm, TAG_POINTS, 3 * params.buffer_capacity) {}
-
-	/* add a new item to the send buffer. Send if necessary */
-	void push(u64 start, u64 end, u64 len, int rank, MpiCounters &ctr)
-	{
-		switch_when_full(rank, ctr);
-		ready[rank].push_back(start);
-		ready[rank].push_back(end);
-		ready[rank].push_back(len);
-	}
 };
 
 
@@ -78,7 +69,7 @@ void sender(const ConcreteProblem& Pb, const MpiParameters &params)
 
             u64 hash = (end * 0xdeadbeef) % 0x7fffffff;
             int target_recv = ((int) hash) % params.n_recv;
-            sendbuf.push(start, end, len, target_recv, ctr);
+            sendbuf.push3(start, end, len, target_recv, ctr);
 		}
 	}
 }

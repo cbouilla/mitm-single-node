@@ -279,6 +279,21 @@ public:
 		ready[rank].push_back(x);
 	}
 
+	void push2(u64 x, u64 y, int rank, MpiCounters &ctr)
+	{
+		switch_when_full(rank, ctr);
+		ready[rank].push_back(x);
+		ready[rank].push_back(y);
+	}
+
+	void push3(u64 x, u64 y, u64 z, int rank, MpiCounters &ctr)
+	{
+		switch_when_full(rank, ctr);
+		ready[rank].push_back(x);
+		ready[rank].push_back(y);
+		ready[rank].push_back(z);
+	}
+
 	/* send and empty all buffers, even if they are incomplete */
 	void flush(MpiCounters &ctr)
 	{
