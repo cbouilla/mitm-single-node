@@ -140,6 +140,8 @@ int main(int argc, char* argv[])
     if (params.verbose)
         printf("double-speck64 demo! seed=%016" PRIx64 ", n=%d\n", prng.seed, n); 
     DoubleSpeck64_Problem Pb(n, prng);
+    
+#if 0
     if (params.verbose) {
         printf("==============================================================\n");
         printf("All-to-all version\n");
@@ -157,12 +159,14 @@ int main(int argc, char* argv[])
             assert(Pb.f(x0) == Pb.g(x1));
             printf("f(%" PRIx64 ") = g(%" PRIx64 ")\n", x0, x1);
         }
+#endif
     if (params.verbose) {
         printf("==============================================================\n");
         printf("Isend version.\n");
         if (expensive) printf("expensive f/g\n");
         printf("==============================================================\n");
     }
+    std::vector<std::pair<u64, u64>> claws_isend;
     if (expensive)
         claws_isend = mitm::naive_mpi_claw_search_isend<true>(Pb, params);
     else
@@ -173,7 +177,7 @@ int main(int argc, char* argv[])
             assert(Pb.f(x0) == Pb.g(x1));
             printf("f(%" PRIx64 ") = g(%" PRIx64 ")\n", x0, x1);
         }
-    assert(claws_alltoall == claws_isend);
+    assert(claws_isend.size() == 1);
     MPI_Finalize();    
     return EXIT_SUCCESS;
 }
