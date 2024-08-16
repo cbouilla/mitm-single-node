@@ -137,6 +137,7 @@ int main(int argc, char* argv[])
     if (params.verbose)
         for (auto it = claws.begin(); it != claws.end(); it++) {
             auto [x0, x1] = *it;
+            assert(Pb.f(x0) == Pb.g(x1));
             printf("f(%" PRIx64 ") = g(%" PRIx64 ")\n", x0, x1);
         }
     MPI_Finalize();    

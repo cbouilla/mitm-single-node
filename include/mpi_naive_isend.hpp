@@ -157,11 +157,34 @@ std::vector<std::pair<u64, u64>> naive_mpi_claw_search(AbstractProblem &Pb, MpiP
             human_format(N / params.n_recv / delta, frate);
             printf("phase %d, receiver %d, wait %.3fs (%.1f%%), %s f/s\n", 
                 phase, params.local_rank, ctr.recv_wait, 100*ctr.recv_wait/delta, frate);
-            // deal with result
         } // RECEIVER
         if (params.verbose)
             printf("Phase: %.1fs\n", wtime() - phase_start);
     } // phase
+
+    // deal with the results
+    std::vector<int> recvcounts(params.size);
+    recvcounts[params.rank] = 2 * result.size();
+    MPI_Allgather(MPI_IN_PLACE, 1, MPI_INT, recvcounts.data(), 1, MPI_INT, params.world_comm);
+
+    std::vector<int> displs(params.size);
+    int acc = 0;
+    for (int i = 0; i < params.size; i++) {
+        displs[i] = acc;
+        acc += recvcounts[i];
+    }
+
+    std::vector<u64> tmp(acc);
+    for (size_t i = 0; i < result.size(); i++) {
+        int offset = displs[params.rank] + 2*i;
+        auto [x0, x1] = result[i];
+        tmp[offset] = x0;
+        tmp[offset + 1] = x1;
+    }
+    MPI_Allgatherv(MPI_IN_PLACE, 0, MPI_INT, tmp.data(), recvcounts.data(), displs.data(), MPI_UINT64_T, params.world_comm);
+    result.clear();
+    for (int i = 0; i < acc; i += 2)
+        result.push_back(std::pair(tmp[i], tmp[i+1]));
     if (params.verbose)
         printf("Total: %.1fs\n", wtime() - start);
     return result;
