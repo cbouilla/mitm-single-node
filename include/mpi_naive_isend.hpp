@@ -152,7 +152,7 @@ std::vector<std::pair<u64, u64>> naive_mpi_claw_search(AbstractProblem &Pb, MpiP
             char frate[8];
             double delta = wtime() - phase_start;
             human_format(N / params.n_recv / delta, frate);
-            printf("phase %d, sender %d, wait %.3fs (%.1f%%), %s f/s\n", 
+            printf("phase %d, receiver %d, wait %.3fs (%.1f%%), %s f/s\n", 
                 phase, params.local_rank, ctr.recv_wait, 100*ctr.recv_wait/delta, frate);
             // deal with result
         } // RECEIVER
