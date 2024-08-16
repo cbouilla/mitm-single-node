@@ -91,6 +91,9 @@ std::vector<std::pair<u64, u64>> naive_mpi_claw_search(AbstractProblem &Pb, MpiP
         // phase 1 == probe the dict with g()
         if (params.verbose)
             printf("Starting phase %d\n", phase);
+
+        MPI_Barrier(MPI_COMM_WORLD);
+
         double phase_start = wtime();
         ctr.reset();
         
