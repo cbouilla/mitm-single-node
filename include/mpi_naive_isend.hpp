@@ -92,8 +92,6 @@ std::vector<std::pair<u64, u64>> naive_mpi_claw_search(AbstractProblem &Pb, MpiP
         if (params.verbose)
             printf("Starting phase %d\n", phase);
 
-        MPI_Barrier(MPI_COMM_WORLD);
-
         double phase_start = wtime();
         ctr.reset();
         
@@ -158,6 +156,9 @@ std::vector<std::pair<u64, u64>> naive_mpi_claw_search(AbstractProblem &Pb, MpiP
             printf("phase %d, receiver %d, wait %.3fs (%.1f%%), %s f/s\n", 
                 phase, params.local_rank, ctr.recv_wait, 100*ctr.recv_wait/delta, frate);
         } // RECEIVER
+        
+        // timing
+        MPI_Barrier(MPI_COMM_WORLD);
         if (params.verbose)
             printf("Phase: %.1fs\n", wtime() - phase_start);
     } // phase
