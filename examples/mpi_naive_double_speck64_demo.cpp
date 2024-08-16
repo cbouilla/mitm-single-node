@@ -4,6 +4,8 @@
 
 #include <mpi.h>
 
+#include "mpi_common.hpp"
+#include "mpi_naive_alltoall.hpp"
 #include "mpi_naive_isend.hpp"
 
 /* We would like to call C function defined in `sha256.c` */
@@ -133,9 +135,26 @@ int main(int argc, char* argv[])
     if (params.verbose)
         printf("double-speck64 demo! seed=%016" PRIx64 ", n=%d\n", prng.seed, n); 
     DoubleSpeck64_Problem Pb(n, prng);
-    auto claws = mitm::naive_mpi_claw_search(Pb, params);
+    if (params.verbose) {
+        printf("==============================================================\n");
+        printf("All-to-all version\n");
+        printf("==============================================================\n");
+    }
+    auto claws = mitm::naive_mpi_claw_search_alltoall(Pb, params);
     if (params.verbose)
         for (auto it = claws.begin(); it != claws.end(); it++) {
+            auto [x0, x1] = *it;
+            assert(Pb.f(x0) == Pb.g(x1));
+            printf("f(%" PRIx64 ") = g(%" PRIx64 ")\n", x0, x1);
+        }
+    if (params.verbose) {
+        printf("==============================================================\n");
+        printf("Isend version\n");
+        printf("==============================================================\n");
+    }
+    auto claws2 = mitm::naive_mpi_claw_search_isend(Pb, params);
+    if (params.verbose)
+        for (auto it = claws2.begin(); it != claws2.end(); it++) {
             auto [x0, x1] = *it;
             assert(Pb.f(x0) == Pb.g(x1));
             printf("f(%" PRIx64 ") = g(%" PRIx64 ")\n", x0, x1);

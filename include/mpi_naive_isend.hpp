@@ -1,5 +1,5 @@
-#ifndef MITM
-#define MITM
+#ifndef MITM_NAIVE_MPI_ISEND
+#define MITM_NAIVE_MPI_ISEND
 
 #include <optional>
 #include <unordered_map>
@@ -19,64 +19,10 @@
 
 namespace mitm {
 
-class CompactDict {
-public:
-    const u64 n_slots;     /* How many slots a dictionary have */
-    struct __attribute__ ((packed)) entry { u32 k; u64 v; };
-
-    std::vector<struct entry> A;
-
-    CompactDict(u64 n_slots) : n_slots(n_slots)
-    {
-        A.resize(n_slots, {0xffffffff, 0});
-    }
-
-    void insert(u64 key, u64 value)
-    {
-        u64 h = (key ^ (key >> 32)) % n_slots;
-        for (;;) {
-            if (A[h].k == 0xffffffff)
-                break;
-            h += 1;
-            if (h == n_slots)
-                h = 0;
-        }
-        A[h].k = key % 0xfffffffb;
-        A[h].v = value;
-    }
-
-    // return possible values matching this key
-    // TODO: replace this by a custom iterator
-    int probe(u64 bigkey, u64 keys[])
-    {
-        u32 key = bigkey % 0xfffffffb;
-        u64 h = (bigkey ^ (bigkey >> 32)) % n_slots;
-        for (;;) {
-            if (A[h].k == 0xffffffff)
-                return 0;   // empty-slot, fast path
-            if (A[h].k == key)
-                break;
-            h += 1;
-            if (h == n_slots)
-                h = 0;
-        }
-        int nkeys = 0;
-        // here, first matching key.
-        while (A[h].k == key) {
-            keys[nkeys] = A[h].v;
-            nkeys += 1;
-            h += 1;
-            if (h == n_slots)
-                h = 0;
-        }
-        return nkeys;
-    }
-};
-
 #define EXPENSIVE_F
 
 template <class AbstractProblem>
-std::vector<std::pair<u64, u64>> naive_mpi_claw_search(AbstractProblem &Pb, MpiParameters &params)
+std::vector<std::pair<u64, u64>> naive_mpi_claw_search_isend(AbstractProblem &Pb, MpiParameters &params)
 {
     static_assert(std::is_base_of<AbstractClawProblem, AbstractProblem>::value,
         "problem not derived from mitm::AbstractClawProblem");
@@ -120,6 +66,7 @@ std::vector<std::pair<u64, u64>> naive_mpi_claw_search(AbstractProblem &Pb, MpiP
 
         if (params.role == RECEIVER) {
             BaseRecvBuffers recvbuf(params.inter_comm, TAG_POINTS, params.buffer_capacity);
+            u64 keys[3 * Pb.n];
             while (not recvbuf.complete()) {
                 auto ready_buffers = recvbuf.wait(ctr);
                 for (auto it = ready_buffers.begin(); it != ready_buffers.end(); it++) {
@@ -140,7 +87,6 @@ std::vector<std::pair<u64, u64>> naive_mpi_claw_search(AbstractProblem &Pb, MpiP
                             break;
                         case 1: {
                             // probe dict
-                            u64 keys[3* Pb.n];
                             int nkeys = dict.probe(z, keys);
                             for (int k = 0; k < nkeys; k++) {
                                 u64 y = keys[k];
