@@ -17,6 +17,7 @@ extern "C"{
 
 int n = 20;         // default problem size (easy)
 u64 seed = 0x1337;  // default fixed seed
+bool expensive;
 
 ////////////////////////////////////////////////////////////////////////////////
 class DoubleSpeck64_Problem : mitm::AbstractClawProblem
@@ -95,10 +96,11 @@ public:
 
 void process_command_line_options(int argc, char **argv, mitm::MpiParameters &params)
 {
-    struct option longopts[4] = {
+    struct option longopts[5] = {
         {"n", required_argument, NULL, 'n'},
         {"seed", required_argument, NULL, 's'},
         {"recv-per-node", required_argument, NULL, 'e'},
+        {"expensive", no_argument, NULL, 'p'},
         {NULL, 0, NULL, 0}
     };
 
@@ -115,6 +117,9 @@ void process_command_line_options(int argc, char **argv, mitm::MpiParameters &pa
             break;
         case 'e':
             params.recv_per_node = std::stoi(optarg);
+            break;
+        case 'p':
+            expensive = 1;
             break;
         default:
             errx(1, "Unknown option %s\n", optarg);
@@ -138,27 +143,37 @@ int main(int argc, char* argv[])
     if (params.verbose) {
         printf("==============================================================\n");
         printf("All-to-all version\n");
+        if (expensive) printf("expensive f/g\n");
         printf("==============================================================\n");
     }
-    auto claws = mitm::naive_mpi_claw_search_alltoall(Pb, params);
+    std::vector<std::pair<u64, u64>> claws_alltoall, claws_isend;
+    if (expensive)
+        claws_alltoall = mitm::naive_mpi_claw_search_alltoall<true>(Pb, params);
+    else
+        claws_alltoall = mitm::naive_mpi_claw_search_alltoall<false>(Pb, params);
     if (params.verbose)
-        for (auto it = claws.begin(); it != claws.end(); it++) {
+        for (auto it = claws_alltoall.begin(); it != claws_alltoall.end(); it++) {
             auto [x0, x1] = *it;
             assert(Pb.f(x0) == Pb.g(x1));
             printf("f(%" PRIx64 ") = g(%" PRIx64 ")\n", x0, x1);
         }
     if (params.verbose) {
         printf("==============================================================\n");
-        printf("Isend version\n");
+        printf("Isend version.\n");
+        if (expensive) printf("expensive f/g\n");
         printf("==============================================================\n");
     }
-    auto claws2 = mitm::naive_mpi_claw_search_isend(Pb, params);
+    if (expensive)
+        claws_isend = mitm::naive_mpi_claw_search_isend<true>(Pb, params);
+    else
+        claws_isend = mitm::naive_mpi_claw_search_isend<false>(Pb, params);
     if (params.verbose)
-        for (auto it = claws2.begin(); it != claws2.end(); it++) {
+        for (auto it = claws_isend.begin(); it != claws_isend.end(); it++) {
             auto [x0, x1] = *it;
             assert(Pb.f(x0) == Pb.g(x1));
             printf("f(%" PRIx64 ") = g(%" PRIx64 ")\n", x0, x1);
         }
+    assert(claws_alltoall == claws_isend);
     MPI_Finalize();    
     return EXIT_SUCCESS;
 }
