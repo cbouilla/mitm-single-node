@@ -71,7 +71,7 @@ public:
 };  
 
 
-class OpenMPEngine {
+class OpenMPEngine : Engine {
 public:
 using Counters = OmpCounters;
 
@@ -95,18 +95,6 @@ template<typename ConcreteProblem>
 static tuple<u64,u64,u64> run(const ConcreteProblem& Pb, Parameters &params, PRNG &prng)
 {
     Counters &ctr = Pb.ctr;
-
-    printf("Benchmarking... ");
-    fflush(stdout);
-    double it_per_s_seq = sequential_benchmark(Pb);
-    double it_per_s = benchmark(Pb);
-    // NOT DRY wrt MPI
-    char hitps[8], hitps_seq[8];
-    human_format(it_per_s_seq, hitps_seq);
-    human_format(it_per_s, hitps);
-
-    int nthreads = omp_get_max_threads();
-    printf("%s it/s (one thread).  %s it/s (%d threads)\n", hitps_seq, hitps, nthreads);
 
     PcsDict dict(params.nbytes_memory);
     params.finalize(Pb.n, dict.n_slots);

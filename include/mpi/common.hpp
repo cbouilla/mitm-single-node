@@ -213,7 +213,7 @@ public:
 
 
 /* Manages send buffers for a collection of receiver processes, with double-buffering */
-class BaseSendBuffers {
+class SendBuffers {
 public:
 	using Buffer = vector<u64>;
 
@@ -251,7 +251,7 @@ protected:
 	}
 
 public:
-	BaseSendBuffers(MPI_Comm inter_comm, int tag, size_t capacity) : inter_comm(inter_comm), capacity(capacity), tag(tag)
+	SendBuffers(MPI_Comm inter_comm, int tag, size_t capacity) : inter_comm(inter_comm), capacity(capacity), tag(tag)
 	{
 		MPI_Comm_remote_size(inter_comm, &n);
 		ready.resize(n);
@@ -308,7 +308,7 @@ public:
 
 
 /* Manage reception buffers for a collection of sender processes, with double-buffering */
-class BaseRecvBuffers {
+class RecvBuffers {
 	using Buffer = vector<u64>;
 
 private:
@@ -331,7 +331,7 @@ private:
 	}
 
 public:
-	BaseRecvBuffers(MPI_Comm inter_comm, int tag, size_t capacity) : inter_comm(inter_comm), capacity(capacity), tag(tag)
+	RecvBuffers(MPI_Comm inter_comm, int tag, size_t capacity) : inter_comm(inter_comm), capacity(capacity), tag(tag)
 	{
 		MPI_Comm_remote_size(inter_comm, &n);
 		ready.resize(n);
@@ -345,7 +345,7 @@ public:
 		n_active_senders = n;
 	}
 
-	~BaseRecvBuffers()
+	~RecvBuffers()
 	{
 		assert (n_active_senders == 0);
 	}

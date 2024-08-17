@@ -11,19 +11,10 @@
 
 namespace mitm {
 
-
-
-/* Manages send buffers for a collection of receiver processes, with double-buffering */
-class SendBuffers : public BaseSendBuffers {
-public:
-	SendBuffers(const MpiParameters &params) : BaseSendBuffers(params.inter_comm, TAG_POINTS, 3 * params.buffer_capacity) {}
-};
-
-
 template<typename ConcreteProblem>
 void sender(const ConcreteProblem& Pb, const MpiParameters &params)
 {
-	SendBuffers sendbuf(params);
+	SendBuffers sendbuf(params.inter_comm, TAG_POINTS, 3 * params.buffer_capacity);
     MpiCounters &ctr = Pb.ctr; 
 
     u64 steps = 0;

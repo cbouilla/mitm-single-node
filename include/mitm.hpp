@@ -45,13 +45,16 @@ public:
 };
 
 
-template <typename Engine, typename AbstractProblem>
+template <typename _Engine, typename AbstractProblem>
 pair<u64, u64> collision_search(const AbstractProblem& Pb, Parameters &params, PRNG &prng)
 {
-    typename Engine::Counters ctr(params.verbose);
+    static_assert(std::is_base_of<Engine, _Engine>::value,
+            "engine not derived from mitm::Engine");
+
+    typename _Engine::Counters ctr(params.verbose);
     ConcreteCollisionProblem wrapper(Pb, ctr);
 
-    auto [i, x, y] = Engine::run(wrapper, params, prng);
+    auto [i, x, y] = _Engine::run(wrapper, params, prng);
     u64 a = wrapper.mix(i, x);
     u64 b = wrapper.mix(i, y);
     assert(a != b);
@@ -119,13 +122,16 @@ public:
     }
 };
 
-template <typename Engine, class Parameters, typename Problem>
+template <typename _Engine, class Parameters, typename Problem>
 pair<u64, u64> claw_search(const Problem& Pb, Parameters &params, PRNG &prng)
 {
-    typename Engine::Counters ctr(params.verbose);
+    static_assert(std::is_base_of<Engine, _Engine>::value,
+            "engine not derived from mitm::Engine");
+
+    typename _Engine::Counters ctr(params.verbose);
     ClawWrapper wrapper(Pb, ctr);
 
-    auto [i, a, b] = Engine::run(wrapper, params, prng);
+    auto [i, a, b] = _Engine::run(wrapper, params, prng);
     auto [u, v] = wrapper.swap(i, a, b);
     u64 x0 = wrapper.mix(i, u);
     u64 x1 = wrapper.mix(i, v);

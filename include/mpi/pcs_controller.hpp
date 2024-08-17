@@ -14,6 +14,24 @@ namespace mitm {
 template<typename ConcreteProblem>
 tuple<u64,u64,u64> controller(const ConcreteProblem& Pb, const MpiParameters &params, PRNG &prng)
 {
+    printf("Starting collision search with seed=%016" PRIx64 ", difficulty=%.2f\n", prng.seed, params.difficulty);
+    
+	char hbsize[8], hdsize[8], htdsize[8];
+	u64 bsize_node = 4 * 3 * sizeof(u64) * params.buffer_capacity * params.n_send * params.n_recv / params.n_nodes;
+	human_format(bsize_node, hbsize);
+	human_format(params.nbytes_memory, hdsize);
+	human_format(params.n_nodes * params.nbytes_memory, htdsize);
+	double log2_w = std::log2(params.nslots);
+	printf("RAM per node == %sB buffer + %sB dict.  Total dict size == %s (2^%.2f slots)\n", hbsize, hdsize, htdsize, log2_w);
+
+	/* this is quite wrong, actually */
+    printf("Expected iterations / collision = (2^%0.2f + 2^%.2f) \n", 
+    	    Pb.n - params.difficulty - log2_w, 1 + params.difficulty);
+    printf("Expected #iterations = (2^%0.2f + 2^%.2f) \n",
+    	    (Pb.n - 1) + (Pb.n - params.difficulty - log2_w), Pb.n + params.difficulty);
+    printf("Generating %.1f*w = %" PRId64 " = 2^%0.2f distinguished point / version\n", 
+        	params.beta, params.points_per_version, std::log2(params.points_per_version));
+
 	MpiCounters &ctr = Pb.ctr;
     optional<tuple<u64,u64,u64>> solution;    /* (i, x0, x1)  */
 	u64 stop = 0;

@@ -13,6 +13,8 @@ namespace mitm {
 
 /******************************************************************************/
 
+class Engine {};
+
 inline bool is_distinguished_point(u64 x, u64 threshold)
 {
     return x <= threshold;

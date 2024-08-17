@@ -50,7 +50,7 @@ vector<pair<u64, u64>> naive_mpi_claw_search_isend(const AbstractProblem &Pb, Mp
         double wait;
 
         if (params.role == SENDER) {
-            BaseSendBuffers sendbuf(params.inter_comm, TAG_POINTS, params.buffer_capacity);
+            SendBuffers sendbuf(params.inter_comm, TAG_POINTS, params.buffer_capacity);
             u64 lo = params.local_rank * N / params.n_send;
             u64 hi = (params.local_rank + 1) * N / params.n_send;
             for (u64 x = lo; x < hi; x++) {
@@ -69,7 +69,7 @@ vector<pair<u64, u64>> naive_mpi_claw_search_isend(const AbstractProblem &Pb, Mp
         }
 
         if (params.role == RECEIVER) {
-            BaseRecvBuffers recvbuf(params.inter_comm, TAG_POINTS, params.buffer_capacity);
+            RecvBuffers recvbuf(params.inter_comm, TAG_POINTS, params.buffer_capacity);
             u64 keys[3 * Pb.n];
             while (not recvbuf.complete()) {
                 auto ready_buffers = recvbuf.wait(ctr);

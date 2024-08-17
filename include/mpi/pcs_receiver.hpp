@@ -9,17 +9,13 @@
 
 namespace mitm {
 
-/* Manage reception buffers for a collection of sender processes, with double-buffering */
-class RecvBuffers : public BaseRecvBuffers {
-public:
-	RecvBuffers(const MpiParameters &params) : BaseRecvBuffers(params.inter_comm, TAG_POINTS, 3 * params.buffer_capacity) {}
-};
 
 template<typename ConcreteProblem>
 void receiver(const ConcreteProblem& Pb, const MpiParameters &params)
 {
     MpiCounters &ctr = Pb.ctr; 
     PcsDict dict(params.nbytes_memory / params.recv_per_node);
+	RecvBuffers recvbuf(params.inter_comm, TAG_POINTS, 3 * params.buffer_capacity);
 
     double last_ping = wtime();
 
@@ -32,20 +28,17 @@ void receiver(const ConcreteProblem& Pb, const MpiParameters &params)
 		u64 i = msg[0];
 
 		// receive and process data from senders
-		RecvBuffers recvbuf(params);
 		for (;;) {
 			if (recvbuf.complete())
 				break;                      // all senders are done
 			auto ready = recvbuf.wait(ctr);
 			// process incoming buffers of distinguished points
 			for (auto it = ready.begin(); it != ready.end(); it++) {
-				auto & buffer = *it;
-				for (size_t k = 0; k < buffer->size(); k += 3) {
-					u64 start = buffer->at(k);
-					u64 end = buffer->at(k + 1);
-					u64 len = buffer->at(k + 2);
-					assert((start & Pb.mask) == start);
-					assert((end & Pb.mask) == end);
+				auto & buffer = **it;
+				for (size_t k = 0; k < buffer.size(); k += 3) {
+					u64 start = buffer[k];
+					u64 end = buffer[k + 1];
+					u64 len = buffer[k + 2];
 					auto solution = process_distinguished_point(Pb, ctr, dict, i, start, end, len);
 					if (solution) {          // call home !
 						auto [i, x0, x1] = *solution;
