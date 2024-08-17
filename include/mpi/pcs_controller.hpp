@@ -40,6 +40,7 @@ tuple<u64,u64,u64> controller(const ConcreteProblem& Pb, const MpiParameters &pa
 	u64 ndp_total = 0;
 	u64 ncoll_total = 0;
 	u64 nf_total = 0;
+	double start = wtime();
 
 	for (;;) {
         u64 i = prng.rand() & Pb.mask;             /* index of families of mixing functions */
@@ -127,6 +128,8 @@ tuple<u64,u64,u64> controller(const ConcreteProblem& Pb, const MpiParameters &pa
 
 		nround += 1;
 	}
+
+	printf("Completed in %.2fs\n", wtime() - start);
 	assert(solution);
 	return *solution;
 }
