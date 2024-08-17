@@ -159,8 +159,8 @@ public:
 class SendBuffers {
 public:
 	using Buffer = vector<u64>;
-	double waiting_time;
-	u64 bytes_sent;
+	double waiting_time = 0;
+	u64 bytes_sent = 0;
 
 private:
 	MPI_Comm inter_comm;
@@ -256,8 +256,8 @@ public:
 class RecvBuffers {
 public:
 	using Buffer = vector<u64>;
-	double waiting_time;
-	u64 bytes_sent;
+	double waiting_time = 0;
+	u64 bytes_sent = 0;
 
 private:
 	MPI_Comm inter_comm;
