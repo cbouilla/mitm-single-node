@@ -11,7 +11,6 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON) # Compiler command json
 add_compile_options(-march=native -ggdb -Wall)
 # The little bird says clang has a nicer error report than gcc!
 
-find_package(OpenMP REQUIRED)
-find_package(MPI)
+find_package(MPI REQUIRED)
 
 add_subdirectory(examples)

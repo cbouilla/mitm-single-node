@@ -7,6 +7,7 @@
 
 #include <string>
 #include <cmath>
+#include <climits>
 
 namespace mitm {
 
@@ -75,9 +76,8 @@ public:
  	
  	/* stats for the full computation */
 	u64 n_flush = 0;                // #times dict were flushed
-	u64 n_points = 0;               // #function evaluation in total
-	u64 n_points_trails = 0;        // #function evaluation to find DP
 	u64 n_dp = 0;                   // since beginning
+	u64 n_points_trails = 0;
 	u64 n_collisions = 0;           // since beginning
 	u64 bad_dp = 0;
 	u64 bad_probe = 0;
@@ -86,15 +86,10 @@ public:
 	double start_time;
 	double end_time;
 
-	/* waiting times for MPI implementation */
-	double send_wait = 0.;          // time sender processes wait for the receiver to be ready
-	double recv_wait = 0.;          // time the receivers wait for data from the senders
-	u64 bytes_sent = 0;
-
 	/* stats for this i */
 	double last_update;             // timestamp of the last flush
-	u64 n_dp_i = 0;                 // since last flush
-	u64 n_collisions_i = 0;         // since last flush
+	u64 n_dp_i = 0;                     // since last flush
+	u64 n_collisions_i = 0;             // since last flush
 
 	/* display management */
 	bool display_active = 1;
@@ -107,17 +102,6 @@ public:
 	
 	BaseCounters() {}
 	BaseCounters(bool display_active) : display_active(display_active) {}
-
-	// only useful for MPI engine
-	void reset()
-	{
-		n_points = 0;
-		n_dp = 0;
-		n_collisions = 0;
-		send_wait = 0;
-		recv_wait = 0;
-		bytes_sent = 0;
-	}
 
 	void ready(int n, u64 _w)
 	{
@@ -159,31 +143,15 @@ public:
 			double dprate = (n_dp - n_dp_prev) / delta;
 			char hdprate[8];
 			human_format(dprate, hdprate);
-			double frate = (n_points - n_points_prev) / delta;
-			char hfrate[8];
-			human_format(frate, hfrate);
-			double nrate = (bytes_sent - bytes_sent_prev) / delta;
-			char hnrate[8];
-			human_format(nrate, hnrate);
-			printf("\r#i = %" PRId64 " (%.02f*n/w). %s f/sec.  %s DP/sec.  #DP (this i / total) %.02f*w / %.02f*n.  #coll (this i / total) %.02f*w / %0.2f*n.  Total #f=2^%.02f.  S/R wait %.02fs / %.02fs.  S->R %sB/s",
+			printf("\r#i = %" PRId64 " (%.02f*n/w). %s DP/sec.  #DP (this i / total) %.02f*w / %.02f*n.  #coll (this i / total) %.02f*w / %0.2f*n",
 			 		n_flush, (double) n_flush * w / N, 
-			 		hfrate, hdprate, 
+			 		hdprate, 
 			 		(double) n_dp_i / w, (double) n_dp / N,
-			 		(double) n_collisions_i / w, (double) n_collisions / N,
-			 		std::log2(n_points),
-			 		send_wait, recv_wait,
-			 		hnrate);
+			 		(double) n_collisions_i / w, (double) n_collisions / N);
 			fflush(stdout);
 			n_dp_prev = n_dp;
-			n_points_prev = n_points;
-			bytes_sent_prev = bytes_sent;
 			last_display = wtime();
 		}
-	}
-
-	void function_evaluation()
-	{
-		n_points += 1;
 	}
 
 	// call this when a new DP is found
@@ -221,12 +189,12 @@ public:
 		printf("\n----------------------------------------\n");
 		printf("Took %0.2f sec to find the golden inputs\n", total_time);
 		printf("Used %" PRId64 " ≈ 2^%0.2f mixing functions\n", 1+n_flush, std::log2(1+n_flush));
-		printf("Evaluated f() %" PRId64 " ≈ 2^%0.2f times\n", n_points, std::log2(n_points));
-		printf("  - %" PRId64 " ≈ 2^%0.2f times to find DPs (%.1f%%)\n", 
-			n_points_trails, std::log2(n_points_trails), 100.0 * n_points_trails / n_points);
-		u64 n_points_walk = n_points - n_points_trails;
-		printf("  - %" PRId64 " ≈ 2^%0.2f times in walks (%.1f%%)\n", 
-			n_points_walk, std::log2(n_points_walk), 100.0 * n_points_walk / n_points);
+		// printf("Evaluated f() %" PRId64 " ≈ 2^%0.2f times\n", n_points, std::log2(n_points));
+		// printf("  - %" PRId64 " ≈ 2^%0.2f times to find DPs (%.1f%%)\n", 
+		// 	n_points_trails, std::log2(n_points_trails), 100.0 * n_points_trails / n_points);
+		// u64 n_points_walk = n_points - n_points_trails;
+		// printf("  - %" PRId64 " ≈ 2^%0.2f times in walks (%.1f%%)\n", 
+		// 	n_points_walk, std::log2(n_points_walk), 100.0 * n_points_walk / n_points);
 		printf("Found %" PRId64 " ≈ 2^%0.2f distinguished points\n", n_dp, std::log2(n_dp));
 		printf("Found %" PRId64 " ≈ 2^%0.2f collisions\n", n_collisions, std::log2(n_collisions));
   }

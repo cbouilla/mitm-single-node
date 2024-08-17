@@ -24,7 +24,6 @@ vector<pair<u64, u64>> naive_mpi_claw_search_isend(const AbstractProblem &Pb, Mp
         "problem not derived from mitm::AbstractClawProblem");
 
     double start = wtime();
-    MpiCounters ctr;
     u64 N = 1ull << Pb.n;
     vector<pair<u64, u64>> result;
     CompactDict dict((params.role == RECEIVER) ? (1.5 * N) / params.n_recv : 0);
@@ -44,9 +43,7 @@ vector<pair<u64, u64>> naive_mpi_claw_search_isend(const AbstractProblem &Pb, Mp
         if (params.verbose)
             printf("Starting phase %d\n", phase);
 
-        double phase_start = wtime();
-        ctr.reset();
-        
+        double phase_start = wtime();        
         double wait;
 
         if (params.role == SENDER) {
@@ -58,21 +55,21 @@ vector<pair<u64, u64>> naive_mpi_claw_search_isend(const AbstractProblem &Pb, Mp
                 u64 hash = (z * 0xdeadbeef) % 0x7fffffff;
                 int target = ((int) hash) % params.n_recv;
                 if (EXPENSIVE_F)
-                    sendbuf.push2(x, z, target, ctr);
+                    sendbuf.push2(x, z, target);
                 else
-                    sendbuf.push(x, target, ctr);
+                    sendbuf.push(x, target);
             }
-            sendbuf.flush(ctr);
+            sendbuf.flush();
 
             /* aggregate stats over all senders */
-            wait = ctr.send_wait;
+            wait = sendbuf.waiting_time;
         }
 
         if (params.role == RECEIVER) {
             RecvBuffers recvbuf(params.inter_comm, TAG_POINTS, params.buffer_capacity);
             u64 keys[3 * Pb.n];
             while (not recvbuf.complete()) {
-                auto ready_buffers = recvbuf.wait(ctr);
+                auto ready_buffers = recvbuf.wait();
                 for (auto it = ready_buffers.begin(); it != ready_buffers.end(); it++) {
                     auto * buffer = *it;
                     // printf("got buffer! phase=%d, size=%zd\n", phase, buffer->size());
@@ -94,22 +91,17 @@ vector<pair<u64, u64>> naive_mpi_claw_search_isend(const AbstractProblem &Pb, Mp
                             int nkeys = dict.probe(z, keys);
                             for (int k = 0; k < nkeys; k++) {
                                 u64 y = keys[k];
-                                if (z != Pb.f(y)) {
-                                    ctr.collision_failure();
+                                if (z != Pb.f(y))
                                     continue;    // false positive from truncation in the hash table
-                                }
-                                ctr.found_collision();
-                                if (Pb.is_good_pair(y, x)) {
-                                    // printf("\nfound golden collision !!!\n");
+                                if (Pb.is_good_pair(y, x))
                                     result.push_back(pair(y, x));
-                                }
                             }
                         }
                         }
                     }
                 }
             }
-            wait = ctr.recv_wait;
+            wait = recvbuf.waiting_time;
         } // RECEIVER
 
         // timing

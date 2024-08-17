@@ -3,7 +3,7 @@
 #include <err.h>
 
 #include "mitm.hpp"
-#include "openmp/pcs_engine.hpp"
+#include "sequential/pcs_engine.hpp"
 
 /* We would like to call C function defined in `sha256.c` */
 extern "C"{
@@ -121,7 +121,7 @@ int main(int argc, char* argv[])
     printf("sha2-claw demo! seed=%016" PRIx64 ", n=%d\n", seed, n); 
 
     SHA2ClawProblem pb(n, prng);
-    auto claw = mitm::claw_search<mitm::OpenMPEngine>(pb, params, prng);
+    auto claw = mitm::claw_search<mitm::SequentialEngine>(pb, params, prng);
     printf("f(%" PRIx64 ") = g(%" PRIx64 ")\n", claw.first, claw.second);
         
     return EXIT_SUCCESS;

@@ -16,10 +16,9 @@ namespace mitm {
 
 class MpiEngine : Engine {
 public:
-using Counters = MpiCounters;
 
 template<typename ConcreteProblem>
-static tuple<u64,u64,u64> run(const ConcreteProblem& Pb, MpiParameters &params, PRNG &prng)
+static tuple<u64,u64,u64> run(ConcreteProblem& Pb, MpiParameters &params, PRNG &prng)
 {
     u64 nslots = PcsDict::get_nslots(params.nbytes_memory / params.recv_per_node) * params.n_recv;
     params.finalize(Pb.n, nslots);

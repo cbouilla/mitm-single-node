@@ -11,15 +11,15 @@
 
 namespace mitm {
 
-template <typename AbstractProblem, typename Counters>
+template <typename AbstractProblem>
 class ConcreteCollisionProblem {
 public:
     const AbstractProblem &pb;
-    Counters &ctr;
     const int n;
     const u64 mask;
+    u64 n_eval;      // #evaluations of (mix)f.  This does not count the invocations of f() by pb.good_pair().
 
-    ConcreteCollisionProblem(const AbstractProblem &pb, Counters &ctr) : pb(pb), ctr(ctr), n(pb.n), mask((1ull << pb.n) - 1)
+    ConcreteCollisionProblem(const AbstractProblem &pb) : pb(pb), n(pb.n), mask((1ull << pb.n) - 1)
     {
         static_assert(std::is_base_of<AbstractCollisionProblem, AbstractProblem>::value,
             "problem not derived from mitm::AbstractCollisionProblem");
@@ -32,13 +32,13 @@ public:
     }
 
     /* evaluates f o σ_i(x) */
-    u64 mixf(u64 i, u64 x) const
+    u64 mixf(u64 i, u64 x)
     {
-        ctr.function_evaluation();
+        n_eval += 1;
         return pb.f(mix(i, x));
     }
 
-  bool mix_good_pair(u64 i, u64 x0, u64 x1) const
+  bool mix_good_pair(u64 i, u64 x0, u64 x1)
   { 
     return pb.is_good_pair(mix(i, x0), mix(i, x1));
   }
@@ -51,8 +51,7 @@ pair<u64, u64> collision_search(const AbstractProblem& Pb, Parameters &params, P
     static_assert(std::is_base_of<Engine, _Engine>::value,
             "engine not derived from mitm::Engine");
 
-    typename _Engine::Counters ctr(params.verbose);
-    ConcreteCollisionProblem wrapper(Pb, ctr);
+    ConcreteCollisionProblem wrapper(Pb);
 
     auto [i, x, y] = _Engine::run(wrapper, params, prng);
     u64 a = wrapper.mix(i, x);
@@ -60,22 +59,20 @@ pair<u64, u64> collision_search(const AbstractProblem& Pb, Parameters &params, P
     assert(a != b);
     assert(Pb.f(a) == Pb.f(b));
     assert(Pb.is_good_pair(a, b));
-    
-    ctr.done();
     return pair(a, b);
 }
 
 /****************************************************************************************/
 
-template <class AbstractProblem, class Counters>
+template <class AbstractProblem>
 class ClawWrapper {
 public:
-    const AbstractProblem& pb;   // AbstractClawProblem
-    Counters &ctr;
+    const AbstractProblem& pb;
     const int n;
     const u64 mask;
+    u64 n_eval;        // #evaluations of (mix)f.  This does not count the invocations of f() by pb.good_pair().
 
-    ClawWrapper(const AbstractProblem& pb, Counters &ctr) : pb(pb), ctr(ctr), n(pb.n), mask((1ull << pb.n) - 1)
+    ClawWrapper(const AbstractProblem& pb) : pb(pb), n(pb.n), mask((1ull << pb.n) - 1)
     {
         static_assert(std::is_base_of<AbstractClawProblem, AbstractProblem>::value,
             "problem not derived from mitm::AbstractClawProblem");
@@ -93,9 +90,9 @@ public:
     }
 
 
-    u64 mixf(u64 i, u64 x) const
+    u64 mixf(u64 i, u64 x)
     {
-        ctr.function_evaluation();
+        n_eval += 1;
         u64 y = mix(i, x);
         if (choose(i, x))
             return pb.f(y);
@@ -113,7 +110,7 @@ public:
         return pair(x0, x1);    
     }
 
-    bool mix_good_pair(u64 i, u64 a, u64 b) const 
+    bool mix_good_pair(u64 i, u64 a, u64 b) 
     {
         if (choose(i, a) == choose(i, b))
             return false;
@@ -128,73 +125,16 @@ pair<u64, u64> claw_search(const Problem& Pb, Parameters &params, PRNG &prng)
     static_assert(std::is_base_of<Engine, _Engine>::value,
             "engine not derived from mitm::Engine");
 
-    typename _Engine::Counters ctr(params.verbose);
-    ClawWrapper wrapper(Pb, ctr);
+    ClawWrapper<Problem> wrapper(Pb);
 
     auto [i, a, b] = _Engine::run(wrapper, params, prng);
     auto [u, v] = wrapper.swap(i, a, b);
     u64 x0 = wrapper.mix(i, u);
     u64 x1 = wrapper.mix(i, v);
     assert(Pb.is_good_pair(x0, x1));
-
-    ctr.done();
     return pair(x0, x1);
 }
 
-
-//=============================================================================+
-//----------------------------- NAIVE ENGINES ---------------------------------|
-
-template <typename Problem>
-optional<pair<u64, u64>> naive_collision_search(Problem &Pb)
-{
-  u64 n_items = 1ull << Pb.n;
-
-  std::unordered_multimap<u64, u64> f_images;
-  f_images.reserve(n_items);
-  for (u64 x = 0; x < n_items; x++) {
-    u64 z = Pb.f(x);
-    f_images.emplace(z, x);
-  }
-  assert(f_images.size() == n_items);
-
-  for (u64 y = 0; y < n_items; y++) {
-    u64 z = Pb.f(y);
-    auto range = f_images.equal_range(z);
-    for (auto it = range.first; it != range.second; ++it) {
-      u64 x = it->second;
-      if (x != y && Pb.is_good_pair(z, x, y))
-        return std::make_optional(pair(x, y));
-    }
-  }
-  return std::nullopt;
-}
-
-
-template <typename Problem>
-optional<pair<u64, u64>> naive_claw_search(Problem &Pb)
-{
-  u64 n_items = 1ull << Pb.n;
-
-  std::unordered_multimap<u64, u64> f_images;
-  f_images.reserve(n_items);
-  for (u64 x = 0; x < n_items; x++) {
-    u64 z = Pb.f(x);
-    f_images.emplace(z, x);
-  }
-  assert(f_images.size() == n_items);
-
-  for (u64 y = 0; y < n_items; y++) {
-    u64 z = Pb.g(y);
-    auto range = f_images.equal_range(z);
-    for (auto it = range.first; it != range.second; ++it) {
-      u64 x = it->second;
-      if (Pb.is_good_pair(z, x, y))
-        return std::make_optional(pair(x, y));
-    }
-  }
-  return std::nullopt;
-}
 
 }
 

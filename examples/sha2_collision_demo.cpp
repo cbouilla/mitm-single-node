@@ -3,7 +3,7 @@
 #include <err.h>
 
 #include "mitm.hpp"
-#include "openmp/pcs_engine.hpp"
+#include "sequential/pcs_engine.hpp"
 
 /* We would like to call C function defined in `sha256.c` */
 extern "C"{
@@ -109,7 +109,7 @@ int main(int argc, char* argv[])
         printf("sha2-collision demo! seed=%016" PRIx64 ", n=%d\n", seed, n); 
 
         SHA2CollisionProblem pb(n, prng);
-        auto collision = mitm::collision_search<mitm::OpenMPEngine>(pb, params, prng);
+        auto collision = mitm::collision_search<mitm::SequentialEngine>(pb, params, prng);
         printf("f(%" PRIx64 ") = g(%" PRIx64 ")\n", collision.first, collision.second);
         
         return EXIT_SUCCESS;

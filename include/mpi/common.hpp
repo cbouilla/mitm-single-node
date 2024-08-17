@@ -12,63 +12,6 @@ enum tags {TAG_INTERCOMM, TAG_POINTS, TAG_SENDER_CALLHOME, TAG_RECEIVER_CALLHOME
 enum role {CONTROLLER, SENDER, RECEIVER, UNDECIDED};
 enum assignment {KEEP_GOING, NEW_VERSION};
 
-class MpiCounters : public BaseCounters {
-public:
-    MpiCounters() {}
-    MpiCounters(bool display_active) : BaseCounters(display_active) {}
-
-	/* waiting times for MPI implementation */
-	double send_wait = 0.;          // time sender processes wait for the receiver to be ready
-	double recv_wait = 0.;          // time the receivers wait for data from the senders
-	u64 bytes_sent = 0;
-
-	/* display management */
-	u64 bytes_sent_prev = 0;
-	
-	void reset()
-	{
-		n_points = 0;
-		n_dp = 0;
-		n_collisions = 0;
-		send_wait = 0;
-		recv_wait = 0;
-		bytes_sent = 0;
-	}
-
-	void display()
-	{
-		if (not display_active)
-			return;
-		double now = wtime();
-		double delta = now - last_display;
-		if (delta >= min_delay) {
-			u64 N = 1ull << pb_n;
-			double dprate = (n_dp - n_dp_prev) / delta;
-			char hdprate[8];
-			human_format(dprate, hdprate);
-			double frate = (n_points - n_points_prev) / delta;
-			char hfrate[8];
-			human_format(frate, hfrate);
-			double nrate = (bytes_sent - bytes_sent_prev) / delta;
-			char hnrate[8];
-			human_format(nrate, hnrate);
-			printf("\r#i = %" PRId64 " (%.02f*n/w). %s f/sec.  %s DP/sec.  #DP (this i / total) %.02f*w / %.02f*n.  #coll (this i / total) %.02f*w / %0.2f*n.  Total #f=2^%.02f.  S/R wait %.02fs / %.02fs.  S->R %sB/s",
-			 		n_flush, (double) n_flush * w / N, 
-			 		hfrate, hdprate, 
-			 		(double) n_dp_i / w, (double) n_dp / N,
-			 		(double) n_collisions_i / w, (double) n_collisions / N,
-			 		std::log2(n_points),
-			 		send_wait, recv_wait,
-			 		hnrate);
-			fflush(stdout);
-			n_dp_prev = n_dp;
-			n_points_prev = n_points;
-			bytes_sent_prev = bytes_sent;
-			last_display = wtime();
-		}
-	}
-};  
-
 
 class MpiParameters : public Parameters {
 public:
@@ -216,8 +159,10 @@ public:
 class SendBuffers {
 public:
 	using Buffer = vector<u64>;
+	double waiting_time;
+	u64 bytes_sent;
 
-protected:
+private:
 	MPI_Comm inter_comm;
 	size_t capacity;
 	int tag;
@@ -228,25 +173,25 @@ protected:
 	vector<MPI_Request> request;   /* for the OUTGOING buffers */
 
 	/* initiate transmission of the i-th OUTGOING buffer */
-	void start_send(int i, MpiCounters &ctr)
+	void start_send(int i)
 	{
 		if (outgoing[i].size() == 0)  // do NOT send empty buffers. These are interpreted as "I am done"
 			return;
 		MPI_Isend(outgoing[i].data(), outgoing[i].size(), MPI_UINT64_T, i, tag, inter_comm, &request[i]);
-		ctr.bytes_sent += outgoing[i].size() * sizeof(u64);
+		bytes_sent += outgoing[i].size() * sizeof(u64);
 	}
 
-	void switch_when_full(int rank, MpiCounters &ctr)
+	void switch_when_full(int rank)
 	{
 		if (ready[rank].size() == capacity) {
 			// ready buffer is full: finish sending the outgoing buffer
 			double start = wtime();
 			MPI_Wait(&request[rank], MPI_STATUS_IGNORE);
-			ctr.send_wait += wtime() - start;
+			waiting_time += wtime() - start;
 			outgoing[rank].clear();
 			// swap and start sending
 			std::swap(ready[rank], outgoing[rank]);
-			start_send(rank, ctr);
+			start_send(rank);
 		}
 	}
 
@@ -264,29 +209,29 @@ public:
 	}
 
 	/* add a new item to the send buffer. Send if necessary */
-	void push(u64 x, int rank, MpiCounters &ctr)
+	void push(u64 x, int rank)
 	{
-		switch_when_full(rank, ctr);
+		switch_when_full(rank);
 		ready[rank].push_back(x);
 	}
 
-	void push2(u64 x, u64 y, int rank, MpiCounters &ctr)
+	void push2(u64 x, u64 y, int rank)
 	{
-		switch_when_full(rank, ctr);
+		switch_when_full(rank);
 		ready[rank].push_back(x);
 		ready[rank].push_back(y);
 	}
 
-	void push3(u64 x, u64 y, u64 z, int rank, MpiCounters &ctr)
+	void push3(u64 x, u64 y, u64 z, int rank)
 	{
-		switch_when_full(rank, ctr);
+		switch_when_full(rank);
 		ready[rank].push_back(x);
 		ready[rank].push_back(y);
 		ready[rank].push_back(z);
 	}
 
 	/* send and empty all buffers, even if they are incomplete */
-	void flush(MpiCounters &ctr)
+	void flush()
 	{
 		// finish sending all the outgoing buffers
 		double start = wtime();
@@ -295,21 +240,24 @@ public:
 		// send all the (incomplete) ready buffers
 		for (int i = 0; i < n; i++) {
 			std::swap(ready[i], outgoing[i]);
-			start_send(i, ctr);
+			start_send(i);
 		}
 		MPI_Waitall(n, request.data(), MPI_STATUSES_IGNORE);
 
 		// finally tell all receivers that we are done
 		for (int i = 0; i < n; i++)
 			MPI_Send(NULL, 0, MPI_UINT64_T, i, tag, inter_comm);
-		ctr.send_wait += wtime() - start;
+		waiting_time += wtime() - start;
 	}
 };
 
 
 /* Manage reception buffers for a collection of sender processes, with double-buffering */
 class RecvBuffers {
+public:
 	using Buffer = vector<u64>;
+	double waiting_time;
+	u64 bytes_sent;
 
 private:
 	MPI_Comm inter_comm;
@@ -320,8 +268,6 @@ private:
 	vector<Buffer> ready;                 // buffers containing points ready to be processed 
 	vector<Buffer> incoming;              // buffers waiting for incoming data
 	vector<MPI_Request> request;
-	int n_active_senders;                      // # active senders
-
 
 	/* initiate reception for a specific sender */
 	void listen_sender(int i)
@@ -331,6 +277,7 @@ private:
 	}
 
 public:
+	int n_active_senders;                      // # active senders
 	RecvBuffers(MPI_Comm inter_comm, int tag, size_t capacity) : inter_comm(inter_comm), capacity(capacity), tag(tag)
 	{
 		MPI_Comm_remote_size(inter_comm, &n);
@@ -361,7 +308,7 @@ public:
 	 * Only call this when complete() returned false (otherwise, this will wait forever)
 	 * This may destroy the content of all "ready" buffers, so that they have to be processed first
 	 */
-	vector<Buffer *> wait(MpiCounters &ctr)
+	vector<Buffer *> wait()
 	{
 		assert(n_active_senders > 0);
 		vector<Buffer *> result;
@@ -370,7 +317,7 @@ public:
 		vector<MPI_Status> statuses(n);
 		double start = wtime();
 		MPI_Waitsome(n, request.data(), &n_done, rank_done.data(), statuses.data());
-		ctr.recv_wait += wtime() - start;
+		waiting_time += wtime() - start;
 		assert(n_done != MPI_UNDEFINED);
 
 		for (int i = 0; i < n_done; i++) {

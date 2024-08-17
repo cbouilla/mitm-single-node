@@ -22,7 +22,7 @@ inline bool is_distinguished_point(u64 x, u64 threshold)
 
 /* try to iterate for 1s. Return #it/s */
 template<typename ConcreteProblem>
-static double sequential_benchmark(const ConcreteProblem& Pb)
+static double sequential_benchmark(ConcreteProblem& Pb)
 {
     u64 i = 42;
     u64 threshold = (1ull << (Pb.n - 1));
@@ -52,7 +52,7 @@ static double sequential_benchmark(const ConcreteProblem& Pb)
  * Then return `true`. If the iterations limit is passed, returns `false`.
  */
 template<typename ConcreteProblem>
-optional<pair<u64,u64>> generate_dist_point(const ConcreteProblem& Pb, u64 i, const Parameters &params, u64 x)
+optional<pair<u64,u64>> generate_dist_point(ConcreteProblem& Pb, u64 i, const Parameters &params, u64 x)
 {
     /* The probability, p, of NOT finding a distinguished point after the loop is
      * Let: theta := 2^-d
@@ -75,7 +75,7 @@ optional<pair<u64,u64>> generate_dist_point(const ConcreteProblem& Pb, u64 i, co
  * add a drawing to illustrate this.
  */
 template<typename ConcreteProblem>
-optional<tuple<u64,u64,u64>> walk(const ConcreteProblem& Pb, u64 i, u64 x0, u64 len0, u64 x1, u64 len1)
+optional<tuple<u64,u64,u64>> walk(ConcreteProblem& Pb, u64 i, u64 x0, u64 len0, u64 x1, u64 len1)
 {
   /****************************************************************************+
    *            walk the longest sequence until they are equal                 |
@@ -117,9 +117,8 @@ optional<tuple<u64,u64,u64>> walk(const ConcreteProblem& Pb, u64 i, u64 x0, u64 
 
 
 template<class ConcreteProblem, class Counters>
-optional<tuple<u64,u64,u64>> process_distinguished_point(
-    const ConcreteProblem &Pb, Counters &ctr, PcsDict &dict, 
-    u64 i, u64 start0, u64 end, u64 len0)
+optional<tuple<u64,u64,u64>> process_distinguished_point(ConcreteProblem &Pb, Counters &ctr, PcsDict &dict, 
+                                                        u64 i, u64 start0, u64 end, u64 len0)
 {
     auto probe = dict.pop_insert(end, start0, len0);
     if (not probe) {
