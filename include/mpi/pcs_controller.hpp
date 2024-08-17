@@ -116,8 +116,8 @@ tuple<u64,u64,u64> controller(const ConcreteProblem& Pb, const MpiParameters &pa
 		u64 data_round = ndp * 3 * sizeof(u64) / params.n_nodes;
 		human_format(data_round / delta, hnrate);
 		
-		printf("Round %" PRId64 " (%.2f*n/w).  #DP (round / total) %.2f*w / %.2f*n.  #coll (round / total) %.2f*w / %.2f*n.  Total #f=2^%.3f.  node-->%sB/s \n",
-			nround, (double) nround * w / N, (double) ndp / w, (double) ndp_total / N, (double) ncoll / w, (double) ncoll_total / N, std::log2(nf_total), hnrate);
+		printf("Round %" PRId64 " (%.2f*n/w).  %.1fs.  #DP (round / total) %.2f*w / %.2f*n.  #coll (round / total) %.2f*w / %.2f*n.  Total #f=2^%.3f.  node-->%sB/s \n",
+			nround, (double) nround * w / N, delta, (double) ndp / w, (double) ndp_total / N, (double) ncoll / w, (double) ncoll_total / N, std::log2(nf_total), hnrate);
 		printf("Senders.    Wait == %.2fs / %.2fs (%.1f%%) / %.2fs.  #f == 2^%.2f (%.0f%%).  f/s == %s\n",
                 dmin[0], davg[0], 100. * davg[0] / delta, dmax[0], std::log2(nf_send), 100. * nf_send / nf_round, hsrate);
 		printf("Receivers.  Wait == %.2fs / %.2fs (%.1f%%) / %.2fs.  #f == 2^%.2f (%.0f%%).  f/s == %s\n",
