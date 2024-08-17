@@ -10,7 +10,7 @@
 
 
 int n = 20;         // default problem size (easy)
-u64 seed = 0x1337;  // default fixed seed
+u64 seed = 0;       // default random seed
 
 
 
@@ -56,6 +56,8 @@ int main(int argc, char* argv[])
     process_command_line_options(argc, argv, params);
     params.setup(MPI_COMM_WORLD);
 
+    if (seed == 0)
+        seed = mitm::PRNG::read_urandom();
     mitm::PRNG prng(seed);
     if (params.role == mitm::CONTROLLER)
         printf("double-speck64 demo! seed=%016" PRIx64 ", n=%d\n", prng.seed, n); 

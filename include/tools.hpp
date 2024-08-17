@@ -40,18 +40,6 @@ class PRNG {
 private:
     u64 s11, s12, s21, s22, s31, s32 = 1;   /* internal state */
 
-	u64 read_urandom()
-	{
-	  union {
-	    u64 value;
-	    char cs[sizeof(u64)];
-	  } u;
-	  std::ifstream rfin("/dev/urandom");
-	  rfin.read(u.cs, sizeof(u.cs));
-	  rfin.close();
-	  return u.value;
-	}
-
     void setseed()
     {
         s11 = this->seed;
@@ -66,6 +54,18 @@ private:
 
 public:
     const u64 seed, seq;
+
+    static u64 read_urandom()
+    {
+        union {
+            u64 value;
+            char cs[sizeof(u64)];
+        } u;
+        std::ifstream rfin("/dev/urandom");
+        rfin.read(u.cs, sizeof(u.cs));
+        rfin.close();
+        return u.value;
+    }
 
     u64 rand()
     {
