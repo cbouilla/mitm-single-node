@@ -1,14 +1,13 @@
 #ifndef MITM_MPI_NAIVE_ALLTOALL
 #define MITM_MPI_NAIVE_ALLTOALL
 
-#include <optional>
-#include <unordered_map>
 #include <vector>
 #include <cassert>
 #include <cmath>
 
-#include "common.hpp"
-#include "AbstractCollisionProblem.hpp"
+#include "problem.hpp"
+#include "mpi/common.hpp"
+#include "dict.hpp"
 
 #include <mpi.h>
 
@@ -19,7 +18,7 @@
 namespace mitm {
 
 template <bool EXPENSIVE_F, class AbstractProblem>
-std::vector<std::pair<u64, u64>> naive_mpi_claw_search_alltoall(AbstractProblem &Pb, MpiParameters &params)
+vector<pair<u64, u64>> naive_mpi_claw_search_alltoall(AbstractProblem &Pb, MpiParameters &params)
 {
 	static_assert(std::is_base_of<AbstractClawProblem, AbstractProblem>::value,
 		"problem not derived from mitm::AbstractClawProblem");
@@ -31,7 +30,7 @@ std::vector<std::pair<u64, u64>> naive_mpi_claw_search_alltoall(AbstractProblem 
 	double start = wtime();
 	u64 N = 1ull << Pb.n;
 	CompactDict dict((1.25 * N) / size);
-	std::vector<std::pair<u64, u64>> result;
+	vector<pair<u64, u64>> result;
 
     // expected #values received in each round by each process
 	const u64 alpha = params.buffer_capacity;
@@ -46,11 +45,11 @@ std::vector<std::pair<u64, u64>> naive_mpi_claw_search_alltoall(AbstractProblem 
 
 	u64 probe_false_pos = 0;
 	u64 keys[3 * Pb.n];
-	std::vector<u64> sendbuffer(size * limit);
-	std::vector<u64> recvbuffer(size * limit);
-	std::vector<int> sendcounts(size);
-	std::vector<int> recvcounts(size);
-	std::vector<int> displs(size);
+	vector<u64> sendbuffer(size * limit);
+	vector<u64> recvbuffer(size * limit);
+	vector<int> sendcounts(size);
+	vector<int> recvcounts(size);
+	vector<int> displs(size);
 	for (int i = 0; i < size; i++)
 		displs[i] = limit * i;
 
@@ -135,7 +134,7 @@ std::vector<std::pair<u64, u64>> naive_mpi_claw_search_alltoall(AbstractProblem 
 							}
 							if (Pb.is_good_pair(y, x)) {
 								// printf("\nfound golden collision !!!\n");
-								result.push_back(std::pair(y, x));
+								result.push_back(pair(y, x));
 							}
 						}
 					}

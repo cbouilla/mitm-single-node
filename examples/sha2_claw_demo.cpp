@@ -3,7 +3,7 @@
 #include <err.h>
 
 #include "mitm.hpp"
-#include "engine_omp.hpp"
+#include "openmp/pcs_engine.hpp"
 
 /* We would like to call C function defined in `sha256.c` */
 extern "C"{

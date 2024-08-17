@@ -5,7 +5,7 @@
 #include <mpi.h>
 
 #include "mitm.hpp"
-#include "engine_mpi.hpp"
+#include "mpi/pcs_engine.hpp"
 #include "double_speck64_problem.hpp"
 
 

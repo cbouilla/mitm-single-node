@@ -2,10 +2,7 @@
 #define MITM_ENGINE_OMP
 
 #include <cmath>
-#include <cassert>
 #include <cstdio>
-#include <optional>
-#include <tuple>
 
 #include <omp.h>
 
@@ -95,7 +92,7 @@ static double benchmark(const ConcreteProblem& Pb)
 
 /* The sequence of mixing function is deterministic given `prng` */
 template<typename ConcreteProblem>
-static std::tuple<u64,u64,u64> run(const ConcreteProblem& Pb, Parameters &params, PRNG &prng)
+static tuple<u64,u64,u64> run(const ConcreteProblem& Pb, Parameters &params, PRNG &prng)
 {
     Counters &ctr = Pb.ctr;
 
@@ -111,7 +108,7 @@ static std::tuple<u64,u64,u64> run(const ConcreteProblem& Pb, Parameters &params
     int nthreads = omp_get_max_threads();
     printf("%s it/s (one thread).  %s it/s (%d threads)\n", hitps_seq, hitps, nthreads);
 
-    Dict<std::pair<u64, u64>> dict(params.nbytes_memory);
+    PcsDict dict(params.nbytes_memory);
     params.finalize(Pb.n, dict.n_slots);
     ctr.ready(Pb.n, dict.n_slots);
     double log2_w = std::log2(dict.n_slots);
@@ -126,7 +123,7 @@ static std::tuple<u64,u64,u64> run(const ConcreteProblem& Pb, Parameters &params
         params.beta, params.points_per_version, std::log2(params.points_per_version));
 
     u64 i = 0;                 /* index of families of mixing functions */
-    std::optional<std::tuple<u64,u64,u64>> solution;    /* (i, x0, x1)  */
+    optional<tuple<u64,u64,u64>> solution;    /* (i, x0, x1)  */
     u64 n_dist_points = 0;     /* #DP found with this i */
     u64 root_seed = prng.rand();
 

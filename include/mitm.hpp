@@ -6,13 +6,10 @@
 #include <cassert>
 
 #include "common.hpp"
-#include "AbstractCollisionProblem.hpp"
+#include "problem.hpp"
 #include "engine_common.hpp"
 
 namespace mitm {
-
-//=============================================================================+
-//------------------- DISTINGUISHED POINTS ENGINES ----------------------------|
 
 template <typename AbstractProblem, typename Counters>
 class ConcreteCollisionProblem {
@@ -49,7 +46,7 @@ public:
 
 
 template <typename Engine, typename AbstractProblem>
-std::pair<u64, u64> collision_search(const AbstractProblem& Pb, Parameters &params, PRNG &prng)
+pair<u64, u64> collision_search(const AbstractProblem& Pb, Parameters &params, PRNG &prng)
 {
     typename Engine::Counters ctr(params.verbose);
     ConcreteCollisionProblem wrapper(Pb, ctr);
@@ -62,7 +59,7 @@ std::pair<u64, u64> collision_search(const AbstractProblem& Pb, Parameters &para
     assert(Pb.is_good_pair(a, b));
     
     ctr.done();
-    return std::pair(a, b);
+    return pair(a, b);
 }
 
 /****************************************************************************************/
@@ -104,13 +101,13 @@ public:
     }
 
 
-    std::pair<u64, u64> swap(u64 i, u64 a, u64 b) const
+    pair<u64, u64> swap(u64 i, u64 a, u64 b) const
     {
         u64 x0 = choose(i, a) ? a : b;
         u64 x1 = choose(i, b) ? a : b;
         assert(choose(i, x0));
         assert(not choose(i, x1));
-        return std::pair(x0, x1);    
+        return pair(x0, x1);    
     }
 
     bool mix_good_pair(u64 i, u64 a, u64 b) const 
@@ -123,7 +120,7 @@ public:
 };
 
 template <typename Engine, class Parameters, typename Problem>
-std::pair<u64, u64> claw_search(const Problem& Pb, Parameters &params, PRNG &prng)
+pair<u64, u64> claw_search(const Problem& Pb, Parameters &params, PRNG &prng)
 {
     typename Engine::Counters ctr(params.verbose);
     ClawWrapper wrapper(Pb, ctr);
@@ -135,7 +132,7 @@ std::pair<u64, u64> claw_search(const Problem& Pb, Parameters &params, PRNG &prn
     assert(Pb.is_good_pair(x0, x1));
 
     ctr.done();
-    return std::pair(x0, x1);
+    return pair(x0, x1);
 }
 
 
@@ -143,7 +140,7 @@ std::pair<u64, u64> claw_search(const Problem& Pb, Parameters &params, PRNG &prn
 //----------------------------- NAIVE ENGINES ---------------------------------|
 
 template <typename Problem>
-std::optional<std::pair<u64, u64>> naive_collision_search(Problem &Pb)
+optional<pair<u64, u64>> naive_collision_search(Problem &Pb)
 {
   u64 n_items = 1ull << Pb.n;
 
@@ -161,7 +158,7 @@ std::optional<std::pair<u64, u64>> naive_collision_search(Problem &Pb)
     for (auto it = range.first; it != range.second; ++it) {
       u64 x = it->second;
       if (x != y && Pb.is_good_pair(z, x, y))
-        return std::make_optional(std::pair(x, y));
+        return std::make_optional(pair(x, y));
     }
   }
   return std::nullopt;
@@ -169,7 +166,7 @@ std::optional<std::pair<u64, u64>> naive_collision_search(Problem &Pb)
 
 
 template <typename Problem>
-std::optional<std::pair<u64, u64>> naive_claw_search(Problem &Pb)
+optional<pair<u64, u64>> naive_claw_search(Problem &Pb)
 {
   u64 n_items = 1ull << Pb.n;
 
@@ -187,7 +184,7 @@ std::optional<std::pair<u64, u64>> naive_claw_search(Problem &Pb)
     for (auto it = range.first; it != range.second; ++it) {
       u64 x = it->second;
       if (Pb.is_good_pair(z, x, y))
-        return std::make_optional(std::pair(x, y));
+        return std::make_optional(pair(x, y));
     }
   }
   return std::nullopt;

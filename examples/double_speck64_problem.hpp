@@ -1,7 +1,7 @@
 #ifndef MITM_SPECK64
 #define MITM_SPECK64
 
-#include "AbstractCollisionProblem.hpp"
+#include "problem.hpp"
 
 namespace mitm {
 

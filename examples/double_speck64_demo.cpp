@@ -3,7 +3,7 @@
 #include <err.h>
 
 #include "mitm.hpp"
-#include "engine_omp.hpp"
+#include "openmp/pcs_engine.hpp"
 #include "double_speck64_problem.hpp"
 
 int n = 20;         // default problem size (easy)

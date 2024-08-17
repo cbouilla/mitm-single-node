@@ -1,13 +1,10 @@
 #ifndef MITM
 #define MITM
 
-#include <optional>
 #include <unordered_map>
-#include <vector>
-#include <cassert>
 
-#include "common.hpp"
-#include "AbstractCollisionProblem.hpp"
+#include "tools.hpp"
+#include "problem.hpp"
 
 /*
  * Sequential very naive MITM.
@@ -16,7 +13,7 @@
 namespace mitm {
 
 template <class AbstractProblem>
-std::optional<std::pair<u64, u64>> naive_collision_search(AbstractProblem &Pb)
+optional<pair<u64, u64>> naive_collision_search(AbstractProblem &Pb)
 {
     static_assert(std::is_base_of<AbstractCollisionProblem, AbstractProblem>::value,
             "problem not derived from mitm::AbstractCollisionProblem");
@@ -35,7 +32,7 @@ std::optional<std::pair<u64, u64>> naive_collision_search(AbstractProblem &Pb)
         for (auto it = range.first; it != range.second; ++it) {
             u64 x = it->second;
             if (x != y && Pb.is_good_pair(x, y))
-                return std::make_optional(std::pair(x, y));
+                return std::make_optional(pair(x, y));
         }
     }
     return std::nullopt;
@@ -43,7 +40,7 @@ std::optional<std::pair<u64, u64>> naive_collision_search(AbstractProblem &Pb)
 
 
 template <class AbstractProblem>
-std::vector<std::pair<u64, u64>> naive_claw_search(AbstractProblem &Pb)
+vector<pair<u64, u64>> naive_claw_search(AbstractProblem &Pb)
 {
     static_assert(std::is_base_of<AbstractClawProblem, AbstractProblem>::value,
         "problem not derived from mitm::AbstractClawProblem");
@@ -59,14 +56,14 @@ std::vector<std::pair<u64, u64>> naive_claw_search(AbstractProblem &Pb)
 
     double mid = wtime();
     printf("Fill: %.1fs\n", mid - start);
-    std::vector<std::pair<u64, u64>> result;
+    vector<pair<u64, u64>> result;
     for (u64 y = 0; y < N; y++) {
         u64 z = Pb.g(y);
         auto range = A.equal_range(z);
         for (auto it = range.first; it != range.second; ++it) {
             u64 x = it->second;
             if (Pb.is_good_pair(x, y))
-                result.push_back(std::pair(x, y));
+                result.push_back(pair(x, y));
         }
     }
     printf("Probe: %.1fs\n", wtime() - mid);

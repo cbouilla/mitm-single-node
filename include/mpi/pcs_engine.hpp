@@ -6,12 +6,11 @@
 
 #include "common.hpp"
 #include "engine_common.hpp"
-#include "engine_omp.hpp"
 
-#include "mpi_common.hpp"
-#include "mpi_sender.hpp"
-#include "mpi_receiver.hpp"
-#include "mpi_controller.hpp"
+#include "mpi/common.hpp"
+#include "mpi/pcs_sender.hpp"
+#include "mpi/pcs_receiver.hpp"
+#include "mpi/pcs_controller.hpp"
 
 namespace mitm {
 
@@ -35,9 +34,9 @@ static double benchmark(const ConcreteProblem& Pb, MpiParameters &params)
 }
 
 template<typename ConcreteProblem>
-static std::tuple<u64,u64,u64> run(const ConcreteProblem& Pb, MpiParameters &params, PRNG &prng)
+static tuple<u64,u64,u64> run(const ConcreteProblem& Pb, MpiParameters &params, PRNG &prng)
 {
-    u64 nslots = Dict<std::pair<u64, u64>>::get_nslots(params.nbytes_memory / params.recv_per_node) * params.n_recv;
+    u64 nslots = PcsDict::get_nslots(params.nbytes_memory / params.recv_per_node) * params.n_recv;
     params.finalize(Pb.n, nslots);
   	assert(params.nslots == nslots);
     double log2_w = std::log2(nslots);
@@ -78,7 +77,7 @@ static std::tuple<u64,u64,u64> run(const ConcreteProblem& Pb, MpiParameters &par
 	MPI_Bcast(&i, 1, MPI_UINT64_T, 0, params.world_comm);
 	MPI_Bcast(&x0, 1, MPI_UINT64_T, 0, params.world_comm);
 	MPI_Bcast(&x1, 1, MPI_UINT64_T, 0, params.world_comm);
-	return std::tuple(i, x0, x1);
+	return tuple(i, x0, x1);
 }
 };
 

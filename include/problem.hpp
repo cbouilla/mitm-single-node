@@ -1,5 +1,5 @@
-#ifndef MITM_ABSTRACT_COLLISION
-#define MITM_ABSTRACT_COLLISION
+#ifndef MITM_PROBLEM
+#define MITM_PROBLEM
 
 #include "common.hpp"
 

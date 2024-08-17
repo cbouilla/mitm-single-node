@@ -1,147 +1,235 @@
 #ifndef MITM_COMMON
 #define MITM_COMMON
 
-#include <cinttypes>
-#include <chrono>
-#include <fstream>
-#include <cstdio>
-#include <string>
+// base classes for PCS and naive algorithm
 
-typedef uint8_t  u8 ;
-typedef uint16_t u16;
-typedef uint32_t u32;
-typedef uint64_t u64;
+#include "tools.hpp"
+
+#include <string>
+#include <cmath>
 
 namespace mitm {
 
-
-static /* since it's defined in a header file */
-double wtime() /* with inline it doesn't violate one definition rule */
-{
-
-  auto clock = std::chrono::high_resolution_clock::now();
-  auto nanoseconds = std::chrono::duration_cast<std::chrono::nanoseconds>(clock.time_since_epoch()).count();
-  double seconds = nanoseconds / (static_cast<double>(1000000000.0));
-  return seconds;
-}
-
-/* deterministic RNG based on TRIVIUM */
-class PRNG {
-private:
-    u64 s11, s12, s21, s22, s31, s32 = 1;   /* internal state */
-
-	u64 read_urandom()
-	{
-	  union {
-	    u64 value;
-	    char cs[sizeof(u64)];
-	  } u;
-	  std::ifstream rfin("/dev/urandom");
-	  rfin.read(u.cs, sizeof(u.cs));
-	  rfin.close();
-	  return u.value;
-	}
-
-    void setseed()
-    {
-        s11 = this->seed;
-        s12 = 0;
-        s21 = this->seq;
-        s22 = 0;
-        s31 = 0;
-        s32 = 0x700000000000;
-        for (int i = 0; i < 18; i++)  /* blank rounds */
-            rand();
-    }
-
+class Parameters {
 public:
-    const u64 seed, seq;
+    u64 nbytes_memory = 0;        /* how much RAM to use on each machine */
+    double difficulty = -1;       /* -log2(proportion of distinguished points). -1 == auto-choose */
+    double beta = 10;             /* use function variant for beta*w distinguished points */
+    int n_nodes = 1;              /* #hosts (with shared RAM) */
+    bool verbose = 1;             /* print progress information */
 
-    u64 rand()
+    u64 threshold;                /* any integer less than this is a DP */
+    u64 dp_max_it;                /* how many iterations to find a DP */
+    u64 points_per_version;       /* #DP per version of the function */
+    u64 nslots;                   /* entries in the dict */
+
+    static double optimal_theta(double log2_w, int n)
     {
-        u64 s66 = (s12 << 62) ^ (s11 >> 2);
-        u64 s93 = (s12 << 35) ^ (s11 >> 29);
-        u64 s162 = (s22 << 59) ^ (s21 >> 5);
-        u64 s177 = (s22 << 44) ^ (s21 >> 20);
-        u64 s243 = (s32 << 62) ^ (s31 >> 2);
-        u64 s288 = (s32 << 17) ^ (s31 >> 47);
-        u64 s91 = (s12 << 37) ^ (s11 >> 27);
-        u64 s92 = (s12 << 36) ^ (s11 >> 28);
-        u64 s171 = (s22 << 50) ^ (s21 >> 14);
-        u64 s175 = (s22 << 46) ^ (s21 >> 18);
-        u64 s176 = (s22 << 45) ^ (s21 >> 19);
-        u64 s264 = (s32 << 41) ^ (s31 >> 23);
-        u64 s286 = (s32 << 19) ^ (s31 >> 45);
-        u64 s287 = (s32 << 18) ^ (s31 >> 46);
-        u64 s69 = (s12 << 59) ^ (s11 >> 5);
-        u64 t1 = s66 ^ s93; /* update */
-        u64 t2 = s162 ^ s177;
-        u64 t3 = s243 ^ s288;
-        u64 z = t1 ^ t2 ^ t3;
-        t1 ^= (s91 & s92) ^ s171;
-        t2 ^= (s175 & s176) ^ s264;
-        t3 ^= (s286 & s287) ^ s69;
-        s12 = s11;    /* rotate */
-        s11 = t3;
-        s22 = s21;
-        s21 = t1;
-        s32 = s31;
-        s31 = t2;
-        return z;
+        return std::log2(2.25) + 0.5 * (log2_w - n);
     }
 
-    PRNG(u64 seed, u64 seq) : seed(seed), seq(seq)  { setseed(); }
-    PRNG(u64 seed) : seed(seed), seq(0) { setseed(); }
-    PRNG() : seed(read_urandom()), seq(0) { setseed(); }
+    void finalize(int n, u64 _nslots)
+    {
+        if (nbytes_memory == 0)
+            errx(1, "the size of the dictionnary must be specified");
+
+        nslots = _nslots;
+        double log2_w = std::log2(nslots * n_nodes);
+        double theta = optimal_theta(log2_w, n);
+        /* auto-choose the difficulty if not set */
+        if (difficulty < 0) {
+            difficulty = -theta;
+            if (difficulty < 0)
+                difficulty = 0;
+            if (verbose)
+                printf("AUTO-TUNING: setting difficulty %.2f\n", difficulty);
+        } else {
+            if (verbose)
+                printf("NOTICE: using difficulty=%.2f vs ``optimal''=%.2f\n", difficulty, theta);
+        }
+        threshold = std::pow(2., n - difficulty);
+        dp_max_it = 20 * std::pow(2., difficulty);
+        points_per_version = beta * nslots;
+
+        /* display warnings if problematic choices were made */
+        if (verbose && difficulty <= 0) {
+            printf("***** WARNING *****\n***** WARNING *****\n***** WARNING *****\n");
+            printf("---> zero difficulty (use the naive technique!)\n");
+            printf("***** WARNING *****\n***** WARNING *****\n***** WARNING *****\n");            
+        }
+        if (verbose && n - difficulty < log2_w) {
+            printf("***** WARNING *****\n***** WARNING *****\n***** WARNING *****\n");
+            printf("---> Too much memory (2^%.2f slots) but only 2^%.2f possible distinguished points\n",
+                log2_w, n - difficulty);
+            printf("***** WARNING *****\n***** WARNING *****\n***** WARNING *****\n");
+        }
+    }
 };
 
-/* represent n in 4 bytes */
-void human_format(u64 n, char *target)
-{
-    if (n < 1000) {
-        sprintf(target, "%" PRId64, n);
-        return;
-    }
-    if (n < 1000000) {
-        sprintf(target, "%.1fK", n / 1e3);
-        return;
-    }
-    if (n < 1000000000) {
-        sprintf(target, "%.1fM", n / 1e6);
-        return;
-    }
-    if (n < 1000000000000ll) {
-        sprintf(target, "%.1fG", n / 1e9);
-        return;
-    }
-    if (n < 1000000000000000ll) {
-        sprintf(target, "%.1fT", n / 1e12);
-        return;
-    }
-}
 
-/* represent n in 4 bytes */
-u64 human_parse(const std::string &_h)
-{
-    std::string h(_h);
-    int n = h.length();
-    if (h[n - 1] == 'T') {
-        h.pop_back();
-        return 1000000000000ll * (u64) std::stoi(h);
-    }
-    if (h[n - 1] == 'G') {
-        h.pop_back();
-        return 1000000000ll * (u64) std::stoi(h);
-    }
-    if (h[n - 1] == 'M') {
-        h.pop_back();
-        return 1000000ll * (u64) std::stoi(h);
-    }
-    if (h[n - 1] == 'K') {
-        h.pop_back();
-        return 1000ll * (u64) std::stoi(h);
-    }
-    return std::stoull(h);
-}
+/* Non-essential counters but helpful to have, e.g. n_collisions/sec */
+class BaseCounters {
+public:
+ 	const u64 interval = 1LL << 16; // for printing only
+ 	const double min_delay = 1;   // for printing only
+ 	
+ 	/* stats for the full computation */
+	u64 n_flush = 0;                // #times dict were flushed
+	u64 n_points = 0;               // #function evaluation in total
+	u64 n_points_trails = 0;        // #function evaluation to find DP
+	u64 n_dp = 0;                   // since beginning
+	u64 n_collisions = 0;           // since beginning
+	u64 bad_dp = 0;
+	u64 bad_probe = 0;
+	u64 bad_walk = 0;
+	u64 bad_collision = 0;
+	double start_time;
+	double end_time;
+
+	/* waiting times for MPI implementation */
+	double send_wait = 0.;          // time sender processes wait for the receiver to be ready
+	double recv_wait = 0.;          // time the receivers wait for data from the senders
+	u64 bytes_sent = 0;
+
+	/* stats for this i */
+	double last_update;             // timestamp of the last flush
+	u64 n_dp_i = 0;                 // since last flush
+	u64 n_collisions_i = 0;         // since last flush
+
+	/* display management */
+	bool display_active = 1;
+ 	u64 w;                          // #slots
+ 	int pb_n;
+	u64 n_dp_prev = 0;              // #DP found since last display
+	u64 n_points_prev = 0;          // #function eval since last display
+	u64 bytes_sent_prev = 0;
+	double last_display;
+	
+	BaseCounters() {}
+	BaseCounters(bool display_active) : display_active(display_active) {}
+
+	// only useful for MPI engine
+	void reset()
+	{
+		n_points = 0;
+		n_dp = 0;
+		n_collisions = 0;
+		send_wait = 0;
+		recv_wait = 0;
+		bytes_sent = 0;
+	}
+
+	void ready(int n, u64 _w)
+	{
+		pb_n = n;
+		w = _w;
+		double now = wtime();
+		start_time = now;
+		start_time = now;
+		last_display = now;
+		last_update = now;
+	}
+
+	void dp_failure()
+	{ 
+		bad_dp += 1; 
+	}
+	
+	void probe_failure()
+	{
+		bad_probe += 1;
+	}
+	
+	void walk_failure() {
+		bad_walk += 1;
+	}
+	
+	void collision_failure() {
+		bad_collision += 1;
+	}
+
+	void display()
+	{
+		if (not display_active)
+			return;
+		double now = wtime();
+		double delta = now - last_display;
+		if (delta >= min_delay) {
+			u64 N = 1ull << pb_n;
+			double dprate = (n_dp - n_dp_prev) / delta;
+			char hdprate[8];
+			human_format(dprate, hdprate);
+			double frate = (n_points - n_points_prev) / delta;
+			char hfrate[8];
+			human_format(frate, hfrate);
+			double nrate = (bytes_sent - bytes_sent_prev) / delta;
+			char hnrate[8];
+			human_format(nrate, hnrate);
+			printf("\r#i = %" PRId64 " (%.02f*n/w). %s f/sec.  %s DP/sec.  #DP (this i / total) %.02f*w / %.02f*n.  #coll (this i / total) %.02f*w / %0.2f*n.  Total #f=2^%.02f.  S/R wait %.02fs / %.02fs.  S->R %sB/s",
+			 		n_flush, (double) n_flush * w / N, 
+			 		hfrate, hdprate, 
+			 		(double) n_dp_i / w, (double) n_dp / N,
+			 		(double) n_collisions_i / w, (double) n_collisions / N,
+			 		std::log2(n_points),
+			 		send_wait, recv_wait,
+			 		hnrate);
+			fflush(stdout);
+			n_dp_prev = n_dp;
+			n_points_prev = n_points;
+			bytes_sent_prev = bytes_sent;
+			last_display = wtime();
+		}
+	}
+
+	void function_evaluation()
+	{
+		n_points += 1;
+	}
+
+	// call this when a new DP is found
+	void found_distinguished_point(u64 chain_len)
+	{
+		n_dp += 1;
+		n_dp_i += 1;
+		n_points_trails += chain_len;
+		if ((n_dp % interval == interval - 1))
+			 display();
+	}
+
+	void found_collision() {
+		n_collisions += 1;
+		n_collisions_i += 1;
+	}
+
+	// call this when the dictionnary is flushed / a new mixing function tried
+	void flush_dict()
+	{
+		display();
+		n_flush += 1;
+		n_dp_i = 0;
+		n_collisions_i = 0;
+		last_update = wtime();
+		bad_dp = bad_probe = bad_walk = bad_collision = 0;
+	}
+
+	void done()
+	{
+		end_time = wtime();
+		if (not display_active)
+			return;
+		double total_time = end_time - start_time;
+		printf("\n----------------------------------------\n");
+		printf("Took %0.2f sec to find the golden inputs\n", total_time);
+		printf("Used %" PRId64 " ≈ 2^%0.2f mixing functions\n", 1+n_flush, std::log2(1+n_flush));
+		printf("Evaluated f() %" PRId64 " ≈ 2^%0.2f times\n", n_points, std::log2(n_points));
+		printf("  - %" PRId64 " ≈ 2^%0.2f times to find DPs (%.1f%%)\n", 
+			n_points_trails, std::log2(n_points_trails), 100.0 * n_points_trails / n_points);
+		u64 n_points_walk = n_points - n_points_trails;
+		printf("  - %" PRId64 " ≈ 2^%0.2f times in walks (%.1f%%)\n", 
+			n_points_walk, std::log2(n_points_walk), 100.0 * n_points_walk / n_points);
+		printf("Found %" PRId64 " ≈ 2^%0.2f distinguished points\n", n_dp, std::log2(n_dp));
+		printf("Found %" PRId64 " ≈ 2^%0.2f collisions\n", n_collisions, std::log2(n_collisions));
+  }
+};  
 }
 #endif

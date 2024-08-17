@@ -4,9 +4,7 @@
 
 #include <mpi.h>
 
-#include "mpi_common.hpp"
-#include "mpi_naive_alltoall.hpp"
-#include "mpi_naive_isend.hpp"
+#include "mpi/common.hpp"
 #include "double_speck64_problem.hpp"
 
 u64 seed = 1337;

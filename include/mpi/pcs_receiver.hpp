@@ -4,8 +4,8 @@
 #include <vector>
 #include <mpi.h>
 
-#include "mpi_common.hpp"
 #include "engine_common.hpp"
+#include "mpi/common.hpp"
 
 namespace mitm {
 
@@ -19,7 +19,7 @@ template<typename ConcreteProblem>
 void receiver(const ConcreteProblem& Pb, const MpiParameters &params)
 {
     MpiCounters &ctr = Pb.ctr; 
-    Dict<std::pair<u64, u64>> dict(params.nbytes_memory / params.recv_per_node);
+    PcsDict dict(params.nbytes_memory / params.recv_per_node);
 
     double last_ping = wtime();
 

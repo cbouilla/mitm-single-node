@@ -1,15 +1,13 @@
 #ifndef MITM_NAIVE_MPI_ISEND
 #define MITM_NAIVE_MPI_ISEND
 
-#include <optional>
-#include <unordered_map>
 #include <vector>
 #include <cassert>
 #include <cmath>
 
-#include "common.hpp"
-#include "AbstractCollisionProblem.hpp"
-#include "mpi_common.hpp"
+#include "problem.hpp"
+#include "mpi/common.hpp"
+#include "dict.hpp"
 
 #include <mpi.h>
 
@@ -20,7 +18,7 @@
 namespace mitm {
 
 template <bool EXPENSIVE_F, class AbstractProblem>
-std::vector<std::pair<u64, u64>> naive_mpi_claw_search_isend(const AbstractProblem &Pb, MpiParameters &params)
+vector<pair<u64, u64>> naive_mpi_claw_search_isend(const AbstractProblem &Pb, MpiParameters &params)
 {
     static_assert(std::is_base_of<AbstractClawProblem, AbstractProblem>::value,
         "problem not derived from mitm::AbstractClawProblem");
@@ -28,7 +26,7 @@ std::vector<std::pair<u64, u64>> naive_mpi_claw_search_isend(const AbstractProbl
     double start = wtime();
     MpiCounters ctr;
     u64 N = 1ull << Pb.n;
-    std::vector<std::pair<u64, u64>> result;
+    vector<pair<u64, u64>> result;
     CompactDict dict((params.role == RECEIVER) ? (1.5 * N) / params.n_recv : 0);
 
     if (params.verbose) {
@@ -103,7 +101,7 @@ std::vector<std::pair<u64, u64>> naive_mpi_claw_search_isend(const AbstractProbl
                                 ctr.found_collision();
                                 if (Pb.is_good_pair(y, x)) {
                                     // printf("\nfound golden collision !!!\n");
-                                    result.push_back(std::pair(y, x));
+                                    result.push_back(pair(y, x));
                                 }
                             }
                         }

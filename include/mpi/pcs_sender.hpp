@@ -7,7 +7,7 @@
 
 #include "common.hpp"
 #include "engine_common.hpp"
-#include "mpi_common.hpp"
+#include "mpi/common.hpp"
 
 namespace mitm {
 

@@ -4,10 +4,9 @@
 
 #include <mpi.h>
 
-#include "mpi_common.hpp"
-#include "mpi_naive_alltoall.hpp"
-#include "mpi_naive_isend.hpp"
 #include "double_speck64_problem.hpp"
+#include "mpi/naive_alltoall.hpp"
+#include "mpi/naive_isend.hpp"
 
 int n = 20;         // default problem size (easy)
 u64 seed = 0x1337;  // default fixed seed
@@ -70,7 +69,7 @@ int main(int argc, char* argv[])
         if (expensive) printf("expensive f/g\n");
         printf("==============================================================\n");
     }
-    std::vector<std::pair<u64, u64>> claws_alltoall, claws_isend;
+    vector<pair<u64, u64>> claws_alltoall, claws_isend;
     if (expensive)
         claws_alltoall = mitm::naive_mpi_claw_search_alltoall<true>(Pb, params);
     else
@@ -88,7 +87,7 @@ int main(int argc, char* argv[])
         if (expensive) printf("expensive f/g\n");
         printf("==============================================================\n");
     }
-    std::vector<std::pair<u64, u64>> claws_isend;
+    vector<pair<u64, u64>> claws_isend;
     if (expensive)
         claws_isend = mitm::naive_mpi_claw_search_isend<true>(Pb, params);
     else

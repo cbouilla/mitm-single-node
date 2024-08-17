@@ -4,62 +4,13 @@
 #include <mpi.h>
 #include <err.h>
 
-#include "common.hpp"
-#include "engine_common.hpp"
-
+#include "../common.hpp"
 
 namespace mitm {
 
 enum tags {TAG_INTERCOMM, TAG_POINTS, TAG_SENDER_CALLHOME, TAG_RECEIVER_CALLHOME, TAG_ASSIGNMENT, TAG_SOLUTION};
 enum role {CONTROLLER, SENDER, RECEIVER, UNDECIDED};
 enum assignment {KEEP_GOING, NEW_VERSION};
-
-class CompactDict {
-public:
-    const u64 n_slots;     /* How many slots a dictionary have */
-    struct __attribute__ ((packed)) entry { u32 k; u64 v; };
-
-    std::vector<struct entry> A;
-
-    CompactDict(u64 n_slots) : n_slots(n_slots)
-    {
-        A.resize(n_slots, {0xffffffff, 0});
-    }
-
-    void insert(u64 key, u64 value)
-    {
-        u64 h = (key ^ (key >> 32)) % n_slots;
-        for (;;) {
-            if (A[h].k == 0xffffffff)
-                break;
-            h += 1;
-            if (h == n_slots)
-                h = 0;
-        }
-        A[h].k = key % 0xfffffffb;
-        A[h].v = value;
-    }
-
-    // return possible values matching this key
-    // TODO: replace this by a custom iterator
-    int probe(u64 bigkey, u64 keys[])
-    {
-        u32 key = bigkey % 0xfffffffb;
-        u64 h = (bigkey ^ (bigkey >> 32)) % n_slots;
-        int nkeys = 0;
-        for (;;) {
-            if (A[h].k == 0xffffffff)
-                return nkeys;
-            if (A[h].k == key) {
-                keys[nkeys] = A[h].v;
-            	nkeys += 1;
-            }
-            h += 1;
-            if (h == n_slots)
-                h = 0;
-        }
-    }
-};
 
 class MpiCounters : public BaseCounters {
 public:
@@ -264,7 +215,7 @@ public:
 /* Manages send buffers for a collection of receiver processes, with double-buffering */
 class BaseSendBuffers {
 public:
-	using Buffer = std::vector<u64>;
+	using Buffer = vector<u64>;
 
 protected:
 	MPI_Comm inter_comm;
@@ -272,9 +223,9 @@ protected:
 	int tag;
 	int n;
 	
-	std::vector<Buffer> ready;
-	std::vector<Buffer> outgoing;
-	std::vector<MPI_Request> request;   /* for the OUTGOING buffers */
+	vector<Buffer> ready;
+	vector<Buffer> outgoing;
+	vector<MPI_Request> request;   /* for the OUTGOING buffers */
 
 	/* initiate transmission of the i-th OUTGOING buffer */
 	void start_send(int i, MpiCounters &ctr)
@@ -358,7 +309,7 @@ public:
 
 /* Manage reception buffers for a collection of sender processes, with double-buffering */
 class BaseRecvBuffers {
-	using Buffer = std::vector<u64>;
+	using Buffer = vector<u64>;
 
 private:
 	MPI_Comm inter_comm;
@@ -366,9 +317,9 @@ private:
 	int n;
 	int tag;
 
-	std::vector<Buffer> ready;                 // buffers containing points ready to be processed 
-	std::vector<Buffer> incoming;              // buffers waiting for incoming data
-	std::vector<MPI_Request> request;
+	vector<Buffer> ready;                 // buffers containing points ready to be processed 
+	vector<Buffer> incoming;              // buffers waiting for incoming data
+	vector<MPI_Request> request;
 	int n_active_senders;                      // # active senders
 
 
@@ -410,13 +361,13 @@ public:
 	 * Only call this when complete() returned false (otherwise, this will wait forever)
 	 * This may destroy the content of all "ready" buffers, so that they have to be processed first
 	 */
-	std::vector<Buffer *> wait(MpiCounters &ctr)
+	vector<Buffer *> wait(MpiCounters &ctr)
 	{
 		assert(n_active_senders > 0);
-		std::vector<Buffer *> result;
+		vector<Buffer *> result;
 		int n_done;
-		std::vector<int> rank_done(n);
-		std::vector<MPI_Status> statuses(n);
+		vector<int> rank_done(n);
+		vector<MPI_Status> statuses(n);
 		double start = wtime();
 		MPI_Waitsome(n, request.data(), &n_done, rank_done.data(), statuses.data());
 		ctr.recv_wait += wtime() - start;
@@ -439,21 +390,21 @@ public:
 	}
 };
 
-void BCast_result(MpiParameters &params, std::vector<std::pair<u64,u64>> &result)
+void BCast_result(MpiParameters &params, vector<pair<u64,u64>> &result)
 {
 	// deal with the results
-    std::vector<int> recvcounts(params.size);
+    vector<int> recvcounts(params.size);
     recvcounts[params.rank] = 2 * result.size();
     MPI_Allgather(MPI_IN_PLACE, 1, MPI_INT, recvcounts.data(), 1, MPI_INT, params.world_comm);
 
-    std::vector<int> displs(params.size);
+    vector<int> displs(params.size);
     int acc = 0;
     for (int i = 0; i < params.size; i++) {
         displs[i] = acc;
         acc += recvcounts[i];
     }
 
-    std::vector<u64> tmp(acc);
+    vector<u64> tmp(acc);
     for (size_t i = 0; i < result.size(); i++) {
         int offset = displs[params.rank] + 2*i;
         auto [x0, x1] = result[i];
@@ -463,7 +414,7 @@ void BCast_result(MpiParameters &params, std::vector<std::pair<u64,u64>> &result
     MPI_Allgatherv(MPI_IN_PLACE, 0, MPI_INT, tmp.data(), recvcounts.data(), displs.data(), MPI_UINT64_T, params.world_comm);
     result.clear();
     for (int i = 0; i < acc; i += 2)
-        result.push_back(std::pair(tmp[i], tmp[i+1]));
+        result.push_back(pair(tmp[i], tmp[i+1]));
 }
 
 }

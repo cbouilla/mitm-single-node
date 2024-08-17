@@ -1,5 +1,7 @@
 
 
+pcs = Parallel Collision Search (i.e. the van Oorshott-Wiener algorithm)
+
 **Note**: 
 To compile:
 ```
