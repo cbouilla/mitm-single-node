@@ -56,8 +56,11 @@ int main(int argc, char* argv[])
     process_command_line_options(argc, argv, params);
     params.setup(MPI_COMM_WORLD);
 
-    if (seed == 0)
+    if (seed == 0) {
         seed = mitm::PRNG::read_urandom();
+        MPI_Bcast(&seed, 1, MPI_UINT64_T, 0, MPI_COMM_WORLD);    // otherwise not everyone evaluates the same function...
+    }
+
     mitm::PRNG prng(seed);
     if (params.role == mitm::CONTROLLER)
         printf("double-speck64 demo! seed=%016" PRIx64 ", n=%d\n", prng.seed, n); 
