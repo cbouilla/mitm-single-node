@@ -70,7 +70,7 @@ public:
 class PcsDict {
 public:
 	struct __attribute__ ((packed)) pcs_entry {
-		u32 key;            // consider that it could be avoided
+		u64 end;            // consider that it could be avoided or truncated
 		u64 start;
 		u32 length;         // consider that it could be avoided
 	};
@@ -96,7 +96,7 @@ public:
 	void flush()
 	{
 		for (u64 i = 0; i < n_slots; i++)
-			A[i].key = 0xffffffff;;
+			A[i].length = 0xffffffff;
 	}
   
 	bool is_empty(const struct pcs_entry &e) const
@@ -118,14 +118,14 @@ public:
   	// return (start', length'), maybe
 	optional<pair<u64, u64>> pop_insert(u64 end, u64 start, u64 len)
 	{
-		u64 h = hash(end);
-		u64 idx = h % n_slots;
+		// u64 h = hash(end);
+		u64 idx = end % n_slots;
 
 		struct pcs_entry &e = A[idx];
 
-		u32 key = h >> 32;
-		if (e.key != key || is_empty(e)) [[likely]] {
-			e.key = key;
+		// u32 key = h >> 32;
+		if (e.end != end || is_empty(e)) [[likely]] {
+			e.end = end;
 			e.start = start;
 			e.length = (u32) len;
 			return std::nullopt;
