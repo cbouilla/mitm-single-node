@@ -81,8 +81,9 @@ public:
 	u64 n_collisions = 0;           // since beginning
 	u64 bad_dp = 0;
 	u64 bad_probe = 0;
-	u64 bad_walk = 0;
 	u64 bad_collision = 0;
+	u64 bad_walk_robinhood = 0;
+	u64 bad_walk_noncolliding = 0;
 	double start_time;
 	double end_time;
 
@@ -124,8 +125,12 @@ public:
 		bad_probe += 1;
 	}
 	
-	void walk_failure() {
-		bad_walk += 1;
+	void walk_robinhood() {
+		bad_walk_robinhood += 1;
+	}
+
+	void walk_noncolliding() {
+		bad_walk_noncolliding += 1;
 	}
 	
 	void collision_failure() {
@@ -177,7 +182,7 @@ public:
 		n_dp_i = 0;
 		n_collisions_i = 0;
 		last_update = wtime();
-		bad_dp = bad_probe = bad_walk = bad_collision = 0;
+		bad_dp = bad_probe = bad_walk_robinhood = bad_walk_noncolliding = bad_collision = 0;
 	}
 
 	void done()

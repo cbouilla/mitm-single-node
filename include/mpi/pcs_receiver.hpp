@@ -48,6 +48,9 @@ void receiver(ConcreteProblem& Pb, const MpiParameters &params)
 			}
 		}
 
+        // printf("Receiver %d: %" PRId64 " walk robinhood.  %" PRId64 " walk non-collision.  %" PRId64 " collision failure.  %" PRId64 " collisions found\n", 
+        // 	params.local_rank, ctr.bad_walk_robinhood, ctr.bad_walk_noncolliding, ctr.bad_collision, ctr.n_collisions);
+
 		// now is a good time to collect stats
 		//             #f send     #f recv,      n_collisions,     bytes sent
 		u64 imin[4] = {ULLONG_MAX, Pb.n_eval, ctr.n_collisions, ULLONG_MAX};

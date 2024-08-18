@@ -104,17 +104,6 @@ public:
 		return e.length == 0xffffffff;
 	}
 
-	// murmur64
-	u64 hash(u64 h) const
-	{
-		h ^= h >> 33;
-		h *= 0xff51afd7ed558ccdull;
-		h ^= h >> 33;
-		h *= 0xc4ceb9fe1a85ec53ull;
-		h ^= h >> 33;
-		return h;
-	}
-
   	// return (start', length'), maybe
 	optional<pair<u64, u64>> pop_insert(u64 end, u64 start, u64 len)
 	{
@@ -128,7 +117,7 @@ public:
 			e.end = end;
 			e.start = start;
 			e.length = (u32) len;
-			return std::nullopt;
+			return nullopt;
 		}
 
 		u64 prev_start = e.start;

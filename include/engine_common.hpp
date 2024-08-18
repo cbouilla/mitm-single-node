@@ -60,10 +60,9 @@ optional<pair<u64,u64>> generate_dist_point(ConcreteProblem& Pb, u64 i, const Pa
      * p = (1 - theta)^N =>  let ln(p) <= -k
      */
     for (u64 j = 0; j < params.dp_max_it; j++) {
-        u64 y = Pb.mixf(i, x);
-        if (is_distinguished_point(y, params.threshold))
-            return optional(pair(y, j+1));
-        x = y;
+        if (is_distinguished_point(x, params.threshold))
+            return optional(pair(x, j));
+        x = Pb.mixf(i, x);
     }
     return nullopt; /* no distinguished point was found after too many iterations */
 }
@@ -74,45 +73,53 @@ optional<pair<u64,u64>> generate_dist_point(ConcreteProblem& Pb, u64 i, const Pa
  * find the earliest collision in the sequence before the distinguished point
  * add a drawing to illustrate this.
  */
-template<typename ConcreteProblem>
-optional<tuple<u64,u64,u64>> walk(ConcreteProblem& Pb, u64 i, u64 x0, u64 len0, u64 x1, u64 len1)
+template<class ConcreteProblem, class Counters>
+optional<tuple<u64,u64,u64>> walk(ConcreteProblem& Pb, Counters &ctr, u64 i, u64 x0, u64 len0, u64 x1, u64 len1)
 {
-  /****************************************************************************+
-   *            walk the longest sequence until they are equal                 |
-   * Two chains that leads to the same distinguished point but not necessarily |
-   * have the same length. e.g.                                                |
-   *                                                                           |
-   * chain1: ----------------x-------o                                         |
-   *                        /                                                  |
-   *          chain2: ------                                                   |
-   *                                                                           |
-   * o: is a distinguished point                                               |
-   * x: the collision we're looking for                                        |
-   ****************************************************************************/
+    /****************************************************************************+
+     *            walk the longest sequence until they are equal                 |
+     * Two chains that leads to the same distinguished point but not necessarily |
+     * have the same length. e.g.                                                |
+     *                                                                           |
+     * chain1: ----------------x-------o                                         |
+     *                        /                                                  |
+     *          chain2: ------                                                   |
+     *                                                                           |
+     * o: is a distinguished point                                               |
+     * x: the collision we're looking for                                        |
+     ****************************************************************************/
 
-  /* move the longest sequence until the remaining number of steps is equal */
-  /* to the shortest sequence. */
-  for (; len0 > len1; len0--)
-    x0 = Pb.mixf(i, x0);
-  for (; len0 < len1; len1--)
-    x1 = Pb.mixf(i, x1);
+    /* move the longest sequence until the remaining number of steps is equal */
+    /* to the shortest sequence. */
+    for (; len0 > len1; len0--)
+        x0 = Pb.mixf(i, x0);
+    for (; len0 < len1; len1--)
+        x1 = Pb.mixf(i, x1);
   
-  /* now both sequences needs exactly `len` steps to reach distinguished point */
-  for (u64 j = 0; j < len0; ++j) {
-    /* walk them together and check each time if their output are equal     */
-    /* return as soon equality is found. The equality could be a robinhood. */
-    u64 y0 = Pb.mixf(i, x0);
-    u64 y1 = Pb.mixf(i, x1);
-
-    /* First, do the outputs collide? If yes, return true and exit. */
-    if (y0 == y1) {
-      /* careful: x0 & x1 contain inputs before mixing */
-      return std::make_optional(tuple(x0, x1, y0));
+    if (x0 == x1) { /* robin-hood */
+        ctr.walk_robinhood();
+        return nullopt;
     }
-    x0 = y0;
-    x1 = y1;
-  }
-  return nullopt; /* we did not find a common point */
+
+    /* now both sequences needs exactly `len` steps to reach the common distinguished point */
+    for (u64 j = 0; j < len0; ++j) {
+        /* walk them together and check each time if their output are equal     */
+        /* return as soon equality is found. The equality could be a robinhood. */
+        u64 y0 = Pb.mixf(i, x0);
+        u64 y1 = Pb.mixf(i, x1);
+
+        /* First, do the outputs collide? If yes, return true and exit. */
+        if (y0 == y1) {
+            /* careful: x0 & x1 contain inputs before mixing */
+            return std::make_optional(tuple(x0, x1, y0));
+        }
+        x0 = y0;
+        x1 = y1;
+    }
+
+    if (x0 != x1)
+        ctr.walk_noncolliding();
+    return nullopt; 
 }
 
 
@@ -127,11 +134,9 @@ optional<tuple<u64,u64,u64>> process_distinguished_point(ConcreteProblem &Pb, Co
     }
 
     auto [start1, len1] = *probe;
-    auto collision = walk(Pb, i, start0, len0, start1, len1);  
-    if (not collision) {
-        ctr.walk_failure();
+    auto collision = walk(Pb, ctr, i, start0, len0, start1, len1);  
+    if (not collision) 
         return nullopt;         /* robin-hood, or dict false positive */
-    }
 
     auto [x0, x1, y] = *collision;
     if (x0 == x1) {

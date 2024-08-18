@@ -26,7 +26,7 @@ void sender(ConcreteProblem& Pb, const MpiParameters &params)
     	Pb.n_eval = 0;
 		SendBuffers sendbuf(params.inter_comm, TAG_POINTS, 3 * params.buffer_capacity);
     	double last_ping = wtime();
-		for (u64 j = msg[1] + 3*params.local_rank;; j += 3*params.n_send) {   // add an odd number to avoid problems mod 2^n...
+		for (u64 j = params.local_rank;; j += 3*params.n_send*msg[1]) {   // add an odd number to avoid problems mod 2^n...
 
 			/* call home? */
             if ((n_dp % 10000 == 9999) && (wtime() - last_ping >= params.ping_delay)) {

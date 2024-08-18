@@ -25,7 +25,6 @@ typedef uint64_t u64;
 namespace mitm {
 
 
-static /* since it's defined in a header file */
 double wtime() /* with inline it doesn't violate one definition rule */
 {
 
@@ -33,6 +32,17 @@ double wtime() /* with inline it doesn't violate one definition rule */
   auto nanoseconds = std::chrono::duration_cast<std::chrono::nanoseconds>(clock.time_since_epoch()).count();
   double seconds = nanoseconds / (static_cast<double>(1000000000.0));
   return seconds;
+}
+
+// murmur64 hash functions, tailorized for 64-bit ints / Cf. Daniel Lemire
+u64 murmur64(u64 h)
+{
+    h ^= h >> 33;
+    h *= 0xff51afd7ed558ccdull;
+    h ^= h >> 33;
+    h *= 0xc4ceb9fe1a85ec53ull;
+    h ^= h >> 33;
+    return h;
 }
 
 /* deterministic RNG based on TRIVIUM */
