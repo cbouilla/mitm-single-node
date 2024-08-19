@@ -159,6 +159,12 @@ public:
 		}
 	}
 
+	void round_display()
+	{
+		printf("\n%.2f%% probe failure.  %.2f%% walk-robinhhod.  %.2f%% walk-noncolliding.  %.2f%% same-value\n",
+                100. * bad_probe / n_dp_i, 100. * bad_walk_robinhood / n_dp_i, 100. * bad_walk_noncolliding / n_dp_i, 100. * bad_collision / n_dp_i);
+	}
+
 	// call this when a new DP is found
 	void found_distinguished_point(u64 chain_len)
 	{
@@ -177,7 +183,9 @@ public:
 	// call this when the dictionnary is flushed / a new mixing function tried
 	void flush_dict()
 	{
+		last_display = 0;
 		display();
+		round_display();
 		n_flush += 1;
 		n_dp_i = 0;
 		n_collisions_i = 0;

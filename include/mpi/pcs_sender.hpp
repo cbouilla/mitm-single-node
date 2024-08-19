@@ -21,12 +21,13 @@ void sender(ConcreteProblem& Pb, const MpiParameters &params)
 		if (msg[2] != 0)
 			return;      // controller tells us to stop
 
-		u64 i = msg[0];
     	u64 n_dp = 0;    // #DP found since last report
     	Pb.n_eval = 0;
 		SendBuffers sendbuf(params.inter_comm, TAG_POINTS, 3 * params.buffer_capacity);
     	double last_ping = wtime();
-		for (u64 j = params.local_rank;; j += 3*params.n_send*msg[1]) {   // add an odd number to avoid problems mod 2^n...
+		u64 i = msg[0];
+		u64 root_seed = msg[1];
+		for (u64 j = params.local_rank;; j += params.n_send) {
 
 			/* call home? */
             if ((n_dp % 10000 == 9999) && (wtime() - last_ping >= params.ping_delay)) {
@@ -42,30 +43,27 @@ void sender(ConcreteProblem& Pb, const MpiParameters &params)
             	}
             }
 
-			/* start a new chain from a fresh "random" starting point */
-			u64 start = j & Pb.mask;
+			/* 
+			 * start a new chain from a fresh "random" starting point. There are chosen to be
+			 * 1) "randomly" spread over [0:2^n]
+			 * 2) distinct for each senders 
+			 */
+			u64 start = (root_seed + j) & Pb.mask;
             auto dp = generate_dist_point(Pb, i, params, start);
-            if (not dp) {
-                // ctr.dp_failure();
+            if (not dp)
                 continue;       /* bad chain start */
-            }
 
 			n_dp += 1;
             auto [end, len] = *dp;
 
-            u64 hash = (end * 0xdeadbeef) % 0x7fffffff;
-            int target_recv = ((int) hash) % params.n_recv;
-            sendbuf.push3(start, end, len, target_recv);
+            int target_recv = (int) (end % params.n_recv);
+            sendbuf.push3(start, murmur64(end), len, target_recv);
 		}
 
 		// now is a good time to collect stats
-		//             #f send,   #f recv,    collisions, bytes sent
-		u64 imin[4] = {Pb.n_eval, ULLONG_MAX, ULLONG_MAX, sendbuf.bytes_sent};
-		u64 imax[4] = {Pb.n_eval, 0,          0,          sendbuf.bytes_sent};
-		u64 iavg[4] = {Pb.n_eval, 0,          0,          sendbuf.bytes_sent};
-		MPI_Reduce(imin, NULL, 4, MPI_UINT64_T, MPI_MIN, 0, params.world_comm);
-		MPI_Reduce(imax, NULL, 4, MPI_UINT64_T, MPI_MAX, 0, params.world_comm);
-		MPI_Reduce(iavg, NULL, 4, MPI_UINT64_T, MPI_SUM, 0, params.world_comm);
+		//             #f send,   
+		u64 iavg[7] = {Pb.n_eval, 0, 0, 0, 0, 0, 0};
+		MPI_Reduce(iavg, NULL, 7, MPI_UINT64_T, MPI_SUM, 0, params.world_comm);
 		//                send wait             recv wait
 		double dmin[2] = {sendbuf.waiting_time, HUGE_VAL};
 		double dmax[2] = {sendbuf.waiting_time, 0};

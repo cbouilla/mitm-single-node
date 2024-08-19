@@ -7,9 +7,6 @@
 #include "common.hpp"
 #include "engine_common.hpp"
 
-
-/* multi-threaded collision-finding engine using OpenMP */
-
 namespace mitm {
 
 class SequentialEngine : Engine {
@@ -41,33 +38,31 @@ static tuple<u64,u64,u64> run(ConcreteProblem& Pb, Parameters &params, PRNG &prn
     u64 n_dist_points = 0;     /* #DP found with this i */
     u64 root_seed = prng.rand();
 
-    for (;;) {
+    while (not solution) {
         /* These simulations show that if 10w distinguished points are generated
          * for each version of the function, and theta = 2.25sqrt(w/n) then ...
          */
 
-        for (;;) {
-            if (n_dist_points > params.points_per_version || solution)
-                break;
-
+        while (n_dist_points < params.points_per_version) {
+            n_dist_points += 1;
+            
             /* start a new chain from a fresh "random" starting point */
             u64 start = (root_seed + n_dist_points) & Pb.mask;
             auto dp = generate_dist_point(Pb, i, params, start);
             if (not dp) {
                 ctr.dp_failure();
-                continue;       /* bad chain start ------ FIXME infinite loop if this happen */
+                continue;
             }
 
             auto [end, len] = *dp;
             ctr.found_distinguished_point(len);
             
             auto outcome = process_distinguished_point(Pb, ctr, dict, i, start, end, len);
-            if (outcome)
+            if (outcome) {
                 solution = outcome;
+                break;
+            }
         }
-
-        if (solution)
-            break;
 
         /* change the mixing function */
         n_dist_points = 0;

@@ -81,13 +81,9 @@ tuple<u64,u64,u64> controller(const ConcreteProblem& Pb, const MpiParameters &pa
 
 		// now is a good time to collect and display stats */
 
-		//             #f send,    #f recv,    collisions, bytes sent
-		u64 imin[4] = {ULLONG_MAX, ULLONG_MAX, ULLONG_MAX, ULLONG_MAX};
-		u64 imax[4] = {0, 0, 0, 0};
-		u64 iavg[4] = {0, 0, 0, 0};
-		MPI_Reduce(MPI_IN_PLACE, imin, 4, MPI_UINT64_T, MPI_MIN, 0, params.world_comm);
-		MPI_Reduce(MPI_IN_PLACE, imax, 4, MPI_UINT64_T, MPI_MAX, 0, params.world_comm);
-		MPI_Reduce(MPI_IN_PLACE, iavg, 4, MPI_UINT64_T, MPI_SUM, 0, params.world_comm);
+		//             #f send, #f recv, collisions, probe_failures, robinhoods, non-colliding, bad_collisions
+		u64 iavg[7] = {0, 0, 0, 0, 0, 0, 0};
+		MPI_Reduce(MPI_IN_PLACE, iavg, 7, MPI_UINT64_T, MPI_SUM, 0, params.world_comm);
 		u64 ncoll = iavg[2];
 		ndp_total += ndp;
 		ncoll_total += ncoll;
@@ -108,7 +104,6 @@ tuple<u64,u64,u64> controller(const ConcreteProblem& Pb, const MpiParameters &pa
 
 		double delta = wtime() - round_start;
 
-		// (min / avg (%% total) / max)
 		u64 N = 1ull << Pb.n;
 		u64 w = params.nslots;
 		char hsrate[8], hrrate[8], hnrate[8];
@@ -123,6 +118,8 @@ tuple<u64,u64,u64> controller(const ConcreteProblem& Pb, const MpiParameters &pa
                 dmin[0], davg[0], 100. * davg[0] / delta, dmax[0], std::log2(nf_send), 100. * nf_send / nf_round, hsrate);
 		printf("Receivers.  Wait == %.2fs / %.2fs (%.1f%%) / %.2fs.  #f == 2^%.2f (%.0f%%).  f/s == %s\n",
                 dmin[1], davg[1], 100. * davg[1] / delta, dmax[1], std::log2(nf_recv), 100. * nf_recv / nf_round, hrrate);
+		printf("            %.2f%% probe failure.  %.2f%% walk-robinhhod.  %.2f%% walk-noncolliding.  %.2f%% same-value\n",
+                100. * iavg[3] / ndp, 100. * iavg[4] / ndp, 100. * iavg[5] / ndp, 100. * iavg[6] / ndp);
 		printf("\n");
 		fflush(stdout);
 

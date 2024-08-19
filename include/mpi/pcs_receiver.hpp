@@ -48,17 +48,10 @@ void receiver(ConcreteProblem& Pb, const MpiParameters &params)
 			}
 		}
 
-        // printf("Receiver %d: %" PRId64 " walk robinhood.  %" PRId64 " walk non-collision.  %" PRId64 " collision failure.  %" PRId64 " collisions found\n", 
-        // 	params.local_rank, ctr.bad_walk_robinhood, ctr.bad_walk_noncolliding, ctr.bad_collision, ctr.n_collisions);
-
 		// now is a good time to collect stats
-		//             #f send     #f recv,      n_collisions,     bytes sent
-		u64 imin[4] = {ULLONG_MAX, Pb.n_eval, ctr.n_collisions, ULLONG_MAX};
-		u64 imax[4] = {0,          Pb.n_eval, ctr.n_collisions, 0};
-		u64 iavg[4] = {0,          Pb.n_eval, ctr.n_collisions, 0};
-		MPI_Reduce(imin, NULL, 4, MPI_UINT64_T, MPI_MIN, 0, params.world_comm);
-		MPI_Reduce(imax, NULL, 4, MPI_UINT64_T, MPI_MAX, 0, params.world_comm);
-		MPI_Reduce(iavg, NULL, 4, MPI_UINT64_T, MPI_SUM, 0, params.world_comm);
+		//             #f send  #f recv,      n_collisions,  
+		u64 iavg[7] = {0,       Pb.n_eval, ctr.n_collisions, ctr.bad_probe, ctr.bad_walk_robinhood, ctr.bad_walk_noncolliding, ctr.bad_collision};
+		MPI_Reduce(iavg, NULL, 7, MPI_UINT64_T, MPI_SUM, 0, params.world_comm);
 		//                send wait recv wait
 		double dmin[2] = {HUGE_VAL, recvbuf.waiting_time};
 		double dmax[2] = {0,        recvbuf.waiting_time};

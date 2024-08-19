@@ -117,7 +117,7 @@ optional<tuple<u64,u64,u64>> walk(ConcreteProblem& Pb, Counters &ctr, u64 i, u64
         x1 = y1;
     }
 
-    if (x0 != x1)
+    if (x0 != x1)    /* false positive from the dictionnary */
         ctr.walk_noncolliding();
     return nullopt; 
 }
