@@ -161,8 +161,8 @@ public:
 
 	void round_display()
 	{
-		printf("\n%.2f%% probe failure.  %.2f%% walk-robinhhod.  %.2f%% walk-noncolliding.  %.2f%% same-value\n",
-                100. * bad_probe / n_dp_i, 100. * bad_walk_robinhood / n_dp_i, 100. * bad_walk_noncolliding / n_dp_i, 100. * bad_collision / n_dp_i);
+		printf("\n%.2f avg trail length.  %.2f%% probe failure.  %.2f%% walk-robinhhod.  %.2f%% walk-noncolliding.  %.2f%% same-value\n",
+                (double) n_points_trails / n_dp, 100. * bad_probe / n_dp_i, 100. * bad_walk_robinhood / n_dp_i, 100. * bad_walk_noncolliding / n_dp_i, 100. * bad_collision / n_dp_i);
 	}
 
 	// call this when a new DP is found

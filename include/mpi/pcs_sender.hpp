@@ -27,7 +27,8 @@ void sender(ConcreteProblem& Pb, const MpiParameters &params)
     	double last_ping = wtime();
 		u64 i = msg[0];
 		u64 root_seed = msg[1];
-		for (u64 j = params.local_rank;; j += params.n_send) {
+		u64 a = params.n_send * 0x2545f4914f6cdd1dull;
+		for (u64 j = root_seed + params.local_rank * 0x2545f4914f6cdd1dull;; j += a) {
 
 			/* call home? */
             if ((n_dp % 10000 == 9999) && (wtime() - last_ping >= params.ping_delay)) {
@@ -44,11 +45,15 @@ void sender(ConcreteProblem& Pb, const MpiParameters &params)
             }
 
 			/* 
-			 * start a new chain from a fresh "random" starting point. There are chosen to be
+			 * start a new chain from a fresh "random" starting point. These are chosen to be
 			 * 1) "randomly" spread over [0:2^n]
-			 * 2) distinct for each senders 
+			 * 2) distinct for each senders
+			 * 3) not distinguished
 			 */
-			u64 start = (root_seed + j) & Pb.mask;
+			u64 start = j & Pb.mask;
+			if (is_distinguished_point(start, params.threshold))    // refuse to start from a DP
+                continue;
+
             auto dp = generate_dist_point(Pb, i, params, start);
             if (not dp)
                 continue;       /* bad chain start */

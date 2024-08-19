@@ -35,7 +35,6 @@ static tuple<u64,u64,u64> run(ConcreteProblem& Pb, Parameters &params, PRNG &prn
 
     u64 i = 0;                 /* index of families of mixing functions */
     optional<tuple<u64,u64,u64>> solution;    /* (i, x0, x1)  */
-    u64 n_dist_points = 0;     /* #DP found with this i */
     u64 root_seed = prng.rand();
 
     while (not solution) {
@@ -43,11 +42,15 @@ static tuple<u64,u64,u64> run(ConcreteProblem& Pb, Parameters &params, PRNG &prn
          * for each version of the function, and theta = 2.25sqrt(w/n) then ...
          */
 
-        while (n_dist_points < params.points_per_version) {
-            n_dist_points += 1;
+        u64 j = 0;
+        while (ctr.n_dp_i < params.points_per_version) {
+            j += 0x2545f4914f6cdd1dull;
             
             /* start a new chain from a fresh "random" starting point */
-            u64 start = (root_seed + n_dist_points) & Pb.mask;
+            u64 start = (root_seed + j) & Pb.mask;
+            if (is_distinguished_point(start, params.threshold))  // refuse to start from a DP
+                continue;
+
             auto dp = generate_dist_point(Pb, i, params, start);
             if (not dp) {
                 ctr.dp_failure();
@@ -65,7 +68,6 @@ static tuple<u64,u64,u64> run(ConcreteProblem& Pb, Parameters &params, PRNG &prn
         }
 
         /* change the mixing function */
-        n_dist_points = 0;
         i = prng.rand() & Pb.mask; 
         dict.flush();
         ctr.flush_dict();
