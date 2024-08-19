@@ -4,163 +4,129 @@
 
 #ifndef MITM_SEQUENTIAL_DICT_HPP
 #define MITM_SEQUENTIAL_DICT_HPP
-#include <algorithm>
-#include <cstddef>
-#include <cstdint>
-#include <sys/types.h>
-#include <unordered_map>
-#include <vector>
-#include <iostream>
-#include <map>
+
+#include "tools.hpp"
+
+// various dictionnaries
 
 namespace mitm {
-template <typename K, typename V, typename Problem> 
-struct Dict {
 
+/*
+ * this is a "classic" hash table for 64-bit key-value pairs, with linear probing.  
+ * No false negatives, some false positives.  12 bytes per entry. 
+ */
+class CompactDict {
+public:
+    const u64 n_slots;     /* How many slots a dictionary have */
+    struct __attribute__ ((packed)) entry { u32 k; u64 v; };
 
-  const size_t n_slots; /* How many slots a dictionary have */
-  size_t n_elements = 0; /* Number of the actual elements that are in the dict */
-  size_t n_bytes;
+    vector<struct entry> A;
 
-  /* <value:=input, key:=output>  in this order since value is usually larger */
-  std::vector<K> keys;
-  std::vector<V> values;
-  std::vector<uint64_t> chain_lengths;
-  
-  Dict(size_t n_bytes) :
-    n_slots( n_bytes / ( sizeof(K) + sizeof(V) + sizeof(uint64_t)) )
-  {
-    /*
-     * Create a dictionary that takes approximately n_bytes
-     */
+    CompactDict(u64 n_slots) : n_slots(n_slots)
+    {
+        A.resize(n_slots, {0xffffffff, 0});
+    }
 
+    void insert(u64 key, u64 value)
+    {
+        u64 h = (key ^ (key >> 32)) % n_slots;
+        for (;;) {
+            if (A[h].k == 0xffffffff)
+                break;
+            h += 1;
+            if (h == n_slots)
+                h = 0;
+        }
+        A[h].k = key % 0xfffffffb;
+        A[h].v = value;
+    }
 
-    /* we don't care about the value of the first element */
-
-
-    keys.resize(n_slots);
-    std::cout << "Done resizing keys\n";
-    
-    values.resize(n_slots);
-    std::cout << "Done resizing values\n";
-    chain_lengths.resize(n_slots);
-    std::cout << "Done resizing chain\n";
-    /* fill values with zeros */
-    std::fill(keys.begin(), keys.end(), 0);
-    std::fill(chain_lengths.begin(), chain_lengths.end(), 0);
-  }
-
-  /*
-   * Reset keys, and counters.
-   */
-  void flush()
-  {
-    std::fill(keys.begin(), keys.end(), 0);
-    std::fill(chain_lengths.begin(), chain_lengths.end(), 0);
-    n_elements = 0;
-  }
-  
-  bool pop_insert(const K& key, /* output of f or g */
-		  const V& value, /* input */
-		  uint64_t const chain_length0,
-		  V& out, /* popped input element */
-		  uint64_t& chain_length1,
-		  Problem& Pb)
-  {
-    
-    /// Add (key, some bits of value) to dictionary. If the pair removes
-    /// another pair from the dictionary (Because they have the same index)
-    /// write the removed key to out and return true.
-
-    uint64_t idx = key % n_slots;
-    bool flag = false;
-    
-    /* Found an empty slot, thus we're adding a new element  */
-    if (keys[idx] == 0)
-      ++n_elements; 
-    
-    if (keys[idx] == key) [[unlikely]]
-      flag = true; /* found a collision */
-
-    /* RECALL: */
-    /* <value:=input, key:=output>  in this order since value is usually larger */
-    /* popped elements */
-    Pb.C.copy(values[idx], out); // out = values[idx];
-    Pb.C.copy(value, values[idx]); // values[idx] = value;
-    chain_length1 = chain_lengths[idx];
-    /* write the new entries */
-    keys[idx] = key;
-    chain_lengths[idx] = chain_length0;
-
-    return flag; /* flag  == 1, if we pop a pair and its value match with the key value */
-  }
+    // return possible values matching this key
+    // TODO: replace this by a custom iterator
+    int probe(u64 bigkey, u64 keys[])
+    {
+        u32 key = bigkey % 0xfffffffb;
+        u64 h = (bigkey ^ (bigkey >> 32)) % n_slots;
+        int nkeys = 0;
+        for (;;) {
+            if (A[h].k == 0xffffffff)
+                return nkeys;
+            if (A[h].k == key) {
+                keys[nkeys] = A[h].v;
+                nkeys += 1;
+            }
+            h += 1;
+            if (h == n_slots)
+                h = 0;
+        }
+    }
 };
 
+/*
+ * This dictionnary, when probed with the distinguished point at the end of a trail,
+ * should provide (if any) the start (and the length) of another distinguished point
+ * that has the same end.
+ */
+class PcsDict {
+public:
+	struct __attribute__ ((packed)) pcs_entry {
+		u64 end;            // consider that it could be avoided or truncated
+		u64 start;
+		u32 length;         // consider that it could be avoided
+	};
 
-// /* A wrapper over std::unordered_map used only for debugging */
-// template <typename K, typename V, typename Problem> 
-// struct Dict_unorderd_map {
+	const u64 n_slots;     /* How many slots a dictionary have */
 
-
-//   const size_t n_slots; /* How many slots a dictionary have */
-//   size_t n_elements = 0; /* Number of the actual elements that are in the dict */
-//   size_t n_bytes;
-
-//   /* <value:=input, key:=output>  in this order since value is usually larger */
-//   /* uint64_t for the chain length */
-//   std::unordered_map<K, std::pair<V, uint64_t> > dict;
-
+	vector<struct pcs_entry> A;
   
-//   Dict_unorderd_map(size_t n_bytes) :
-//     n_slots( n_bytes / ( sizeof(K) + sizeof(V) + sizeof(uint64_t)) )
-//   {}
+	static u64 get_nslots(u64 nbytes)
+	{
+		return nbytes / (sizeof(struct pcs_entry));
+	}
 
-//   /*
-//    * Reset keys, and counters.
-//    */
-//   void flush()
-//   {
-//     dict.clear();
-//     n_elements = 0;
-//   }
+	PcsDict(u64 n_bytes) : n_slots(get_nslots(n_bytes))
+	{
+		A.resize(n_slots);
+		flush();
+	}
+
+	/*
+	 * Reset keys, and counters.
+	 */
+	void flush()
+	{
+		for (u64 i = 0; i < n_slots; i++)
+			A[i].length = 0xffffffff;
+	}
   
-//   bool pop_insert(const K& key, /* output of f or g */
-// 		  const V& value, /* input */
-// 		  uint64_t const chain_length0,
-// 		  V& out, /* popped input element */
-// 		  uint64_t& chain_length1,
-// 		  Problem& Pb)
-//   {
-    
+	bool is_empty(const struct pcs_entry &e) const
+	{
+		return e.length == 0xffffffff;
+	}
 
-//     /// Add (key, some bits of value) to dictionary. If the pair removes
-//     /// another pair from the dictionary (Because they have the same index)
-//     /// write the removed key to out and return true.
+  	// return (start', length'), maybe
+	optional<pair<u64, u64>> pop_insert(u64 end, u64 start, u64 len)
+	{
+		// u64 h = hash(end);
+		u64 idx = end % n_slots;
 
-//     // uint64_t idx = key % n_slots;
-//     bool flag = false;
-    
-//     /* Found an empty slot, thus we're adding a new element  */
-//     if (dict[key] == 0)
-//       ++n_elements; 
-    
-//     if (keys[idx] == key) [[unlikely]]
-//       flag = true; /* found a collision */
+		struct pcs_entry &e = A[idx];
 
+		// u32 key = h >> 32;
+		if (e.end != end || is_empty(e)) [[likely]] {
+			e.end = end;
+			e.start = start;
+			e.length = (u32) len;
+			return nullopt;
+		}
 
-//     /* RECALL: */
-//     /* <value:=input, key:=output>  in this order since value is usually larger */
-//     /* popped elements */
-//     Pb.C.copy(values[idx], out); // out = values[idx];
-//     Pb.C.copy(value, values[idx]); // values[idx] = value;
-//     chain_length1 = chain_lengths[idx];
-//     /* write the new entries */
-//     keys[idx] = key;
-//     chain_lengths[idx] = chain_length0;
+		u64 prev_start = e.start;
+		u64 prev_len = e.length;
+		e.start = start;
+		e.length = len;
+		return optional(pair(prev_start, prev_len));
+	}
+};
 
-//     return flag; /* flag  == 1, if we pop a pair and its value match with the key value */
-//   }
-// };
-}    
-
+}
 #endif //MITM_SEQUENTIAL_DICT_HPP
