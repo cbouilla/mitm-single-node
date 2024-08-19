@@ -60,9 +60,10 @@ optional<pair<u64,u64>> generate_dist_point(ConcreteProblem& Pb, u64 i, const Pa
      * p = (1 - theta)^N =>  let ln(p) <= -k
      */
     for (u64 j = 0; j < params.dp_max_it; j++) {
-        if (is_distinguished_point(x, params.threshold))
-            return optional(pair(x, j));
-        x = Pb.mixf(i, x);
+        u64 y = Pb.mixf(i, x);
+        if (is_distinguished_point(y, params.threshold))
+            return optional(pair(y, j + 1));
+        x = y;
     }
     return nullopt; /* no distinguished point was found after too many iterations */
 }

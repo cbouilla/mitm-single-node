@@ -62,7 +62,7 @@ void sender(ConcreteProblem& Pb, const MpiParameters &params)
             auto [end, len] = *dp;
 
             int target_recv = (int) (end % params.n_recv);
-            sendbuf.push3(start, murmur64(end), len, target_recv);
+            sendbuf.push3(start, end / params.n_recv, len, target_recv);
 		}
 
 		// now is a good time to collect stats
