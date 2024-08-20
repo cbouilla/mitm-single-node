@@ -45,7 +45,7 @@ public:
 };
 
 
-template <typename _Engine, typename AbstractProblem>
+template <typename _Engine, class Parameters, typename AbstractProblem>
 pair<u64, u64> collision_search(const AbstractProblem& Pb, Parameters &params, PRNG &prng)
 {
     static_assert(std::is_base_of<Engine, _Engine>::value,

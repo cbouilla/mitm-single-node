@@ -24,3 +24,8 @@ add_executable(mpi_double_speck64_bench
     mpi_double_speck64_bench.cpp)
 target_include_directories(mpi_double_speck64_bench PRIVATE ../include)
 target_link_libraries(mpi_double_speck64_bench PUBLIC MPI::MPI_CXX)
+
+add_executable(mpi_sha2_big_collision_demo
+    mpi_sha2_big_collision_demo.cpp sha256.c)
+target_include_directories(mpi_sha2_big_collision_demo PRIVATE ../include)
+target_link_libraries(mpi_sha2_big_collision_demo PUBLIC MPI::MPI_CXX)
