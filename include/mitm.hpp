@@ -127,6 +127,12 @@ template <class AbstractProblem>
 class LargerRangeClawWrapper {
 private:
     u64 in_mask;
+    u64 choice_mask;
+
+    inline u64 full_mix(u64 i, u64 x) const
+    {
+        return x ^ ((x >> n) * (i | 1));
+    }
 
 public:
     const AbstractProblem& pb;
@@ -139,27 +145,28 @@ public:
             "problem not derived from mitm::AbstractClawProblem");
         assert(pb.n <= pb.m);
         in_mask = make_mask(pb.n);
+        choice_mask = 1ull << pb.n;
     }
 
     /* pick either f() or g() */
     bool choose(u64 i, u64 x) const
     {
-        return ((x ^ ((x >> pb.n) * (i | 1))) >> pb.n) & 1; //scalar_product(x, i);
+        return full_mix(i, x) & choice_mask;
     }
 
     u64 mix(u64 i, u64 x) const   // {0, 1}^m  x  {0, 1}^m ---> {0, 1}^n
     {
-        return (x ^ ((x >> pb.n) * (i | 1))) & in_mask;
+        return full_mix(i, x) & in_mask;
     }
 
     u64 mixf(u64 i, u64 x)        // {0, 1}^m  x  {0, 1}^m ---> {0, 1}^m
     {
         n_eval += 1;
-        u64 y = mix(i, x);
-        if (choose(i, x))
-            return pb.f(y);
+        u64 z = full_mix(i, x);
+        if (z & choice_mask)
+            return pb.f(z & in_mask);
         else
-            return pb.g(y);
+            return pb.g(z & in_mask);
     }
 
     pair<u64, u64> swap(u64 i, u64 a, u64 b) const
