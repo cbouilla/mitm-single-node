@@ -121,6 +121,9 @@ public:
 
 template <class AbstractProblem>
 class LargerRangeClawWrapper {
+private:
+    u64 in_mask;
+
 public:
     const AbstractProblem& pb;
     u64 n_eval;        // #evaluations of (mix)f.  This does not count the invocations of f() by pb.good_pair().
@@ -130,17 +133,18 @@ public:
         static_assert(std::is_base_of<AbstractClawProblem, AbstractProblem>::value,
             "problem not derived from mitm::AbstractClawProblem");
         assert(pb.n < pb.m);
+        in_mask = make_mask(pb.n);
     }
 
     /* pick either f() or g() */
     bool choose(u64 i, u64 x) const
     {
-        return ((x * (i | 1)) >> (pb.m - 1)) & 1;
+        return (x >> pb.n) & 1;
     }
 
     u64 mix(u64 i, u64 x) const   // {0, 1}^m  x  {0, 1}^m ---> {0, 1}^n
     {
-        return (i ^ x) >> (pb.m - pb.n);
+        return (i ^ x) & in_mask;
     }
 
     u64 mixf(u64 i, u64 x)        // {0, 1}^m  x  {0, 1}^m ---> {0, 1}^m
@@ -179,12 +183,12 @@ pair<u64, u64> claw_search(const Problem& pb, Parameters &params, PRNG &prng)
             "engine not derived from mitm::Engine");
 
     u64 x0, x1;
-    params.finalize(pb.n, pb.m);
 
     if (params.verbose)
         printf("Starting claw search with f : {0,1}^%d --> {0, 1}^%d\n", pb.n, pb.m);
 
     if (pb.n == pb.m) {
+        params.finalize(pb.n, pb.m);
         if (params.verbose)
             printf("  - using |Domain| == |Range| mode.  Expecting 1.8*n/w rounds.\n");
         EqualSizeClawWrapper<Problem> wrapper(pb);
@@ -193,6 +197,7 @@ pair<u64, u64> claw_search(const Problem& pb, Parameters &params, PRNG &prng)
         x0 = wrapper.mix(i, u);
         x1 = wrapper.mix(i, v);
     } else if (pb.n < pb.m) {
+        params.finalize(pb.n + 1, pb.m);
         if (params.verbose)
             printf("  - using |Domain| << |Range| mode.  Expecting 0.9*n/w rounds.\n");
         LargerRangeClawWrapper<Problem> wrapper(pb);

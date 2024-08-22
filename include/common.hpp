@@ -31,9 +31,9 @@ public:
 	/* utilities */
     bool verbose = 1;             /* print progress information */
 
-    static double optimal_theta(double log2_w, int n)
+    static double optimal_theta(double w, int n)
     {
-        return std::log2(2.25) + 0.5 * (log2_w - n);
+        return 2.25 * std::sqrt((double) w / (1ll << n));
     }
 
     void finalize(int n, int m)
@@ -42,9 +42,8 @@ public:
             errx(1, "the amount of RAM to use (per node) must be specified");
 
         w = PcsDict::get_nslots(nbytes_memory * n_nodes);
-        double log2_w = std::log2(w * n_nodes);
         /* auto-choose the difficulty if not set */
-        double auto_theta = optimal_theta(log2_w, n);
+        double auto_theta = optimal_theta(w, n);
         if (theta < 0) {
         	theta = auto_theta;
             if (theta > 1)
