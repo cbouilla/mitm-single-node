@@ -11,9 +11,10 @@
 
 namespace mitm {
 
-template<class ConcreteProblem>
-void sender(ConcreteProblem& Pb, const MpiParameters &params)
+template<class ProblemWrapper>
+void sender(ProblemWrapper& wrapper, const MpiParameters &params)
 {
+	u64 mask = make_mask(wrapper.pb.m);
 	for (;;) {
 		/* get data from controller */
 		u64 msg[3];   // i, root_seed, stop?
@@ -22,7 +23,7 @@ void sender(ConcreteProblem& Pb, const MpiParameters &params)
 			return;      // controller tells us to stop
 
     	u64 n_dp = 0;    // #DP found since last report
-    	Pb.n_eval = 0;
+    	wrapper.n_eval = 0;
 		SendBuffers sendbuf(params.inter_comm, TAG_POINTS, 3 * params.buffer_capacity);
     	double last_ping = wtime();
 		u64 i = msg[0];
@@ -50,11 +51,11 @@ void sender(ConcreteProblem& Pb, const MpiParameters &params)
 			 * 2) distinct for each senders
 			 * 3) not distinguished
 			 */
-			u64 start = j & Pb.mask;
+			u64 start = j & mask;
 			if (is_distinguished_point(start, params.threshold))    // refuse to start from a DP
                 continue;
 
-            auto dp = generate_dist_point(Pb, i, params, start);
+            auto dp = generate_dist_point(wrapper, i, params, start);
             if (not dp)
                 continue;       /* bad chain start */
 
@@ -67,7 +68,7 @@ void sender(ConcreteProblem& Pb, const MpiParameters &params)
 
 		// now is a good time to collect stats
 		//             #f send,   
-		u64 iavg[7] = {Pb.n_eval, 0, 0, 0, 0, 0, 0};
+		u64 iavg[7] = {wrapper.n_eval, 0, 0, 0, 0, 0, 0};
 		MPI_Reduce(iavg, NULL, 7, MPI_UINT64_T, MPI_SUM, 0, params.world_comm);
 		//                send wait             recv wait
 		double dmin[2] = {sendbuf.waiting_time, HUGE_VAL};

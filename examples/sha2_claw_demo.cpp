@@ -19,7 +19,7 @@ u64 seed = 0x1337;  // default fixed seed
 class SHA2ClawProblem : mitm::AbstractClawProblem
 {
 public:
-  int n;
+  int n, m;
   u64 mask;
   mitm::PRNG &prng;
 
@@ -59,7 +59,7 @@ public:
     return (data[0] ^ ((u64) data[1] << 32) ^ g_shift) & mask;
   }
 
-  SHA2ClawProblem(int n, mitm::PRNG &prng) : n(n), prng(prng)
+  SHA2ClawProblem(int n, mitm::PRNG &prng) : n(n), m(n), prng(prng)
   {
     mask = (1ull << n) - 1;
     golden_x = prng.rand() & mask;

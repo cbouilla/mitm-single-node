@@ -5,7 +5,7 @@
 
 namespace mitm {
 /*
- * Provides a function f : {0, 1}^n -> {0, 1}^n and an optional predicate P.
+ * Provides a function f : {0, 1}^n -> {0, 1}^m and an optional predicate P.
  *
  * The goal is to find x != y s.t. f(x) == f(y) and P(x, y).
  *
@@ -15,8 +15,10 @@ namespace mitm {
  */
 class AbstractCollisionProblem {
 public:
-	int n;           /* size of the domain, in bits */
+	int n;           /* size of the domain (input), in bits */
+	int m;           /* size of the range  (output, in bits */
 
+	/* f : {0, 1}^n ---> {0, 1}^m */
 	u64 f(u64 x) const;
   
 	/* assuming that f(x0) == f(x1) and x0 != x1, is (x0, x1) an acceptable outcome? */
@@ -34,8 +36,10 @@ public:
  */
 class AbstractClawProblem {
 public:
-	int n;           /* size of the domain, in bits */
-  
+	int n;           /* size of both domains (input), in bits */
+	int m;           /* size of the common range (output), in bits */
+
+	/* f, g : {0, 1}^n ---> {0, 1}^m */
 	u64 f(u64 x) const;
 	u64 g(u64 y) const;
   

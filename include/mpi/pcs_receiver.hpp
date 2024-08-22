@@ -9,8 +9,8 @@
 
 namespace mitm {
 
-template<typename ConcreteProblem>
-void receiver(ConcreteProblem& Pb, const MpiParameters &params)
+template<class ProblemWrapper>
+void receiver(ProblemWrapper& wrapper, const MpiParameters &params)
 {
     PcsDict dict(params.nbytes_memory / params.recv_per_node);
 
@@ -23,8 +23,8 @@ void receiver(ConcreteProblem& Pb, const MpiParameters &params)
 
 		RecvBuffers recvbuf(params.inter_comm, TAG_POINTS, 3 * params.buffer_capacity);
 		u64 i = msg[0];
-		Pb.n_eval = 0;
-		BaseCounters ctr;
+		wrapper.n_eval = 0;
+		Counters ctr;
 		// receive and process data from senders
 		for (;;) {
 			if (recvbuf.complete())
@@ -37,7 +37,7 @@ void receiver(ConcreteProblem& Pb, const MpiParameters &params)
 					u64 start = buffer[k];
 					u64 end = buffer[k + 1];
 					u64 len = buffer[k + 2];
-					auto solution = process_distinguished_point(Pb, ctr, dict, i, start, end, len);
+					auto solution = process_distinguished_point(wrapper, ctr, dict, i, start, end, len);
 					if (solution) {          // call home !
 						// maybe save it to a file, just in case
 						auto [i, x0, x1] = *solution;
@@ -49,8 +49,8 @@ void receiver(ConcreteProblem& Pb, const MpiParameters &params)
 		}
 
 		// now is a good time to collect stats
-		//             #f send  #f recv,      n_collisions,  
-		u64 iavg[7] = {0,       Pb.n_eval, ctr.n_collisions, ctr.bad_probe, ctr.bad_walk_robinhood, ctr.bad_walk_noncolliding, ctr.bad_collision};
+		//             #f send  #f recv
+		u64 iavg[7] = {0,       wrapper.n_eval, ctr.n_collisions, ctr.bad_probe, ctr.bad_walk_robinhood, ctr.bad_walk_noncolliding, ctr.bad_collision};
 		MPI_Reduce(iavg, NULL, 7, MPI_UINT64_T, MPI_SUM, 0, params.world_comm);
 		//                send wait recv wait
 		double dmin[2] = {HUGE_VAL, recvbuf.waiting_time};

@@ -12,8 +12,8 @@ namespace mitm {
 
 /* there is ONE controller process (of global rank 0) */
 
-template<typename ConcreteProblem>
-tuple<u64,u64,u64> controller(const ConcreteProblem& Pb, const MpiParameters &params, PRNG &prng)
+template<typename ProblemWrapper>
+tuple<u64,u64,u64> controller(const ProblemWrapper& wrapper, const MpiParameters &params, PRNG &prng)
 {
     printf("Starting collision search with seed=%016" PRIx64 ", difficulty=%.2f\n", prng.seed, params.difficulty);
     
@@ -26,10 +26,11 @@ tuple<u64,u64,u64> controller(const ConcreteProblem& Pb, const MpiParameters &pa
 	printf("RAM per node == %sB buffer + %sB dict.  Total dict size == %s (2^%.2f slots)\n", hbsize, hdsize, htdsize, log2_w);
 
 	/* this is quite wrong, actually */
+    int n = wrapper.pb.n;
     printf("Expected iterations / collision = (2^%0.2f + 2^%.2f) \n", 
-    	    Pb.n - params.difficulty - log2_w, 1 + params.difficulty);
+    	    n - params.difficulty - log2_w, 1 + params.difficulty);
     printf("Expected #iterations = (2^%0.2f + 2^%.2f) \n",
-    	    (Pb.n - 1) + (Pb.n - params.difficulty - log2_w), Pb.n + params.difficulty);
+    	    (n - 1) + (n - params.difficulty - log2_w), n + params.difficulty);
     printf("Generating %.1f*w = %" PRId64 " = 2^%0.2f distinguished point / version\n", 
         	params.beta, params.points_per_version, std::log2(params.points_per_version));
 
@@ -40,10 +41,11 @@ tuple<u64,u64,u64> controller(const ConcreteProblem& Pb, const MpiParameters &pa
 	u64 ndp_total = 0;
 	u64 ncoll_total = 0;
 	u64 nf_total = 0;
+	u64 mask = (1ll << wrapper.pb.m) - 1;
 	double start = wtime();
 
 	for (;;) {
-        u64 i = prng.rand() & Pb.mask;             /* index of families of mixing functions */
+        u64 i = prng.rand() & mask;             /* index of families of mixing functions */
        	u64 root_seed = prng.rand();
 
 		/* get data from controller */
@@ -104,7 +106,7 @@ tuple<u64,u64,u64> controller(const ConcreteProblem& Pb, const MpiParameters &pa
 
 		double delta = wtime() - round_start;
 
-		u64 N = 1ull << Pb.n;
+		u64 N = 1ull << wrapper.pb.n;
 		u64 w = params.nslots;
 		char hsrate[8], hrrate[8], hnrate[8];
 		human_format(nf_send / params.n_send / delta, hsrate);

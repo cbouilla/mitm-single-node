@@ -28,7 +28,7 @@ private:
   };
 
 public:
-  int n;
+  int n, m;
 
   u64 f(u64 x) const
   {
@@ -44,7 +44,7 @@ public:
     return (data[0] ^ ((u64) data[1] << 32)) & mask;
   }
 
-  SHA2CollisionProblem(int n) :  mask((1ull << n) - 1), n(n) {}
+  SHA2CollisionProblem(int n) :  mask((1ull << n) - 1), n(n), m(n) {}
 };
 
 

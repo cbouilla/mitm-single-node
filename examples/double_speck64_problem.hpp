@@ -43,7 +43,7 @@ void Speck64128Decrypt(u32 Pt[], const u32 Ct[], u32 rk[])
 class DoubleSpeck64_Problem : mitm::AbstractClawProblem
 {
 public:
-    int n;
+    int n, m;
     u64 mask;
     mitm::PRNG &prng;
 
@@ -59,7 +59,7 @@ public:
         Speck64128KeySchedule(K, rk);
         u32 Ct[2];
         Speck64128Encrypt(P[0], Ct, rk);
-        return ((u64) Ct[0] ^ ((u64) Ct[1] << 32)) & mask;
+        return ((u64) Ct[0] ^ ((u64) Ct[1] << 32)); // & mask;
     }
 
     // speck32-64 decryption of C[0], using k
@@ -71,10 +71,10 @@ public:
         Speck64128KeySchedule(K, rk);
         u32 Pt[2];
         Speck64128Decrypt(Pt, C[0], rk);
-        return ((u64) Pt[0] ^ ((u64) Pt[1] << 32)) & mask;
+        return ((u64) Pt[0] ^ ((u64) Pt[1] << 32)); // & mask;
     }
 
-  DoubleSpeck64_Problem(int n, mitm::PRNG &prng) : n(n), prng(prng)
+  DoubleSpeck64_Problem(int n, mitm::PRNG &prng) : n(n), m(64), prng(prng)
   {
     assert(n <= 64);
     mask = (1ull << n) - 1;

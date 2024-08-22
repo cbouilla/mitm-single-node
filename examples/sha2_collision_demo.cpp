@@ -30,7 +30,7 @@ private:
   mitm::PRNG &prng;
 
 public:
-  int n;
+  int n, m;
 
   u64 f(u64 x) const
   {
@@ -48,7 +48,7 @@ public:
     return (data[0] ^ ((u64) data[1] << 32)) & mask;
   }
 
-  SHA2CollisionProblem(int n, mitm::PRNG &prng) : prng(prng), n(n)
+  SHA2CollisionProblem(int n, mitm::PRNG &prng) : prng(prng), n(n), m(n)
   {
     mask = (1ull << n) - 1;
     golden_x = prng.rand() & mask;

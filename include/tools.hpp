@@ -24,6 +24,10 @@ typedef uint64_t u64;
 
 namespace mitm {
 
+u64 make_mask(int n)
+{
+    return (n == 64) ? 0xffffffffffffffffull : (1ull << n) - 1;
+}
 
 double wtime() /* with inline it doesn't violate one definition rule */
 {

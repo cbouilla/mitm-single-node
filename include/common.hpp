@@ -1,13 +1,14 @@
 #ifndef MITM_COMMON
 #define MITM_COMMON
 
-// base classes for PCS and naive algorithm
-
-#include "tools.hpp"
-
 #include <string>
 #include <cmath>
 #include <climits>
+
+// base classes for PCS and naive algorithm
+
+#include "tools.hpp"
+#include "dict.hpp"
 
 namespace mitm {
 
@@ -29,12 +30,12 @@ public:
         return std::log2(2.25) + 0.5 * (log2_w - n);
     }
 
-    void finalize(int n, u64 _nslots)
+    void finalize(int n, int m)
     {
         if (nbytes_memory == 0)
-            errx(1, "the size of the dictionnary must be specified");
+            errx(1, "the amount of RAM to use (per node) must be specified");
 
-        nslots = _nslots;
+        nslots = PcsDict::get_nslots(nbytes_memory * n_nodes);
         double log2_w = std::log2(nslots * n_nodes);
         double theta = optimal_theta(log2_w, n);
         /* auto-choose the difficulty if not set */
@@ -48,7 +49,7 @@ public:
             if (verbose)
                 printf("NOTICE: using difficulty=%.2f vs ``optimal''=%.2f\n", difficulty, theta);
         }
-        threshold = std::pow(2., n - difficulty);
+        threshold = std::pow(2., m - difficulty);
         dp_max_it = 20 * std::pow(2., difficulty);
         points_per_version = beta * nslots;
 
@@ -69,7 +70,7 @@ public:
 
 
 /* Non-essential counters but helpful to have, e.g. n_collisions/sec */
-class BaseCounters {
+class Counters {
 public:
  	const u64 interval = 1LL << 16; // for printing only
  	const double min_delay = 1;   // for printing only
@@ -101,8 +102,8 @@ public:
 	u64 bytes_sent_prev = 0;
 	double last_display;
 	
-	BaseCounters() {}
-	BaseCounters(bool display_active) : display_active(display_active) {}
+	Counters() {}
+	Counters(bool display_active) : display_active(display_active) {}
 
 	void ready(int n, u64 _w)
 	{

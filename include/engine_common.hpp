@@ -20,39 +20,11 @@ inline bool is_distinguished_point(u64 x, u64 threshold)
     return x <= threshold;
 }
 
-/* try to iterate for 1s. Return #it/s */
-template<typename ConcreteProblem>
-static double sequential_benchmark(ConcreteProblem& Pb)
-{
-    u64 i = 42;
-    u64 threshold = (1ull << (Pb.n - 1));
-    double start = wtime();
-    u64 total = 0;
-    u64 k = 100000;
-    u64 x = 0;
-    double delta = 0.;
-    
-    while (delta < 1.) {
-        for (u64 j = 0; j < k; j++) {
-            u64 y = Pb.mixf(i, x);
-            if (is_distinguished_point(y, threshold))
-                x = j;
-            else
-                x = y;
-        }
-        total += k;
-        delta = wtime() - start;
-    }
-    return total / delta;
-}
-
 /*
- * Given an input, iterate functions either F or G until a distinguished point
- * is found, save the distinguished point in out_pt and output_bytes
- * Then return `true`. If the iterations limit is passed, returns `false`.
+ * Given an element of the RANGE of f, iterate the function until a distinguished point is found.
  */
-template<typename ConcreteProblem>
-optional<pair<u64,u64>> generate_dist_point(ConcreteProblem& Pb, u64 i, const Parameters &params, u64 x)
+template<typename ProblemWrapper>
+optional<pair<u64,u64>> generate_dist_point(ProblemWrapper& wrapper, u64 i, const Parameters &params, u64 x)
 {
     /* The probability, p, of NOT finding a distinguished point after the loop is
      * Let: theta := 2^-d
@@ -60,7 +32,7 @@ optional<pair<u64,u64>> generate_dist_point(ConcreteProblem& Pb, u64 i, const Pa
      * p = (1 - theta)^N =>  let ln(p) <= -k
      */
     for (u64 j = 0; j < params.dp_max_it; j++) {
-        u64 y = Pb.mixf(i, x);
+        u64 y = wrapper.mixf(i, x);
         if (is_distinguished_point(y, params.threshold))
             return optional(pair(y, j + 1));
         x = y;
@@ -74,8 +46,8 @@ optional<pair<u64,u64>> generate_dist_point(ConcreteProblem& Pb, u64 i, const Pa
  * find the earliest collision in the sequence before the distinguished point
  * add a drawing to illustrate this.
  */
-template<class ConcreteProblem, class Counters>
-optional<tuple<u64,u64,u64>> walk(ConcreteProblem& Pb, Counters &ctr, u64 i, u64 x0, u64 len0, u64 x1, u64 len1)
+template<class ProblemWrapper, class Counters>
+optional<tuple<u64,u64,u64>> walk(ProblemWrapper& wrapper, Counters &ctr, u64 i, u64 x0, u64 len0, u64 x1, u64 len1)
 {
     /****************************************************************************+
      *            walk the longest sequence until they are equal                 |
@@ -93,9 +65,9 @@ optional<tuple<u64,u64,u64>> walk(ConcreteProblem& Pb, Counters &ctr, u64 i, u64
     /* move the longest sequence until the remaining number of steps is equal */
     /* to the shortest sequence. */
     for (; len0 > len1; len0--)
-        x0 = Pb.mixf(i, x0);
+        x0 = wrapper.mixf(i, x0);
     for (; len0 < len1; len1--)
-        x1 = Pb.mixf(i, x1);
+        x1 = wrapper.mixf(i, x1);
   
     if (x0 == x1) { /* robin-hood */
         ctr.walk_robinhood();
@@ -105,9 +77,9 @@ optional<tuple<u64,u64,u64>> walk(ConcreteProblem& Pb, Counters &ctr, u64 i, u64
     /* now both sequences needs exactly `len` steps to reach the common distinguished point */
     for (u64 j = 0; j < len0; ++j) {
         /* walk them together and check each time if their output are equal     */
-        /* return as soon equality is found. The equality could be a robinhood. */
-        u64 y0 = Pb.mixf(i, x0);
-        u64 y1 = Pb.mixf(i, x1);
+        /* return as soon equality is found. */
+        u64 y0 = wrapper.mixf(i, x0);
+        u64 y1 = wrapper.mixf(i, x1);
 
         /* First, do the outputs collide? If yes, return true and exit. */
         if (y0 == y1) {
@@ -124,8 +96,8 @@ optional<tuple<u64,u64,u64>> walk(ConcreteProblem& Pb, Counters &ctr, u64 i, u64
 }
 
 
-template<class ConcreteProblem, class Counters>
-optional<tuple<u64,u64,u64>> process_distinguished_point(ConcreteProblem &Pb, Counters &ctr, PcsDict &dict, 
+template<class ProblemWrapper, class Counters>
+optional<tuple<u64,u64,u64>> process_distinguished_point(ProblemWrapper &wrapper, Counters &ctr, PcsDict &dict, 
                                                         u64 i, u64 start0, u64 end, u64 len0)
 {
     auto probe = dict.pop_insert(end, start0, len0);
@@ -135,7 +107,7 @@ optional<tuple<u64,u64,u64>> process_distinguished_point(ConcreteProblem &Pb, Co
     }
 
     auto [start1, len1] = *probe;
-    auto collision = walk(Pb, ctr, i, start0, len0, start1, len1);  
+    auto collision = walk(wrapper, ctr, i, start0, len0, start1, len1);  
     if (not collision) 
         return nullopt;         /* robin-hood, or dict false positive */
 
@@ -146,7 +118,7 @@ optional<tuple<u64,u64,u64>> process_distinguished_point(ConcreteProblem &Pb, Co
     }
 
     ctr.found_collision();
-    if (Pb.mix_good_pair(i, x0, x1)) {
+    if (wrapper.mix_good_pair(i, x0, x1)) {
         printf("\nFound golden collision!\n");
         return optional(tuple(i, x0, x1));
     }
