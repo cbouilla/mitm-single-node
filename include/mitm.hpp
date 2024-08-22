@@ -16,12 +16,15 @@ template <typename AbstractProblem>
 class ConcreteCollisionProblem {
 public:
     const AbstractProblem &pb;
+    const int n, m;
     u64 n_eval;      // #evaluations of (mix)f.  This does not count the invocations of f() by pb.good_pair().
 
-    ConcreteCollisionProblem(const AbstractProblem &pb) : pb(pb)
+    ConcreteCollisionProblem(const AbstractProblem &pb) : pb(pb), n(pb.n), m(pb.m)
     {
         static_assert(std::is_base_of<AbstractCollisionProblem, AbstractProblem>::value,
             "problem not derived from mitm::AbstractCollisionProblem");
+
+        assert(0);   // not reay yet
     }
 
     /* randomization by a family of permutations of {0, 1}^n */
@@ -190,20 +193,20 @@ pair<u64, u64> claw_search(const Problem& pb, Parameters &params, PRNG &prng)
         printf("Starting claw search with f : {0,1}^%d --> {0, 1}^%d\n", pb.n, pb.m);
 
     if (pb.n == pb.m) {
-        params.finalize(pb.n, pb.m);
         if (params.verbose)
             printf("  - using |Domain| == |Range| mode.  Expecting 1.8*n/w rounds.\n");
         EqualSizeClawWrapper<Problem> wrapper(pb);
+        params.finalize(wrapper.n, wrapper.m);
         auto [i, a, b] = _Engine::run(wrapper, params, prng);
         auto [u, v] = wrapper.swap(i, a, b);
         x0 = wrapper.mix(i, u);
         x1 = wrapper.mix(i, v);
     } else if (pb.n < pb.m) {
-        params.finalize(pb.n + 1, pb.m);
         if (params.verbose)
             printf("  - using |Domain| << |Range| mode.  Expecting 0.9*n/w rounds.\n");
         LargerRangeClawWrapper<Problem> wrapper(pb);
         auto [i, a, b] = _Engine::run(wrapper, params, prng);
+        params.finalize(wrapper.n, wrapper.m);
         auto [u, v] = wrapper.swap(i, a, b);
         x0 = wrapper.mix(i, u);
         x1 = wrapper.mix(i, v);

@@ -27,7 +27,7 @@ static tuple<u64,u64,u64> run(ProblemWrapper& wrapper, Parameters &params, PRNG 
     printf("Generating %.1f*w = %" PRId64 " = 2^%0.2f distinguished point / version\n", 
         params.beta, params.points_per_version, std::log2(params.points_per_version));
 
-    u64 mask = make_mask(wrapper.pb.m);
+    u64 mask = make_mask(wrapper.m);
     u64 i = 0;                 /* index of families of mixing functions */
     optional<tuple<u64,u64,u64>> solution;    /* (i, x0, x1)  */
     u64 root_seed = prng.rand();

@@ -36,7 +36,7 @@ tuple<u64,u64,u64> controller(const ProblemWrapper& wrapper, const MpiParameters
 	u64 ndp_total = 0;
 	u64 ncoll_total = 0;
 	u64 nf_total = 0;
-	u64 mask = (1ll << wrapper.pb.m) - 1;
+	u64 mask = make_mask(wrapper.m);
 	double start = wtime();
 
 	for (;;) {
@@ -119,7 +119,7 @@ tuple<u64,u64,u64> controller(const ProblemWrapper& wrapper, const MpiParameters
 
 		double delta = wtime() - round_start;
 
-		u64 N = 1ull << wrapper.pb.n;
+		u64 N = 1ull << wrapper.n;
 		char hsrate[8], hrrate[8], hnrate[8];
 		human_format(nf_send / params.n_send / delta, hsrate);
 		human_format(nf_recv / params.n_recv / delta, hrrate);

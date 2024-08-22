@@ -14,7 +14,7 @@ namespace mitm {
 template<class ProblemWrapper>
 void sender(ProblemWrapper& wrapper, const MpiParameters &params)
 {
-	u64 mask = make_mask(wrapper.pb.m);
+	u64 mask = make_mask(wrapper.m);
 	for (;;) {
 		/* get data from controller */
 		u64 msg[3];   // i, root_seed, stop?

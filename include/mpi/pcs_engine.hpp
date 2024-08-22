@@ -24,7 +24,7 @@ static tuple<u64,u64,u64> run(ProblemWrapper& wrapper, MpiParameters &params, PR
 
     /* safety check: all ranks evaluate the same function */
     u64 test[3];
-    u64 mask = make_mask(wrapper.pb.m);
+    u64 mask = make_mask(wrapper.m);
     test[0] = prng.rand() & mask;
     test[1] = prng.rand() & mask;
     test[2] = wrapper.mixf(test[0], test[1]);
