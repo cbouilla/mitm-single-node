@@ -141,7 +141,7 @@ public:
     /* pick either f() or g() */
     bool choose(u64 i, u64 x) const
     {
-        return (x & 1); //scalar_product(x, i);
+        return ((x ^ ((x >> pb.n) * (i | 1))) >> pb.n) & 1; //scalar_product(x, i);
     }
 
     u64 mix(u64 i, u64 x) const   // {0, 1}^m  x  {0, 1}^m ---> {0, 1}^n
@@ -152,8 +152,8 @@ public:
     u64 mixf(u64 i, u64 x)        // {0, 1}^m  x  {0, 1}^m ---> {0, 1}^m
     {
         n_eval += 1;
-        u64 y = mix(i, x);
         if (choose(i, x))
+        u64 y = mix(i, x);
             return pb.f(y);
         else
             return pb.g(y);
