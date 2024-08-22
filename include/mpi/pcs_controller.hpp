@@ -88,7 +88,6 @@ tuple<u64,u64,u64> controller(const ProblemWrapper& wrapper, const MpiParameters
 				}
 
 				case TAG_SOLUTION:
-					assert(i == buffer[0]);
 					solution = optional(tuple(buffer[0], buffer[1], buffer[2]));
 					stop = 1;
 			}
