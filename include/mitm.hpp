@@ -139,7 +139,7 @@ public:
     /* pick either f() or g() */
     bool choose(u64 i, u64 x) const
     {
-        return (x >> pb.n) & 1;
+        return ((x * (i | 1)) >> pb.n) & 1;
     }
 
     u64 mix(u64 i, u64 x) const   // {0, 1}^m  x  {0, 1}^m ---> {0, 1}^n
