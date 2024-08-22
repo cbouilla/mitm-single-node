@@ -64,7 +64,7 @@ pair<u64, u64> collision_search(const AbstractProblem& Pb, Parameters &params, P
 
 /****************************************************************************************/
 
-// code duplication could be achieved with the CRTP...
+// code deduplication could be achieved with the CRTP...
 
 template <class AbstractProblem>
 class EqualSizeClawWrapper {
@@ -135,7 +135,7 @@ public:
     /* pick either f() or g() */
     bool choose(u64 i, u64 x) const
     {
-        return x & 1;
+        return ((x * (i | 1)) >> (pb.m - 1)) & 1;
     }
 
     u64 mix(u64 i, u64 x) const   // {0, 1}^m  x  {0, 1}^m ---> {0, 1}^n

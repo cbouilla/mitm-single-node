@@ -22,12 +22,8 @@ static tuple<u64,u64,u64> run(ProblemWrapper& wrapper, Parameters &params, PRNG 
     ctr.ready(n, dict.n_slots);
     double log2_w = std::log2(dict.n_slots);
 
-    printf("Starting collision search with seed=%016" PRIx64 ", difficulty=%.2f\n", prng.seed, params.difficulty);
+    printf("Starting collision search with seed=%016" PRIx64 "\n", prng.seed);
     printf("Initialized a dict with %" PRId64 " slots = 2^%0.2f slots\n", dict.n_slots, log2_w);
-    printf("Expected iterations / collision = (2^%0.2f + 2^%.2f) \n", 
-        n - params.difficulty - log2_w, 1 + params.difficulty);
-    printf("Expected #iterations = (2^%0.2f + 2^%.2f) \n", 
-        (n - 1) + (n - params.difficulty - log2_w), n + params.difficulty);
     printf("Generating %.1f*w = %" PRId64 " = 2^%0.2f distinguished point / version\n", 
         params.beta, params.points_per_version, std::log2(params.points_per_version));
 

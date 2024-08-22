@@ -14,16 +14,22 @@ namespace mitm {
 
 class Parameters {
 public:
+    /* hardware-dependent */
     u64 nbytes_memory = 0;        /* how much RAM to use on each machine */
-    double difficulty = -1;       /* -log2(proportion of distinguished points). -1 == auto-choose */
-    double beta = 10;             /* use function variant for beta*w distinguished points */
     int n_nodes = 1;              /* #hosts (with shared RAM) */
-    bool verbose = 1;             /* print progress information */
-
+    
+    /* algorithm parameters */
+    double beta = 10;             /* use function variant for beta*w distinguished points */
+    double theta = -1;            /* proportion of distinguished points. -1 == auto-choose */
+    
+    /* other relevant quantities deduced from the above */
     u64 threshold;                /* any integer less than this is a DP */
-    u64 dp_max_it;                /* how many iterations to find a DP */
+    u64 w;                        /* # slots in the dict */
+    u64 dp_max_it;                /* how many iterations to find a DP. */
     u64 points_per_version;       /* #DP per version of the function */
-    u64 nslots;                   /* entries in the dict */
+
+	/* utilities */
+    bool verbose = 1;             /* print progress information */
 
     static double optimal_theta(double log2_w, int n)
     {
@@ -35,35 +41,29 @@ public:
         if (nbytes_memory == 0)
             errx(1, "the amount of RAM to use (per node) must be specified");
 
-        nslots = PcsDict::get_nslots(nbytes_memory * n_nodes);
-        double log2_w = std::log2(nslots * n_nodes);
-        double theta = optimal_theta(log2_w, n);
+        w = PcsDict::get_nslots(nbytes_memory * n_nodes);
+        double log2_w = std::log2(w * n_nodes);
         /* auto-choose the difficulty if not set */
-        if (difficulty < 0) {
-            difficulty = -theta;
-            if (difficulty < 0)
-                difficulty = 0;
+        double auto_theta = optimal_theta(log2_w, n);
+        if (theta < 0) {
+        	theta = auto_theta;
+            if (theta > 1)
+                theta = 1;
             if (verbose)
-                printf("AUTO-TUNING: setting difficulty %.2f\n", difficulty);
+                printf("AUTO-TUNING: setting 1/theta == %.2f\n", 1 / theta);
         } else {
             if (verbose)
-                printf("NOTICE: using difficulty=%.2f vs ``optimal''=%.2f\n", difficulty, theta);
+                printf("NOTICE: using 1/theta == %.2f vs ``optimal'' 1/theta == %.2f\n", 1/theta, auto_theta);
         }
-        threshold = std::pow(2., m - difficulty);
-        dp_max_it = 20 * std::pow(2., difficulty);
-        points_per_version = beta * nslots;
+        threshold = pow(2, m) * theta;
+        dp_max_it = 20 / theta;
+        points_per_version = beta * w;
 
         /* display warnings if problematic choices were made */
-        if (verbose && difficulty <= 0) {
+        if (verbose && theta == 1) {
             printf("***** WARNING *****\n***** WARNING *****\n***** WARNING *****\n");
             printf("---> zero difficulty (use the naive technique!)\n");
             printf("***** WARNING *****\n***** WARNING *****\n***** WARNING *****\n");            
-        }
-        if (verbose && n - difficulty < log2_w) {
-            printf("***** WARNING *****\n***** WARNING *****\n***** WARNING *****\n");
-            printf("---> Too much memory (2^%.2f slots) but only 2^%.2f possible distinguished points\n",
-                log2_w, n - difficulty);
-            printf("***** WARNING *****\n***** WARNING *****\n***** WARNING *****\n");
         }
     }
 };

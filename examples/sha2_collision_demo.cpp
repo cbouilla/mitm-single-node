@@ -87,7 +87,7 @@ mitm::Parameters process_command_line_options(int argc, char **argv)
             params.nbytes_memory = mitm::human_parse(optarg);
             break;
         case 'd':
-            params.difficulty = std::stoi(optarg);
+            params.theta = std::stof(optarg);
             break;
         case 'n':
             n = std::stoi(optarg);
