@@ -152,8 +152,8 @@ public:
     u64 mixf(u64 i, u64 x)        // {0, 1}^m  x  {0, 1}^m ---> {0, 1}^m
     {
         n_eval += 1;
-        if (choose(i, x))
         u64 y = mix(i, x);
+        if (choose(i, x))
             return pb.f(y);
         else
             return pb.g(y);
