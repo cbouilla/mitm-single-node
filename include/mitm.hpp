@@ -70,9 +70,10 @@ template <class AbstractProblem>
 class EqualSizeClawWrapper {
 public:
     const AbstractProblem& pb;
+    const int n, m;
     u64 n_eval;        // #evaluations of (mix)f.  This does not count the invocations of f() by pb.good_pair().
 
-    EqualSizeClawWrapper(const AbstractProblem& pb) : pb(pb)
+    EqualSizeClawWrapper(const AbstractProblem& pb) : pb(pb), n(pb.n), m(pb.m)
     {
         static_assert(std::is_base_of<AbstractClawProblem, AbstractProblem>::value,
             "problem not derived from mitm::AbstractClawProblem");
@@ -126,25 +127,26 @@ private:
 
 public:
     const AbstractProblem& pb;
+    const int n, m;
     u64 n_eval;        // #evaluations of (mix)f.  This does not count the invocations of f() by pb.good_pair().
 
-    LargerRangeClawWrapper(const AbstractProblem& pb) : pb(pb)
+    LargerRangeClawWrapper(const AbstractProblem& pb) : pb(pb), n(pb.n + 1), m(pb.m)
     {
         static_assert(std::is_base_of<AbstractClawProblem, AbstractProblem>::value,
             "problem not derived from mitm::AbstractClawProblem");
-        assert(pb.n < pb.m);
+        assert(pb.n <= pb.m);
         in_mask = make_mask(pb.n);
     }
 
     /* pick either f() or g() */
     bool choose(u64 i, u64 x) const
     {
-        return scalar_product(x >> pb.n, i);
+        return (x & 1); //scalar_product(x, i);
     }
 
     u64 mix(u64 i, u64 x) const   // {0, 1}^m  x  {0, 1}^m ---> {0, 1}^n
     {
-        return (i ^ x) & in_mask;
+        return (x ^ ((x >> pb.n) * (i | 1))) & in_mask;
     }
 
     u64 mixf(u64 i, u64 x)        // {0, 1}^m  x  {0, 1}^m ---> {0, 1}^m
