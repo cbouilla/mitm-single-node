@@ -205,8 +205,8 @@ pair<u64, u64> claw_search(const Problem& pb, Parameters &params, PRNG &prng)
         if (params.verbose)
             printf("  - using |Domain| << |Range| mode.  Expecting 0.9*n/w rounds.\n");
         LargerRangeClawWrapper<Problem> wrapper(pb);
-        auto [i, a, b] = _Engine::run(wrapper, params, prng);
         params.finalize(wrapper.n, wrapper.m);
+        auto [i, a, b] = _Engine::run(wrapper, params, prng);
         auto [u, v] = wrapper.swap(i, a, b);
         x0 = wrapper.mix(i, u);
         x1 = wrapper.mix(i, v);
