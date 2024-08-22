@@ -29,6 +29,18 @@ u64 make_mask(int n)
     return (n == 64) ? 0xffffffffffffffffull : (1ull << n) - 1;
 }
 
+bool scalar_product(u64 a, u64 b)
+{
+    u64 x = a & b;
+    x ^= x >> 32;
+    x ^= x >> 16;
+    x ^= x >> 8;
+    x ^= x >> 4;
+    x ^= x >> 2;
+    x ^= x >> 1;
+    return x & 1;
+}
+
 double wtime() /* with inline it doesn't violate one definition rule */
 {
 
