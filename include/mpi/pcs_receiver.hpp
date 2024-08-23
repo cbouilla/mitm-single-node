@@ -12,7 +12,8 @@ namespace mitm {
 template<class ProblemWrapper>
 void receiver(ProblemWrapper& wrapper, const MpiParameters &params)
 {
-    PcsDict dict(params.nbytes_memory / params.recv_per_node);
+    PcsDict dict(params.w / params.n_recv);
+    assert(params.w == dict.n_slots * params.n_recv);
 
 	for (;;) {
 		/* get data from controller */
@@ -37,7 +38,7 @@ void receiver(ProblemWrapper& wrapper, const MpiParameters &params)
 					u64 start = buffer[k];
 					u64 end = buffer[k + 1];
 					u64 len = buffer[k + 2];
-					auto solution = process_distinguished_point(wrapper, ctr, dict, i, start, end, len);
+					auto solution = process_distinguished_point(wrapper, ctr, params, dict, i, start, end, len);
 					if (solution) {          // call home !
 						// maybe save it to a file, just in case
 						auto [i, x0, x1] = *solution;

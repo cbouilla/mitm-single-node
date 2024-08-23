@@ -31,6 +31,9 @@ static tuple<u64,u64,u64> run(ProblemWrapper& wrapper, MpiParameters &params, PR
     MPI_Bcast(test, 3, MPI_UINT64_T, 0, params.world_comm);
     assert(test[2] == wrapper.mixf(test[0], test[1]));
 
+    /* safety check: w is a multiple of n_recv */
+    assert((params.w % params.n_recv) == 0);
+
     switch (params.role) {
     case CONTROLLER:
     	std::tie(i, x0, x1) = controller(wrapper, params, prng);

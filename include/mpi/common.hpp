@@ -25,7 +25,6 @@ public:
 	int role = UNDECIDED;                   /* enum role */
 	int rank, size;                         // for the global communicator
 	int local_rank, local_size;             /* rank among the local group of the inter-communicator */
-	int n_recv;
 	int n_send;
 	int n_nodes;
 

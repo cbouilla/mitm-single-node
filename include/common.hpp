@@ -17,7 +17,8 @@ public:
     /* hardware-dependent */
     u64 nbytes_memory = 0;        /* how much RAM to use on each machine */
     int n_nodes = 1;              /* #hosts (with shared RAM) */
-    
+    int n_recv = 1;               /* #instances of the dictionary */
+
     /* algorithm parameters */
     double beta = 10;             /* use function variant for beta*w distinguished points */
     double theta = -1;            /* proportion of distinguished points. -1 == auto-choose */
@@ -41,7 +42,7 @@ public:
         if (nbytes_memory == 0)
             errx(1, "the amount of RAM to use (per node) must be specified");
 
-        w = PcsDict::get_nslots(nbytes_memory * n_nodes);
+        w = PcsDict::get_nslots(nbytes_memory * n_nodes, n_recv);
         /* auto-choose the difficulty if not set */
         double auto_theta = optimal_theta(w, n);
         if (theta < 0) {
@@ -79,6 +80,7 @@ public:
 	u64 n_dp = 0;                   // since beginning
 	u64 n_points_trails = 0;
 	u64 n_collisions = 0;           // since beginning
+	u64 colliding_len = 0;          // since beginning
 	u64 bad_dp = 0;
 	u64 bad_probe = 0;
 	u64 bad_collision = 0;
@@ -91,6 +93,7 @@ public:
 	double last_update;             // timestamp of the last flush
 	u64 n_dp_i = 0;                     // since last flush
 	u64 n_collisions_i = 0;             // since last flush
+	u64 colliding_len_i = 0;
 
 	/* display management */
 	bool display_active = 1;
@@ -161,8 +164,13 @@ public:
 
 	void round_display()
 	{
-		printf("\n%.2f avg trail length.  %.2f%% probe failure.  %.2f%% walk-robinhhod.  %.2f%% walk-noncolliding.  %.2f%% same-value\n",
-                (double) n_points_trails / n_dp, 100. * bad_probe / n_dp_i, 100. * bad_walk_robinhood / n_dp_i, 100. * bad_walk_noncolliding / n_dp_i, 100. * bad_collision / n_dp_i);
+		printf("\n%.2f avg trail length (%.2f collliding).  %.2f%% probe failure.  %.2f%% walk-robinhhod.  %.2f%% walk-noncolliding.  %.2f%% same-value\n",
+                (double) n_points_trails / n_dp, 
+                (double) colliding_len / 2.0 / n_collisions, 
+                100. * bad_probe / n_dp_i, 
+                100. * bad_walk_robinhood / n_dp_i, 
+                100. * bad_walk_noncolliding / n_dp_i, 
+                100. * bad_collision / n_dp_i);
 	}
 
 	// call this when a new DP is found
@@ -175,7 +183,10 @@ public:
 			 display();
 	}
 
-	void found_collision() {
+	void found_collision(u64 len0, u64 len1) 
+	{
+		colliding_len += len0 + len1;
+		colliding_len_i += len0 + len1;
 		n_collisions += 1;
 		n_collisions_i += 1;
 	}
@@ -187,8 +198,7 @@ public:
 		display();
 		round_display();
 		n_flush += 1;
-		n_dp_i = 0;
-		n_collisions_i = 0;
+		n_dp_i = n_collisions_i = colliding_len_i = 0;
 		last_update = wtime();
 		bad_dp = bad_probe = bad_walk_robinhood = bad_walk_noncolliding = bad_collision = 0;
 	}

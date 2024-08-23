@@ -79,12 +79,13 @@ public:
 
 	vector<struct pcs_entry> A;
   
-	static u64 get_nslots(u64 nbytes)
+	static u64 get_nslots(u64 nbytes, u64 forced_multiple)
 	{
-		return nbytes / (sizeof(struct pcs_entry));
+		u64 w = nbytes / (sizeof(struct pcs_entry));
+		return (w / forced_multiple) * forced_multiple;
 	}
 
-	PcsDict(u64 n_bytes) : n_slots(get_nslots(n_bytes))
+	PcsDict(u64 w) : n_slots(w)
 	{
 		A.resize(n_slots);
 		flush();
@@ -109,12 +110,13 @@ public:
 	{
 		// u64 h = hash(end);
 		u64 idx = end % n_slots;
+		u64 key = end / n_slots;
 
 		struct pcs_entry &e = A[idx];
 
 		// u32 key = h >> 32;
-		if (e.end != end || is_empty(e)) [[likely]] {
-			e.end = end;
+		if (e.end != key || is_empty(e)) [[likely]] {
+			e.end = key;
 			e.start = start;
 			e.length = (u32) len;
 			return nullopt;

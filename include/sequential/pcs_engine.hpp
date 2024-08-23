@@ -18,9 +18,10 @@ static tuple<u64,u64,u64> run(ProblemWrapper& wrapper, Parameters &params, PRNG 
 {
     Counters ctr;
     int n = wrapper.pb.n;
-    PcsDict dict(params.nbytes_memory);
-    ctr.ready(n, dict.n_slots);
-    double log2_w = std::log2(dict.n_slots);
+    u64 w = PcsDict::get_nslots(params.nbytes_memory, 1);
+    PcsDict dict(w);
+    ctr.ready(n, w);
+    double log2_w = std::log2(w);
 
     printf("Starting collision search with seed=%016" PRIx64 "\n", prng.seed);
     printf("Initialized a dict with %" PRId64 " slots = 2^%0.2f slots\n", dict.n_slots, log2_w);
@@ -55,7 +56,7 @@ static tuple<u64,u64,u64> run(ProblemWrapper& wrapper, Parameters &params, PRNG 
             auto [end, len] = *dp;
             ctr.found_distinguished_point(len);
             
-            auto outcome = process_distinguished_point(wrapper, ctr, dict, i, start, end, len);
+            auto outcome = process_distinguished_point(wrapper, ctr, params, dict, i, start, end, len);
             if (outcome) {
                 solution = outcome;
                 break;

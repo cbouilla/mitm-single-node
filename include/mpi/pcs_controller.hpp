@@ -24,13 +24,10 @@ tuple<u64,u64,u64> controller(const ProblemWrapper& wrapper, const MpiParameters
 	human_format(params.n_nodes * params.nbytes_memory, htdsize);
 	double log2_w = std::log2(params.w);
 	printf("RAM per node == %sB buffer + %sB dict.  Total dict size == %s (2^%.2f slots)\n", hbsize, hdsize, htdsize, log2_w);
-
-	/* this is quite wrong, actually */
     printf("Generating %.1f*w = %" PRId64 " = 2^%0.2f distinguished point / version\n", 
         	params.beta, params.points_per_version, std::log2(params.points_per_version));
 
     optional<tuple<u64,u64,u64>> solution;    /* (i, x0, x1)  */
-	
 	u64 stop = 0;
 	u64 nround = 0;
 	u64 ndp_total = 0;
