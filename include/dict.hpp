@@ -69,24 +69,22 @@ public:
  */
 class PcsDict {
 public:
-	struct __attribute__ ((packed)) pcs_entry {
-		u64 end;            // consider that it could be avoided or truncated
-		u64 start;
-		u32 length;         // consider that it could be avoided
-	};
-
-	const u64 n_slots;     /* How many slots a dictionary have */
-
-	vector<struct pcs_entry> A;
+	u64 m;
+	u64 start_mask;
+	u64 key_mask;
+	const u64 n_slots;     /* size of A */
+	vector<u64> A;
   
 	static u64 get_nslots(u64 nbytes, u64 forced_multiple)
 	{
-		u64 w = nbytes / (sizeof(struct pcs_entry));
+		u64 w = nbytes / (sizeof(u64));
 		return (w / forced_multiple) * forced_multiple;
 	}
 
-	PcsDict(u64 w) : n_slots(w)
+	PcsDict(u64 m, u64 w) : m(m), n_slots(w)
 	{
+		start_mask = make_mask(m);
+		key_mask = (m == 64) ? 0 : 0xffffffffffffffff << m;
 		A.resize(n_slots);
 		flush();
 	}
@@ -97,36 +95,24 @@ public:
 	void flush()
 	{
 		for (u64 i = 0; i < n_slots; i++)
-			A[i].length = 0xffffffff;
+			A[i] = 0;
 	}
   
-	bool is_empty(const struct pcs_entry &e) const
+  	// return (start'), maybe
+	optional<u64> pop_insert(u64 end, u64 start)
 	{
-		return e.length == 0xffffffff;
-	}
-
-  	// return (start', length'), maybe
-	optional<pair<u64, u64>> pop_insert(u64 end, u64 start, u64 len)
-	{
-		// u64 h = hash(end);
 		u64 idx = end % n_slots;
-		u64 key = end / n_slots;
+		u64 key = ((end / n_slots) << m) & key_mask;
 
-		struct pcs_entry &e = A[idx];
+		u64 e = A[idx];
+		u64 ekey = e & key_mask;
+		assert((start & start_mask) == start);
+		A[idx] = start ^ key;
 
-		// u32 key = h >> 32;
-		if (e.end != key || is_empty(e)) [[likely]] {
-			e.end = key;
-			e.start = start;
-			e.length = (u32) len;
+		if (ekey != key || e == 0)
 			return nullopt;
-		}
-
-		u64 prev_start = e.start;
-		u64 prev_len = e.length;
-		e.start = start;
-		e.length = len;
-		return optional(pair(prev_start, prev_len));
+		else
+			return optional(e & start_mask);
 	}
 };
 

@@ -12,18 +12,20 @@
 namespace mitm {
 
 /* This works when |Range| >= |Domain| in the input problem */
-template <typename AbstractProblem>
+template <class AbstractProblem>
 class ConcreteCollisionProblem {
 public:
     const AbstractProblem &pb;
     const int n, m;
-    u64 n_eval;      // #evaluations of (mix)f.  This does not count the invocations of f() by pb.good_pair().
+    const u64 in_mask, out_mask;
+    u64 n_eval;                // #evaluations of (mix)f.  This does not count the invocations of f() by pb.good_pair().
 
-    ConcreteCollisionProblem(const AbstractProblem &pb) : pb(pb), n(pb.n), m(pb.m)
+
+    ConcreteCollisionProblem(const AbstractProblem &pb) : pb(pb), n(pb.n), m(pb.m), in_mask(make_mask(pb.n)), out_mask(make_mask(pb.m))
     {
         static_assert(std::is_base_of<AbstractCollisionProblem, AbstractProblem>::value,
             "problem not derived from mitm::AbstractCollisionProblem");
-
+        assert(m <= 64);
         assert(0);   // not reay yet
     }
 
@@ -72,14 +74,16 @@ pair<u64, u64> collision_search(const AbstractProblem& Pb, Parameters &params, P
 template <class AbstractProblem>
 class EqualSizeClawWrapper {
 public:
-    const AbstractProblem& pb;
+    const AbstractProblem &pb;
     const int n, m;
-    u64 n_eval;        // #evaluations of (mix)f.  This does not count the invocations of f() by pb.good_pair().
+    const u64 in_mask, out_mask;
+    u64 n_eval;                // #evaluations of (mix)f.  This does not count the invocations of f() by pb.good_pair().
 
-    EqualSizeClawWrapper(const AbstractProblem& pb) : pb(pb), n(pb.n), m(pb.m)
+    EqualSizeClawWrapper(const AbstractProblem& pb) : pb(pb), n(pb.n), m(pb.m), in_mask(make_mask(pb.n)), out_mask(make_mask(pb.m))
     {
         static_assert(std::is_base_of<AbstractClawProblem, AbstractProblem>::value,
             "problem not derived from mitm::AbstractClawProblem");
+        assert(m <= 64);
         assert(pb.n == pb.m);
     }
 
@@ -125,27 +129,26 @@ public:
 
 template <class AbstractProblem>
 class LargerRangeClawWrapper {
-private:
-    u64 in_mask;
+public:
+    const AbstractProblem &pb;
+    const int n, m;
+    const u64 in_mask, out_mask;
+    u64 n_eval;                // #evaluations of (mix)f.  This does not count the invocations of f() by pb.good_pair().
     u64 choice_mask;
 
-    inline u64 full_mix(u64 i, u64 x) const
-    {
-        return x ^ ((x >> n) * (i | 1));
-    }
-
-public:
-    const AbstractProblem& pb;
-    const int n, m;
-    u64 n_eval;        // #evaluations of (mix)f.  This does not count the invocations of f() by pb.good_pair().
-
-    LargerRangeClawWrapper(const AbstractProblem& pb) : pb(pb), n(pb.n + 1), m(pb.m)
+    LargerRangeClawWrapper(const AbstractProblem& pb) : pb(pb), n(pb.n + 1), m(pb.m), in_mask(make_mask(pb.n)), out_mask(make_mask(pb.m)) 
     {
         static_assert(std::is_base_of<AbstractClawProblem, AbstractProblem>::value,
             "problem not derived from mitm::AbstractClawProblem");
-        assert(pb.n <= pb.m);
-        in_mask = make_mask(pb.n);
-        choice_mask = 1ull << pb.n;
+        assert(m <= 64);
+        assert(n <= m);
+        choice_mask = 1ull << n;
+    }
+
+    inline u64 full_mix(u64 i, u64 x) const
+    {
+        u64 y = x * (i | 1);
+        return (y ^ (y >> n));
     }
 
     /* pick either f() or g() */

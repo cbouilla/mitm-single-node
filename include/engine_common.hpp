@@ -105,7 +105,7 @@ optional<pair<u64,u64>> walk(ProblemWrapper& wrapper, Counters &ctr, u64 i, u64 
  * `end` is [end of trail] / params.w
  */
 template<class ProblemWrapper>
-optional<pair<u64,u64>> walk_nolen1(ProblemWrapper& wrapper, Counters &ctr, const Parameters &params, u64 i, u64 x0, u64 len0, u64 end, u64 x1)
+optional<pair<u64,u64>> walk_nolen1(ProblemWrapper& wrapper, Counters &ctr, const Parameters &params, u64 i, u64 x0, u64 len0, u64 end0, u64 x1)
 {
     /****************************************************************************+
      *            walk the longest sequence until they are equal                 |
@@ -136,6 +136,11 @@ optional<pair<u64,u64>> walk_nolen1(ProblemWrapper& wrapper, Counters &ctr, cons
             break;
     }
 
+    if (x1 / params.n_recv != end0) {
+        ctr.walk_noncolliding();
+        return nullopt; 
+    }
+
     /* move the longest sequence until the remaining number of steps is equal */
     /* to the shortest sequence. */
     for (; len0 > len1; len0--)
@@ -149,14 +154,12 @@ optional<pair<u64,u64>> walk_nolen1(ProblemWrapper& wrapper, Counters &ctr, cons
         return nullopt;
     }
 
-    /* now both sequences needs exactly `len0` steps to reach the distinguished point */
-    for (u64 j = len1 - len0; j < len1; ++j) {
-        /* walk them together and check each time if their output are equal     */
-        /* return as soon equality is found. */
+    /* now both sequences needs exactly `len0` steps to reach the common distinguished point */
+    for (u64 j = len1 - len0;; ++j) {
+        /* walk them together */
         u64 y0 = wrapper.mixf(i, x0);
         u64 y1 = trail1[j];
-
-        /* First, do the outputs collide? If yes, return true and exit. */
+        /* do the outputs collide? If yes, return true and exit. */
         if (y0 == y1) {
             /* careful: x0 & x1 contain inputs before mixing */
             return std::make_optional(pair(x0, x1));
@@ -164,25 +167,26 @@ optional<pair<u64,u64>> walk_nolen1(ProblemWrapper& wrapper, Counters &ctr, cons
         x0 = y0;
         x1 = y1;
     }
-
-    if (x0 != x1)    /* End points of trails are different (false positive from the dictionnary, most likely) */
-        ctr.walk_noncolliding();
-    return nullopt; 
 }
 
 template<class ProblemWrapper>
 optional<tuple<u64,u64,u64>> process_distinguished_point(ProblemWrapper &wrapper, Counters &ctr, const Parameters &params, PcsDict &dict, 
-                                                        u64 i, u64 start0, u64 end, u64 len0)
+                                                        u64 i, u64 root_seed, u64 seed0, u64 end, u64 len0)
 {
-    auto probe = dict.pop_insert(end, start0, len0);
+    u64 start0 = (root_seed + params.multiplier * seed0) & wrapper.out_mask;
+
+    // auto probe = dict.pop_insert(end, start0, len0);
+    auto probe = dict.pop_insert(end, seed0);
     if (not probe) {
         ctr.probe_failure();
         return nullopt;
     }
 
-    auto [start1, len1] = *probe;
+    u64 seed1 = *probe;
+    u64 start1 = (root_seed + params.multiplier * seed1) & wrapper.out_mask;
     auto collision = walk_nolen1(wrapper, ctr, params, i, start0, len0, end, start1);  
-    //auto collision = walk(wrapper, ctr, i, start0, len0, start1, len1);  
+    // auto [start1, len1] = *probe;
+    // auto collision = walk(wrapper, ctr, i, start0, len0, start1, len1);  
     if (not collision) 
         return nullopt;         /* robin-hood, or dict false positive */
 
@@ -192,9 +196,10 @@ optional<tuple<u64,u64,u64>> process_distinguished_point(ProblemWrapper &wrapper
         return nullopt;    /* duh */
     }
 
-    ctr.found_collision(len0, len1);
+    ctr.found_collision(len0, len0);
     if (wrapper.mix_good_pair(i, x0, x1)) {
-        printf("\nFound golden collision!\n");
+        printf("\nFound golden collision! i=%" PRIx64 " root_seed=%" PRIx64 " seed0=%" PRIx64 ". Dict --> seed1=%" PRIx64 "\n", 
+            i, root_seed, seed0, seed1);
         return optional(tuple(i, x0, x1));
     }
     return nullopt;

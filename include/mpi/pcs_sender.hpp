@@ -15,6 +15,8 @@ template<class ProblemWrapper>
 void sender(ProblemWrapper& wrapper, const MpiParameters &params)
 {
 	u64 mask = make_mask(wrapper.m);
+    int jbits = std::log2(10 * params.w) + std::log2(1 / params.theta) + 8;
+    u64 jmask = make_mask(jbits);
 	for (;;) {
 		/* get data from controller */
 		u64 msg[3];   // i, root_seed, stop?
@@ -28,8 +30,7 @@ void sender(ProblemWrapper& wrapper, const MpiParameters &params)
     	double last_ping = wtime();
 		u64 i = msg[0];
 		u64 root_seed = msg[1];
-		u64 a = params.n_send * 0x2545f4914f6cdd1dull;
-		for (u64 j = root_seed + params.local_rank * 0x2545f4914f6cdd1dull;; j += a) {
+		for (u64 j = params.local_rank ;; j += params.n_send) {
 
 			/* call home? */
             if ((n_dp % 10000 == 9999) && (wtime() - last_ping >= params.ping_delay)) {
@@ -51,7 +52,12 @@ void sender(ProblemWrapper& wrapper, const MpiParameters &params)
 			 * 2) distinct for each senders
 			 * 3) not distinguished
 			 */
-			u64 start = j & mask;
+			if ((j & jmask) != j) {
+				printf("j=%" PRIx64 " vs jmask=%" PRIx64 ". n_dp=%" PRIx64 " local_rank=%d, n_send=%d\n", 
+					j, jmask, n_dp, params.local_rank, params.n_send);
+				MPI_Abort(MPI_COMM_WORLD, 1);
+			}
+			u64 start = (root_seed + j * params.multiplier) & mask;
 			if (is_distinguished_point(start, params.threshold))    // refuse to start from a DP
                 continue;
 
@@ -63,7 +69,7 @@ void sender(ProblemWrapper& wrapper, const MpiParameters &params)
             auto [end, len] = *dp;
 
             int target_recv = (int) (end % params.n_recv);
-            sendbuf.push3(start, end / params.n_recv, len, target_recv);
+            sendbuf.push3(j, end / params.n_recv, len, target_recv);
 		}
 
 		// now is a good time to collect stats

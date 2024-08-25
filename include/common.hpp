@@ -22,7 +22,8 @@ public:
     /* algorithm parameters */
     double beta = 10;             /* use function variant for beta*w distinguished points */
     double theta = -1;            /* proportion of distinguished points. -1 == auto-choose */
-    
+    u64 multiplier = 0x2545f4914f6cdd1dull;
+
     /* other relevant quantities deduced from the above */
     u64 threshold;                /* any integer less than this is a DP */
     u64 w;                        /* # slots in the dict */

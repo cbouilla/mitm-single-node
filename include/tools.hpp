@@ -26,7 +26,7 @@ namespace mitm {
 
 u64 make_mask(int n)
 {
-    return (n == 64) ? 0xffffffffffffffffull : (1ull << n) - 1;
+    return (n >= 64) ? 0xffffffffffffffffull : (1ull << n) - 1;
 }
 
 bool scalar_product(u64 a, u64 b)

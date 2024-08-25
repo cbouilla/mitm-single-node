@@ -12,7 +12,9 @@ namespace mitm {
 template<class ProblemWrapper>
 void receiver(ProblemWrapper& wrapper, const MpiParameters &params)
 {
-    PcsDict dict(params.w / params.n_recv);
+	int jbits = std::log2(10 * params.w) + std::log2(1 / params.theta) + 8;
+    // u64 jmask = make_mask(jbits);
+    PcsDict dict(jbits, params.w / params.n_recv);
     assert(params.w == dict.n_slots * params.n_recv);
 
 	for (;;) {
@@ -24,6 +26,7 @@ void receiver(ProblemWrapper& wrapper, const MpiParameters &params)
 
 		RecvBuffers recvbuf(params.inter_comm, TAG_POINTS, 3 * params.buffer_capacity);
 		u64 i = msg[0];
+		u64 root_seed = msg[1];
 		wrapper.n_eval = 0;
 		Counters ctr;
 		// receive and process data from senders
@@ -35,10 +38,10 @@ void receiver(ProblemWrapper& wrapper, const MpiParameters &params)
 			for (auto it = ready.begin(); it != ready.end(); it++) {
 				auto & buffer = **it;
 				for (size_t k = 0; k < buffer.size(); k += 3) {
-					u64 start = buffer[k];
+					u64 seed = buffer[k];
 					u64 end = buffer[k + 1];
 					u64 len = buffer[k + 2];
-					auto solution = process_distinguished_point(wrapper, ctr, params, dict, i, start, end, len);
+					auto solution = process_distinguished_point(wrapper, ctr, params, dict, i, root_seed, seed, end, len);
 					if (solution) {          // call home !
 						// maybe save it to a file, just in case
 						auto [i, x0, x1] = *solution;
