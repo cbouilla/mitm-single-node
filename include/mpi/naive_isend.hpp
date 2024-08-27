@@ -37,6 +37,7 @@ vector<pair<u64, u64>> naive_mpi_claw_search_isend(const AbstractProblem &Pb, Mp
         printf("RAM per node == %sB buffer + %sB dict\n", hbsize, hdsize);
     }
 
+    u64 ncoll = 0;
     for (int phase = 0; phase < 2; phase++) {
         // phase 0 == fill the dict with f()
         // phase 1 == probe the dict with g()
@@ -93,6 +94,7 @@ vector<pair<u64, u64>> naive_mpi_claw_search_isend(const AbstractProblem &Pb, Mp
                                 u64 y = keys[k];
                                 if (z != Pb.f(y))
                                     continue;    // false positive from truncation in the hash table
+                                ncoll += 1;
                                 if (Pb.is_good_pair(y, x))
                                     result.push_back(pair(y, x));
                             }
@@ -116,6 +118,7 @@ vector<pair<u64, u64>> naive_mpi_claw_search_isend(const AbstractProblem &Pb, Mp
         wait_avg /= params.local_size;
         double wait_std = (wait - wait_avg) * (wait - wait_avg);
         MPI_Allreduce(MPI_IN_PLACE, &wait_std, 1, MPI_DOUBLE, MPI_SUM, params.local_comm);
+        MPI_Allreduce(MPI_IN_PLACE, &ncoll, 1, MPI_UINT64_T, MPI_SUM, params.world_comm);
         wait_std = std::sqrt(wait_std);
         if (params.local_rank == 0) {
             printf("phase %d %s, wait min %.2fs max %.2fs avg %.2fs (%.1f%%) std %.2fs.\n",
@@ -128,7 +131,8 @@ vector<pair<u64, u64>> naive_mpi_claw_search_isend(const AbstractProblem &Pb, Mp
             double delta = wtime() - phase_start;
             human_format(N / params.n_send / delta, frate);
             human_format(volume / delta, nrate);
-            printf("phase %d: %.1fs.  %s f/s per process, %sB/s outgoing per node\n", phase, delta, frate, nrate);
+            printf("phase %d: %.1fs.  %s f/s per process, %sB/s outgoing per node. 2^%.2f collisions\n", 
+                phase, delta, frate, nrate, std::log2(ncoll));
         }
     } // phase
 

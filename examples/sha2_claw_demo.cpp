@@ -16,12 +16,11 @@ u64 seed = 0x1337;  // default fixed seed
 
 
 ////////////////////////////////////////////////////////////////////////////////
-class SHA2ClawProblem : mitm::AbstractClawProblem
+class SHA2ClawProblem : public mitm::AbstractClawProblem
 {
 public:
   int n, m;
   u64 mask;
-  mitm::PRNG &prng;
 
   /* cheating */
   u64 g_shift, golden_x, golden_y;
@@ -59,7 +58,7 @@ public:
     return (data[0] ^ ((u64) data[1] << 32) ^ g_shift) & mask;
   }
 
-  SHA2ClawProblem(int n, mitm::PRNG &prng) : n(n), m(n), prng(prng)
+  SHA2ClawProblem(int n, mitm::PRNG &prng) : n(n), m(n)
   {
     mask = (1ull << n) - 1;
     golden_x = prng.rand() & mask;
@@ -121,7 +120,7 @@ int main(int argc, char* argv[])
     printf("sha2-claw demo! seed=%016" PRIx64 ", n=%d\n", seed, n); 
 
     SHA2ClawProblem pb(n, prng);
-    auto claw = mitm::claw_search<mitm::SequentialEngine>(pb, params, prng);
+    auto claw = mitm::claw_search<mitm::ScalarSequentialEngine>(pb, params, prng);
     printf("f(%" PRIx64 ") = g(%" PRIx64 ")\n", claw.first, claw.second);
         
     return EXIT_SUCCESS;

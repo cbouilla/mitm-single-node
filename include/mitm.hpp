@@ -71,33 +71,46 @@ pair<u64, u64> collision_search(const AbstractProblem& Pb, Parameters &params, P
 
 // code deduplication could be achieved with the CRTP...
 
-template <class AbstractProblem>
+template <class Problem>
 class EqualSizeClawWrapper {
 public:
-    const AbstractProblem &pb;
+    const Problem &pb;
     const int n, m;
-    const u64 in_mask, out_mask;
+    const u64 in_mask, out_mask, choice_mask;
+    static constexpr int vlen = Problem::vlen;
     u64 n_eval;                // #evaluations of (mix)f.  This does not count the invocations of f() by pb.good_pair().
 
-    EqualSizeClawWrapper(const AbstractProblem& pb) : pb(pb), n(pb.n), m(pb.m), in_mask(make_mask(pb.n)), out_mask(make_mask(pb.m))
+    EqualSizeClawWrapper(const Problem& pb) 
+        : pb(pb), n(pb.n), m(pb.m), in_mask(make_mask(pb.n)), out_mask(make_mask(pb.m)), choice_mask(1ull << (pb.m - 1))
     {
-        static_assert(std::is_base_of<AbstractClawProblem, AbstractProblem>::value,
+        static_assert(std::is_base_of<AbstractClawProblem, Problem>::value,
             "problem not derived from mitm::AbstractClawProblem");
         assert(m <= 64);
         assert(pb.n == pb.m);
+
+        /* check vmixf */
+        PRNG vprng;
+        u64 i = vprng.rand() & out_mask;
+        u64 x[pb.vlen] __attribute__ ((aligned(sizeof(u64) * pb.vlen))); 
+        u64 y[pb.vlen] __attribute__ ((aligned(sizeof(u64) * pb.vlen)));
+        for (int i = 0; i < pb.vlen; i++)
+            x[i] = vprng.rand() & out_mask;
+        vmixf(i, x, y);
+        for (int j = 0; j < pb.vlen; j++)
+            assert(y[j] == mixf(i, x[j]));
+        n_eval = 0;
     }
 
     /* pick either f() or g() */
     bool choose(u64 i, u64 x) const
     {
-        return ((x * (i | 1)) >> (pb.m - 1)) & 1;
+        return (x * (i | 1)) & choice_mask;
     }
 
     u64 mix(u64 i, u64 x) const
     {
         return i ^ x;
     }
-
 
     u64 mixf(u64 i, u64 x)
     {
@@ -107,6 +120,19 @@ public:
             return pb.f(y);
         else
             return pb.g(y);
+    }
+
+    void vmixf(u64 i, u64 x[], u64 r[])
+    {
+        // careful: vlen can be more than one SIMD vector
+        constexpr int vlen = Problem::vlen; 
+        n_eval += vlen;
+        u64 y[vlen], fy[vlen], gy[vlen];
+        for (int j = 0; j < vlen; j++)
+            y[j] = mix(i, x[j]);
+        pb.vfg(y, fy, gy);
+        for (int j = 0; j < vlen; j++)
+            r[j] = choose(i, x[j]) ? fy[j] : gy[j];
     }
 
     pair<u64, u64> swap(u64 i, u64 a, u64 b) const
@@ -127,18 +153,19 @@ public:
     }
 };
 
-template <class AbstractProblem>
+template <class Problem>
 class LargerRangeClawWrapper {
 public:
-    const AbstractProblem &pb;
+    const Problem &pb;
     const int n, m;
     const u64 in_mask, out_mask;
+    static constexpr int vlen = Problem::vlen;
     u64 n_eval;                // #evaluations of (mix)f.  This does not count the invocations of f() by pb.good_pair().
     u64 choice_mask;
 
-    LargerRangeClawWrapper(const AbstractProblem& pb) : pb(pb), n(pb.n + 1), m(pb.m), in_mask(make_mask(pb.n)), out_mask(make_mask(pb.m)) 
+    LargerRangeClawWrapper(const Problem& pb) : pb(pb), n(pb.n + 1), m(pb.m), in_mask(make_mask(pb.n)), out_mask(make_mask(pb.m)) 
     {
-        static_assert(std::is_base_of<AbstractClawProblem, AbstractProblem>::value,
+        static_assert(std::is_base_of<AbstractClawProblem, Problem>::value,
             "problem not derived from mitm::AbstractClawProblem");
         assert(m <= 64);
         assert(n <= m);
@@ -171,6 +198,19 @@ public:
         else
             return pb.g(z & in_mask);
     }
+    
+    void vmixf(u64 i, u64 x[], u64 r[])
+    {
+        // careful: vlen can be more than one SIMD vector
+        constexpr int vlen = Problem::vlen; 
+        n_eval += vlen;
+        u64 y[vlen], fy[vlen], gy[vlen];
+        for (int j = 0; j < vlen; j++)
+            y[j] = mix(i, x[j]);
+        pb.vfg(y, fy, gy);
+        for (int j = 0; j < vlen; j++)
+            r[j] = choose(i, x[j]) ? fy[j] : gy[j];
+    }
 
     pair<u64, u64> swap(u64 i, u64 a, u64 b) const
     {
@@ -201,6 +241,25 @@ pair<u64, u64> claw_search(const Problem& pb, Parameters &params, PRNG &prng)
 
     if (params.verbose)
         printf("Starting claw search with f : {0,1}^%d --> {0, 1}^%d\n", pb.n, pb.m);
+
+    if (Problem::vlen > 1) {
+        if (params.verbose)
+            printf("Using vectorized implementation with vectors of size %d\n", pb.vlen);
+        // check consistency of the vector function 
+        PRNG vprng;
+        u64 x[pb.vlen] __attribute__ ((aligned(sizeof(u64) * pb.vlen))); 
+        u64 y[pb.vlen] __attribute__ ((aligned(sizeof(u64) * pb.vlen)));
+        u64 z[pb.vlen] __attribute__ ((aligned(sizeof(u64) * pb.vlen)));
+        u64 mask = make_mask(pb.n);
+        for (int i = 0; i < pb.vlen; i++)
+            x[i] = vprng.rand() & mask;
+        pb.vfg(x, y, z);
+        for (int i = 0; i < pb.vlen; i++) {
+            // printf("y[%d] = %" PRIx64 " vs f(x[%d]) = %" PRIx64 "\n", i, y[i], i, pb.f(x[i]));
+            assert(y[i] == pb.f(x[i]));
+            assert(z[i] == pb.g(x[i]));
+        }
+    }
 
     if (pb.n == pb.m) {
         if (params.verbose)

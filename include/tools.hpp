@@ -22,23 +22,84 @@ typedef uint16_t u16;
 typedef uint32_t u32;
 typedef uint64_t u64;
 
+#ifdef __AVX512F__
+#include <immintrin.h>
+typedef u32 v32 __attribute__ ((vector_size (64), aligned(64)));
+typedef u64 v64 __attribute__ ((vector_size (64), aligned(64)));
+static inline v32 v32bcast(u32 x) { return (v32) _mm512_set1_epi32(x); }
+static inline v32 v32unpacklo(v32 x, v32 y) { return (v32) _mm512_unpacklo_epi32((__m512i) x, (__m512i) y); }
+static inline v32 v32unpackhi(v32 x, v32 y) { return (v32) _mm512_unpackhi_epi32((__m512i) x, (__m512i) y); }
+static inline v32 v32zero() { return (v32) _mm512_setzero_si512(); }
+// #define v64bcast _mm512_set1_epi64
+#else
+
+#ifdef __AVX2__
+#include <immintrin.h>
+typedef u32 v32 __attribute__ ((vector_size (32), aligned(32)));
+typedef u64 v64 __attribute__ ((vector_size (32), aligned(32)));
+static inline v32 v32bcast(u32 x) { return (v32) _mm256_set1_epi32(x); }
+static inline v64 v64bcast(u64 x) { return (v64) _mm256_set1_epi64x(x); }
+
+static inline v32 v32load(const void *addr) { return (v32) _mm256_load_si256((__m256i *) addr);}
+static inline void v32store(void *addr, v32 x) { _mm256_store_si256((__m256i *) addr, (__m256i) x);}
+static inline v64 v64load(const void *addr) { return (v64) _mm256_load_si256((__m256i *) addr);}
+static inline void v64store(void *addr, v64 x) { _mm256_store_si256((__m256i *) addr, (__m256i) x);}
+
+
+// [a,b,c,d,e,f,g,h], [i,j,k,l,m,n,o,p] ---> [a, c, e, g, i, k, m, o], [b, d, f, h, j, l, n, p]
+static inline void v32desinterleave(v64 x, v64 y, v32 *fst, v32 *snd)
+{ 
+    const __m256i idx = _mm256_set_epi32(7,5,3,1,6,4,2,0);
+    __m256i u = _mm256_permutevar8x32_epi32((__m256i) x, idx);
+    __m256i v = _mm256_permutevar8x32_epi32((__m256i) y, idx); 
+    *fst = (v32) _mm256_permute2x128_si256(u, v, 0x20);
+    *snd = (v32) _mm256_permute2x128_si256(u, v, 0x31); 
+}
+
+// [a,b,c,d,e,f,g,h], [i,j,k,l,m,n,o,p] ---> [a, i, b, j, c, k, d, l], [e, m, f, n, g, o, h, p]
+static inline void v32interleave(v32 lo, v32 hi, v64 mask, v64 *fst, v64 *snd) 
+{ 
+    __m256i u = _mm256_unpacklo_epi32((__m256i) lo, (__m256i) hi);  // [a, i, b, j, e, m, f, n]
+    __m256i v = _mm256_unpackhi_epi32((__m256i) lo, (__m256i) hi);  // [c, k, d, k, g, o, h, p]
+    __m256i x = _mm256_permute2x128_si256(u, v, 0x20);
+    __m256i y = _mm256_permute2x128_si256(u, v, 0x31);
+    *fst = (v64) x & mask;
+    *snd = (v64) y & mask;
+}
+
+static inline v32 v32zero() { return (v32) _mm256_setzero_si256(); }
+
+static inline v64 v64mullo(u64 alpha, const u64 x[])
+{
+    v64 r = {alpha * x[0], alpha * x[1], alpha * x[2], alpha * x[4]};
+    return r;
+}
+
+static inline v64 v64ternary(v64 choice, v64 a, v64 b)
+{
+    return (v64) _mm256_blendv_epi8((__m256i) a, (__m256i) b, (__m256i) choice);
+}
+
+
+#endif
+#endif
+
+#ifdef __ARM_NEON
+typedef u32 v32 __attribute__ ((vector_size (16), aligned(16)));
+typedef u64 v64 __attribute__ ((vector_size (16), aligned(16)));
+#endif
+
+#ifdef __ALTIVEC__
+typedef u32 v32 __attribute__ ((vector_size (16), aligned(16)));
+typedef u64 v64 __attribute__ ((vector_size (16), aligned(16)));
+#endif
+
+
 namespace mitm {
 
 u64 make_mask(int n)
 {
     return (n >= 64) ? 0xffffffffffffffffull : (1ull << n) - 1;
-}
-
-bool scalar_product(u64 a, u64 b)
-{
-    u64 x = a & b;
-    x ^= x >> 32;
-    x ^= x >> 16;
-    x ^= x >> 8;
-    x ^= x >> 4;
-    x ^= x >> 2;
-    x ^= x >> 1;
-    return x & 1;
 }
 
 double wtime() /* with inline it doesn't violate one definition rule */

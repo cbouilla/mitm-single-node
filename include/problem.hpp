@@ -17,6 +17,7 @@ class AbstractCollisionProblem {
 public:
 	int n;           /* size of the domain (input), in bits */
 	int m;           /* size of the range  (output, in bits */
+	static constexpr int vlen = 1;       /* vector width of the vector implementation */
 
 	/* f : {0, 1}^n ---> {0, 1}^m */
 	u64 f(u64 x) const;
@@ -25,6 +26,16 @@ public:
 	bool is_good_pair(u64 x0, u64 x1) const
 	{
 		return true;    // by default, yes.
+	}
+
+  	/* 
+  	 * if a vectorized implementation is available, set vlen to the right size 
+  	 * and override this function without changing its behavior.
+  	 */
+	void vf(const u64 x[], u64 y[]) const
+	{
+		for (int i = 0; i < vlen; i++)
+			y[i] = f(x[i]);
 	}
 };
 
@@ -38,17 +49,29 @@ class AbstractClawProblem {
 public:
 	int n;           /* size of both domains (input), in bits */
 	int m;           /* size of the common range (output), in bits */
+	static constexpr int vlen = 1;       /* vector width of the vector implementation */
 
 	/* f, g : {0, 1}^n ---> {0, 1}^m */
-	u64 f(u64 x) const;
-	u64 g(u64 y) const;
-  
+	u64 f(u64 x) const { return 0; };
+	u64 g(u64 y) const { return 0; };
+
 	/* assuming that f(x0) == g(x1), is (x0, x1) an acceptable outcome? */
 	bool is_good_pair(u64 x0, u64 x1) const
 	{ 
 		return true;    // by default, yes.
 	}
-};
 
+  	/* 
+  	 * if a vectorized implementation is available, set vlen to the right size 
+  	 * and override this functions without changing its behavior.
+  	 */
+	void vfg(const u64 x[], u64 y[], u64 z[]) const
+	{
+		for (int i = 0; i < vlen; i++) {
+			y[i] = f(x[i]);
+			z[i] = g(x[i]);
+		}
+	}
+};
 }
 #endif

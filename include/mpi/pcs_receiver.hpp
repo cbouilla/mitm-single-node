@@ -13,7 +13,6 @@ template<class ProblemWrapper>
 void receiver(ProblemWrapper& wrapper, const MpiParameters &params)
 {
 	int jbits = std::log2(10 * params.w) + std::log2(1 / params.theta) + 8;
-    // u64 jmask = make_mask(jbits);
     PcsDict dict(jbits, params.w / params.n_recv);
     assert(params.w == dict.n_slots * params.n_recv);
 
