@@ -30,10 +30,10 @@ typedef u64 v64 __attribute__ ((vector_size (64), aligned(64)));
 static inline v32 v32bcast(u32 x) { return (v32) _mm512_set1_epi32(x); }
 static inline v64 v64bcast(u64 x) { return (v64) _mm512_set1_epi64(x); }
 
-static inline v32 v32load(const void *addr) { return (v32) _mm512_load_si512((__m256i *) addr);}
-static inline void v32store(void *addr, v32 x) { _mm512_store_si512((__m256i *) addr, (__m256i) x);}
-static inline v64 v64load(const void *addr) { return (v64) _mm512_load_si512((__m256i *) addr);}
-static inline void v64store(void *addr, v64 x) { _mm512_store_si512((__m256i *) addr, (__m256i) x);}
+static inline v32 v32load(const void *addr) { return (v32) _mm512_load_si512((__m512i *) addr);}
+static inline void v32store(void *addr, v32 x) { _mm512_store_si512((__m512i *) addr, (__m512i) x);}
+static inline v64 v64load(const void *addr) { return (v64) _mm512_load_si512((__m512i *) addr);}
+static inline void v64store(void *addr, v64 x) { _mm512_store_si512((__m512i *) addr, (__m512i) x);}
 
 static inline v32 v32zero() { return (v32) _mm512_setzero_si512(); }
 
