@@ -51,8 +51,8 @@ static inline void v32interleave(v32 lo, v32 hi, v64 mask, v64 *fst, v64 *snd)
 { 
     static constexpr __m512i idx_fst = (__m512i) (v32) {0, 16, 1, 17, 2, 18, 3, 19, 4, 20, 5, 21, 6, 22, 7, 23};
     static constexpr __m512i idx_snd = (__m512i) (v32) {8, 24, 9, 25, 10, 26, 11, 27, 12, 28, 13, 29, 14, 30, 15, 31};
-    __m512i x = _mm512_permutex2var_epi32((__m512i) x, idx_fst, (__m512i) y);
-    __m512i y = _mm512_permutex2var_epi32((__m512i) x, idx_snd, (__m512i) y);
+    __m512i x = _mm512_permutex2var_epi32((__m512i) lo, idx_fst, (__m512i) hi);
+    __m512i y = _mm512_permutex2var_epi32((__m512i) lo, idx_snd, (__m512i) hi);
     *fst = (v64) x & mask;
     *snd = (v64) y & mask;
 }
