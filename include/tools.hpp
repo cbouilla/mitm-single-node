@@ -26,11 +26,37 @@ typedef uint64_t u64;
 #include <immintrin.h>
 typedef u32 v32 __attribute__ ((vector_size (64), aligned(64)));
 typedef u64 v64 __attribute__ ((vector_size (64), aligned(64)));
+
 static inline v32 v32bcast(u32 x) { return (v32) _mm512_set1_epi32(x); }
-static inline v32 v32unpacklo(v32 x, v32 y) { return (v32) _mm512_unpacklo_epi32((__m512i) x, (__m512i) y); }
-static inline v32 v32unpackhi(v32 x, v32 y) { return (v32) _mm512_unpackhi_epi32((__m512i) x, (__m512i) y); }
+static inline v64 v64bcast(u64 x) { return (v64) _mm512_set1_epi64(x); }
+
+static inline v32 v32load(const void *addr) { return (v32) _mm512_load_si512((__m256i *) addr);}
+static inline void v32store(void *addr, v32 x) { _mm512_store_si512((__m256i *) addr, (__m256i) x);}
+static inline v64 v64load(const void *addr) { return (v64) _mm512_load_si512((__m256i *) addr);}
+static inline void v64store(void *addr, v64 x) { _mm512_store_si512((__m256i *) addr, (__m256i) x);}
+
 static inline v32 v32zero() { return (v32) _mm512_setzero_si512(); }
-// #define v64bcast _mm512_set1_epi64
+
+// [a,b,c,d,e,f,g,h,i,j,k,l,m,n,o,p], [q,r,s,t,u,v,w,x,y,z,aa,bb,cc,dd,ee,ff] ---> [a,c,...,cc,ee], [b, d, ..., dd, ff]
+static inline void v32desinterleave(v64 x, v64 y, v32 *fst, v32 *snd)
+{ 
+    static constexpr __m512i idx_fst = (__m512i) (v32) {0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30};
+    static constexpr __m512i idx_snd = (__m512i) (v32) {1, 3, 5, 7, 9, 11, 13, 15, 17, 19, 21, 23, 25, 27, 29, 31};
+    *fst = (v32) _mm512_permutex2var_epi32 (x, idx_fst, y)
+    *snd = (v32) _mm512_permutex2var_epi32 (x, idx_snd, y)
+}
+
+// [a,b,c,d,e,f,g,h,i,j,k,l,m,n,o,p], [q,r,s,t,u,v,w,x,y,z,aa,bb,cc,dd,ee,ff] ---> [a, q, b, r, ...], [..., o, ee, p, ff]
+static inline void v32interleave(v32 lo, v32 hi, v64 mask, v64 *fst, v64 *snd) 
+{ 
+    static constexpr __m512i idx_fst = (__m512i) (v32) {0, 16, 1, 17, 2, 18, 3, 19, 4, 20, 5, 21, 6, 22, 7, 23};
+    static constexpr __m512i idx_snd = (__m512i) (v32) {8, 24, 9, 25, 10, 26, 11, 27, 12, 28, 13, 29, 14, 30, 15, 31};
+    __m512i x = _mm512_permutex2var_epi32 (x, idx_fst, y)
+    __m512i y = _mm512_permutex2var_epi32 (x, idx_snd, y)
+    *fst = (v64) x & mask;
+    *snd = (v64) y & mask;
+}
+
 #else
 
 #ifdef __AVX2__
@@ -49,7 +75,7 @@ static inline void v64store(void *addr, v64 x) { _mm256_store_si256((__m256i *) 
 // [a,b,c,d,e,f,g,h], [i,j,k,l,m,n,o,p] ---> [a, c, e, g, i, k, m, o], [b, d, f, h, j, l, n, p]
 static inline void v32desinterleave(v64 x, v64 y, v32 *fst, v32 *snd)
 { 
-    const __m256i idx = _mm256_set_epi32(7,5,3,1,6,4,2,0);
+    static constexpr __m256i idx = (__m256i) (v32) {7,5,3,1,6,4,2,0};
     __m256i u = _mm256_permutevar8x32_epi32((__m256i) x, idx);
     __m256i v = _mm256_permutevar8x32_epi32((__m256i) y, idx); 
     *fst = (v32) _mm256_permute2x128_si256(u, v, 0x20);
@@ -68,19 +94,6 @@ static inline void v32interleave(v32 lo, v32 hi, v64 mask, v64 *fst, v64 *snd)
 }
 
 static inline v32 v32zero() { return (v32) _mm256_setzero_si256(); }
-
-static inline v64 v64mullo(u64 alpha, const u64 x[])
-{
-    v64 r = {alpha * x[0], alpha * x[1], alpha * x[2], alpha * x[4]};
-    return r;
-}
-
-static inline v64 v64ternary(v64 choice, v64 a, v64 b)
-{
-    return (v64) _mm256_blendv_epi8((__m256i) a, (__m256i) b, (__m256i) choice);
-}
-
-
 #endif
 #endif
 
