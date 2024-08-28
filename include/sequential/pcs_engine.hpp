@@ -106,7 +106,9 @@ static tuple<u64,u64,u64> run(ProblemWrapper& wrapper, Parameters &params, PRNG 
     u64 i, root_seed, j;
     ctr.n_dp_i = params.points_per_version;   // trigger new version right from the start
     constexpr int vlen = ProblemWrapper::vlen;
-    u64 x[vlen], y[vlen], len[vlen], seed[vlen];
+    u64 x[vlen] __attribute__ ((aligned(sizeof(u64) * vlen)));
+    u64 y[vlen] __attribute__ ((aligned(sizeof(u64) * vlen)));
+    u64 len[vlen], seed[vlen];
 
     for (;;) {
         /* These simulations show that if 10w distinguished points are generated
