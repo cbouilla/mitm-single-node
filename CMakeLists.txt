@@ -14,3 +14,6 @@ add_compile_options(-march=native -ggdb -Wall)
 find_package(MPI REQUIRED)
 
 add_subdirectory(examples)
+
+include("config/avx2.cmake")
+include("config/avx512.cmake")
