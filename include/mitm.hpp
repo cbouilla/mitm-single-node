@@ -127,7 +127,9 @@ public:
         // careful: vlen can be more than one SIMD vector
         constexpr int vlen = Problem::vlen; 
         n_eval += vlen;
-        u64 y[vlen], fy[vlen], gy[vlen];
+        u64 y[vlen] __attribute__ ((aligned(sizeof(u64) * vlen))); 
+        u64 fy[vlen] __attribute__ ((aligned(sizeof(u64) * vlen)));
+        u64 gy[vlen] __attribute__ ((aligned(sizeof(u64) * vlen)));
         for (int j = 0; j < vlen; j++)
             y[j] = mix(i, x[j]);
         pb.vfg(y, fy, gy);
@@ -204,7 +206,9 @@ public:
         // careful: vlen can be more than one SIMD vector
         constexpr int vlen = Problem::vlen; 
         n_eval += vlen;
-        u64 y[vlen], fy[vlen], gy[vlen];
+        u64 y[vlen] __attribute__ ((aligned(sizeof(u64) * vlen))); 
+        u64 fy[vlen] __attribute__ ((aligned(sizeof(u64) * vlen)));
+        u64 gy[vlen] __attribute__ ((aligned(sizeof(u64) * vlen)));
         for (int j = 0; j < vlen; j++)
             y[j] = mix(i, x[j]);
         pb.vfg(y, fy, gy);
