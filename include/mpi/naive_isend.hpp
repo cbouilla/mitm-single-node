@@ -17,18 +17,19 @@
 
 namespace mitm {
 
-template <bool EXPENSIVE_F, class AbstractProblem>
-vector<pair<u64, u64>> naive_mpi_claw_search_isend(const AbstractProblem &Pb, MpiParameters &params)
+template <bool EXPENSIVE_F, class Problem>
+vector<pair<u64, u64>> naive_mpi_claw_search_isend(const Problem &pb, MpiParameters &params)
 {
-    static_assert(std::is_base_of<AbstractClawProblem, AbstractProblem>::value,
+    static_assert(std::is_base_of<AbstractClawProblem, Problem>::value,
         "problem not derived from mitm::AbstractClawProblem");
 
     double start = wtime();
-    u64 N = 1ull << Pb.n;
+    u64 N = 1ull << pb.n;
     vector<pair<u64, u64>> result;
     CompactDict dict((params.role == RECEIVER) ? (1.5 * N) / params.n_recv : 0);
 
     if (params.verbose) {
+        printf("Claw-finding: {0,1}^%d --> {0,1}^%d\n", pb.n, pb.m);
         char hbsize[8], hdsize[8];
         u64 bsize_node = 4 * sizeof(u64) * params.buffer_capacity * params.n_send * params.n_recv / params.n_nodes;
         human_format(bsize_node, hbsize);
@@ -52,7 +53,7 @@ vector<pair<u64, u64>> naive_mpi_claw_search_isend(const AbstractProblem &Pb, Mp
             u64 lo = params.local_rank * N / params.n_send;
             u64 hi = (params.local_rank + 1) * N / params.n_send;
             for (u64 x = lo; x < hi; x++) {
-                u64 z = (phase == 0) ? Pb.f(x) : Pb.g(x);
+                u64 z = (phase == 0) ? pb.f(x) : pb.g(x);
                 u64 hash = (z * 0xdeadbeef) % 0x7fffffff;
                 int target = ((int) hash) % params.n_recv;
                 if (EXPENSIVE_F)
@@ -68,7 +69,7 @@ vector<pair<u64, u64>> naive_mpi_claw_search_isend(const AbstractProblem &Pb, Mp
 
         if (params.role == RECEIVER) {
             RecvBuffers recvbuf(params.inter_comm, TAG_POINTS, params.buffer_capacity);
-            u64 keys[3 * Pb.n];
+            u64 keys[3 * pb.n];
             while (not recvbuf.complete()) {
                 auto ready_buffers = recvbuf.wait();
                 for (auto it = ready_buffers.begin(); it != ready_buffers.end(); it++) {
@@ -80,7 +81,7 @@ vector<pair<u64, u64>> naive_mpi_claw_search_isend(const AbstractProblem &Pb, Mp
                             jt++;
                             z = *jt;
                         } else {
-                            z = (phase == 0) ? Pb.f(x) : Pb.g(x);
+                            z = (phase == 0) ? pb.f(x) : pb.g(x);
                         }
 
                         switch (phase) {
@@ -92,10 +93,10 @@ vector<pair<u64, u64>> naive_mpi_claw_search_isend(const AbstractProblem &Pb, Mp
                             int nkeys = dict.probe(z, keys);
                             for (int k = 0; k < nkeys; k++) {
                                 u64 y = keys[k];
-                                if (z != Pb.f(y))
+                                if (z != pb.f(y))
                                     continue;    // false positive from truncation in the hash table
                                 ncoll += 1;
-                                if (Pb.is_good_pair(y, x))
+                                if (pb.is_good_pair(y, x))
                                     result.push_back(pair(y, x));
                             }
                         }
