@@ -1,7 +1,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
-#include <x86intrin.h>
+#include <immintrin.h>
 
 int main() {
     __m256i * x = _mm_malloc(120 * sizeof(__m256i), sizeof(__m256i));
