@@ -82,7 +82,8 @@ public:
 	u64 n_dp = 0;                   // since beginning
 	u64 n_points_trails = 0;
 	u64 n_collisions = 0;           // since beginning
-	u64 colliding_len = 0;          // since beginning
+	u64 colliding_len_min = 0;          // since beginning
+	u64 colliding_len_max = 0;          // since beginning
 	u64 bad_dp = 0;
 	u64 bad_probe = 0;
 	u64 bad_collision = 0;
@@ -95,7 +96,8 @@ public:
 	double last_update;             // timestamp of the last flush
 	u64 n_dp_i = 0;                     // since last flush
 	u64 n_collisions_i = 0;             // since last flush
-	u64 colliding_len_i = 0;
+	u64 colliding_len_min_i = 0;
+	u64 colliding_len_max_i = 0;
 
 	/* display management */
 	bool display_active = 1;
@@ -106,15 +108,15 @@ public:
 	u64 bytes_sent_prev = 0;
 	double last_display;
 	
-	vector<u8> hll;
+	vector<u8> hll, hll_i;
 
 	Counters() {}
-	Counters(bool display_active) : display_active(display_active) {
-		hll.resize(65536);
-	}
+	Counters(bool display_active) : display_active(display_active) {}
 
 	void ready(int n, u64 _w)
 	{
+		hll.resize(0x10000);
+		hll_i.resize(0x10000);
 		pb_n = n;
 		w = _w;
 		double now = wtime();
@@ -170,16 +172,23 @@ public:
 
 	void round_display()
 	{
-		u64 E = distinct_collisions_estimation();
-		printf("\n%.2f avg trail length (%.2f collliding).  %.2f%% probe failure.  %.2f%% walk-robinhhod.  %.2f%% walk-noncolliding.  %.2f%% same-value.  #coll (this i / distinct) %.02f*w / %.02f*w\n",
-                (double) n_points_trails / n_dp, 
-                (double) colliding_len / 2.0 / n_collisions, 
+		u64 E_i = distinct_collisions_estimation(hll_i);
+		u64 E = distinct_collisions_estimation(hll);
+		u64 N = 1ull << pb_n;
+		double avglen = (double) n_points_trails / n_dp;
+		printf("\n%.2f avg trail length (x%.2f & x%.2f collliding).  %.2f%% probe failure.  %.2f%% walk-robinhhod.  %.2f%% walk-noncolliding.  %.2f%% same-value\n",
+                avglen, 
+                (double) colliding_len_min / n_collisions / avglen, 
+                (double) colliding_len_max / n_collisions / avglen, 
                 100. * bad_probe / n_dp_i, 
                 100. * bad_walk_robinhood / n_dp_i, 
                 100. * bad_walk_noncolliding / n_dp_i, 
-                100. * bad_collision / n_dp_i,
-                (double) n_collisions_i / w,
-                (double) E / w);
+                100. * bad_collision / n_dp_i);
+		printf("#coll (this i / distinct / total / distinct) %.02f*w / %.02f*w / %.02f*n / %.02f*n\n", 
+				(double) n_collisions_i / w,
+                (double) E_i / w,
+                (double) n_collisions / N,
+                (double) E / N);
 	}
 
 	// call this when a new DP is found
@@ -194,33 +203,45 @@ public:
 
 	void found_collision(u64 x0, u64 len0, u64 x1, u64 len1) 
 	{
-		colliding_len += len0 + len1;
-		colliding_len_i += len0 + len1;
+		if (len0 < len1) {
+			colliding_len_min += len0;
+			colliding_len_max += len1;
+			colliding_len_min_i += len0;
+			colliding_len_max_i += len1;
+		} else {
+			colliding_len_min += len1;
+			colliding_len_max += len0;
+			colliding_len_min_i += len1;
+			colliding_len_max_i += len0;
+		}
 		n_collisions += 1;
 		n_collisions_i += 1;
 
 		/* update HyperLogLog */
     	u64 h = murmur128(x0, x1);
     	u64 idx = h >> 48;
+    	assert(idx < 0x10000);
     	int rho = ffsll(h);
     	if (hll[idx] < rho)
     	    hll[idx] = rho;
+    	if (hll_i[idx] < rho)
+    	    hll_i[idx] = rho;
 	}
 
 	/* uses the HyperLogLog algorithm */
-	u64 distinct_collisions_estimation()
+	static u64 distinct_collisions_estimation(const vector<u8> h)
 	{
 		double acc;
 		double alpha = 0.7213 / (1 + 1.079 / 0x10000);
 		for (int i = 0; i < 0x10000; i++)
-			acc += 1.0 / (1 << hll[i]);
+			acc += 1.0 / (1 << h[i]);
 		double E = alpha * 0x100000000 / acc;
 		if (E >= 2.5 * 0x10000) 
 			return E;
 		// low cardinality, potential correction
 		int V = 0;
 		for (int i = 0; i < 0x10000; i++)
-			if (hll[i] == 0)
+			if (h[i] == 0)
 				V += 1;
 		if (V == 0)
 			return E;
@@ -235,9 +256,11 @@ public:
 		display();
 		round_display();
 		n_flush += 1;
-		n_dp_i = n_collisions_i = colliding_len_i = 0;
+		n_dp_i = n_collisions_i = colliding_len_min_i = colliding_len_max_i = 0;
 		last_update = wtime();
 		bad_dp = bad_probe = bad_walk_robinhood = bad_walk_noncolliding = bad_collision = 0;
+		hll_i.clear();
+		hll_i.resize(0x10000);
 	}
 
 	void done()
