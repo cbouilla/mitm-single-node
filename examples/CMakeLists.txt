@@ -10,6 +10,12 @@ add_executable(double_speck64_demo
     double_speck64_demo.cpp)
 target_include_directories(double_speck64_demo PRIVATE ../include)
 
+
+add_executable(double_des_demo double_des_demo.cpp)
+target_include_directories(double_des_demo PRIVATE ../include des)
+target_link_libraries(double_des_demo PRIVATE OpenSSL::Crypto)
+
+
 add_executable(mpi_double_speck64_demo
     mpi_double_speck64_demo.cpp)
 target_include_directories(mpi_double_speck64_demo PRIVATE ../include)
