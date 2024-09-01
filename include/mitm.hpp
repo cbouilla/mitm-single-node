@@ -258,8 +258,9 @@ pair<u64, u64> claw_search(const Problem& pb, Parameters &params, PRNG &prng)
         for (int i = 0; i < pb.vlen; i++)
             x[i] = vprng.rand() & mask;
         pb.vfg(x, y, z);
+        for (int i = 0; i < pb.vlen; i++)
+            printf("y[%d] = %" PRIx64 " vs f(x[%d]) = %" PRIx64 "\n", i, y[i], i, pb.f(x[i]));
         for (int i = 0; i < pb.vlen; i++) {
-            // printf("y[%d] = %" PRIx64 " vs f(x[%d]) = %" PRIx64 "\n", i, y[i], i, pb.f(x[i]));
             assert(y[i] == pb.f(x[i]));
             assert(z[i] == pb.g(x[i]));
         }

@@ -4,6 +4,7 @@
 #include <string>
 #include <cmath>
 #include <climits>
+#include <cstring>
 
 // base classes for PCS and naive algorithm
 
@@ -105,8 +106,12 @@ public:
 	u64 bytes_sent_prev = 0;
 	double last_display;
 	
+	vector<u8> hll;
+
 	Counters() {}
-	Counters(bool display_active) : display_active(display_active) {}
+	Counters(bool display_active) : display_active(display_active) {
+		hll.resize(65536);
+	}
 
 	void ready(int n, u64 _w)
 	{
@@ -165,13 +170,16 @@ public:
 
 	void round_display()
 	{
-		printf("\n%.2f avg trail length (%.2f collliding).  %.2f%% probe failure.  %.2f%% walk-robinhhod.  %.2f%% walk-noncolliding.  %.2f%% same-value\n",
+		u64 E = distinct_collisions_estimation();
+		printf("\n%.2f avg trail length (%.2f collliding).  %.2f%% probe failure.  %.2f%% walk-robinhhod.  %.2f%% walk-noncolliding.  %.2f%% same-value.  #coll (this i / distinct) %.02f*w / %.02f*w\n",
                 (double) n_points_trails / n_dp, 
                 (double) colliding_len / 2.0 / n_collisions, 
                 100. * bad_probe / n_dp_i, 
                 100. * bad_walk_robinhood / n_dp_i, 
                 100. * bad_walk_noncolliding / n_dp_i, 
-                100. * bad_collision / n_dp_i);
+                100. * bad_collision / n_dp_i,
+                (double) n_collisions_i / w,
+                (double) E / w);
 	}
 
 	// call this when a new DP is found
@@ -184,12 +192,40 @@ public:
 			 display();
 	}
 
-	void found_collision(u64 len0, u64 len1) 
+	void found_collision(u64 x0, u64 len0, u64 x1, u64 len1) 
 	{
 		colliding_len += len0 + len1;
 		colliding_len_i += len0 + len1;
 		n_collisions += 1;
 		n_collisions_i += 1;
+
+		/* update HyperLogLog */
+    	u64 h = murmur128(x0, x1);
+    	u64 idx = h >> 48;
+    	int rho = ffsll(h);
+    	if (hll[idx] < rho)
+    	    hll[idx] = rho;
+	}
+
+	/* uses the HyperLogLog algorithm */
+	u64 distinct_collisions_estimation()
+	{
+		double acc;
+		double alpha = 0.7213 / (1 + 1.079 / 0x10000);
+		for (int i = 0; i < 0x10000; i++)
+			acc += 1.0 / (1 << hll[i]);
+		double E = alpha * 0x100000000 / acc;
+		if (E >= 2.5 * 0x10000) 
+			return E;
+		// low cardinality, potential correction
+		int V = 0;
+		for (int i = 0; i < 0x10000; i++)
+			if (hll[i] == 0)
+				V += 1;
+		if (V == 0)
+			return E;
+		else
+			return 0x10000 * log(65536.0 / V);
 	}
 
 	// call this when the dictionnary is flushed / a new mixing function tried

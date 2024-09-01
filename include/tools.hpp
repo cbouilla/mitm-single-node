@@ -135,6 +135,23 @@ u64 murmur64(u64 h)
     return h;
 }
 
+u64 murmur128(u64 x, u64 y)
+{
+    x ^= x >> 33;
+    x *= 0xff51afd7ed558ccdull; 
+    x ^= x >> 33;
+    x *= 0xc4ceb9fe1a85ec53ull;
+    x ^= x >> 33;
+
+    y *= 0xc6a4a7935bd1e995LLU; 
+    y ^= y >> 47;
+    y *= 0xc6a4a7935bd1e995LLU;
+    y ^= x;
+    y *= 0xc6a4a7935bd1e995LLU;
+    return y;
+  }
+
+
 /* deterministic RNG based on TRIVIUM */
 class PRNG {
 private:

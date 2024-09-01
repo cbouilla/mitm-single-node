@@ -105,7 +105,7 @@ optional<pair<u64,u64>> walk(ProblemWrapper& wrapper, Counters &ctr, u64 i, u64 
  * `end` is [end of trail] / params.w
  */
 template<class ProblemWrapper>
-optional<pair<u64,u64>> walk_nolen1(ProblemWrapper& wrapper, Counters &ctr, const Parameters &params, u64 i, u64 x0, u64 len0, u64 end0, u64 x1)
+optional<tuple<u64,u64,u64>> walk_nolen1(ProblemWrapper& wrapper, Counters &ctr, const Parameters &params, u64 i, u64 x0, u64 len0, u64 end0, u64 x1)
 {
     /****************************************************************************+
      *            walk the longest sequence until they are equal                 |
@@ -162,12 +162,13 @@ optional<pair<u64,u64>> walk_nolen1(ProblemWrapper& wrapper, Counters &ctr, cons
         /* do the outputs collide? If yes, return true and exit. */
         if (y0 == y1) {
             /* careful: x0 & x1 contain inputs before mixing */
-            return std::make_optional(pair(x0, x1));
+            return std::make_optional(tuple(x0, x1, len1));
         }
         x0 = y0;
         x1 = y1;
     }
 }
+
 
 template<class ProblemWrapper>
 optional<tuple<u64,u64,u64>> process_distinguished_point(ProblemWrapper &wrapper, Counters &ctr, const Parameters &params, PcsDict &dict, 
@@ -190,13 +191,14 @@ optional<tuple<u64,u64,u64>> process_distinguished_point(ProblemWrapper &wrapper
     if (not collision) 
         return nullopt;         /* robin-hood, or dict false positive */
 
-    auto [x0, x1] = *collision;
+    auto [x0, x1, len1] = *collision;
     if (x0 == x1) {
         ctr.collision_failure();
         return nullopt;    /* duh */
     }
 
-    ctr.found_collision(len0, len0);
+    ctr.found_collision(x0, len0, x1, len1);
+    
     if (wrapper.mix_good_pair(i, x0, x1)) {
         printf("\nFound golden collision! i=%" PRIx64 " root_seed=%" PRIx64 " seed0=%" PRIx64 ". Dict --> seed1=%" PRIx64 "\n", 
             i, root_seed, seed0, seed1);
