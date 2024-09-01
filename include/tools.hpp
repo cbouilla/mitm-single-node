@@ -75,7 +75,7 @@ static inline void v64store(void *addr, v64 x) { _mm256_store_si256((__m256i *) 
 // [a,b,c,d,e,f,g,h], [i,j,k,l,m,n,o,p] ---> [a, c, e, g, i, k, m, o], [b, d, f, h, j, l, n, p]
 static inline void v32desinterleave(v64 x, v64 y, v32 *fst, v32 *snd)
 { 
-    static constexpr __m256i idx = (__m256i) (v32) {7,5,3,1,6,4,2,0};
+    const __m256i idx = _mm256_set_epi32(7,5,3,1,6,4,2,0);
     __m256i u = _mm256_permutevar8x32_epi32((__m256i) x, idx);
     __m256i v = _mm256_permutevar8x32_epi32((__m256i) y, idx); 
     *fst = (v32) _mm256_permute2x128_si256(u, v, 0x20);
