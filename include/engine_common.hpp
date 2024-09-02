@@ -126,12 +126,13 @@ optional<tuple<u64,u64,u64>> walk_nolen1(ProblemWrapper& wrapper, Counters &ctr,
     u64 maxit = params.dp_max_it;
     u64 trail1[maxit];
     trail1[0] = x1;
-    u64 len1 = 1;
+    u64 len1 = 0;
     assert(not is_distinguished_point(x1, params.threshold));
+    assert(not is_distinguished_point(x0, params.threshold));
     for (;;) {
+        len1 += 1;
         x1 = wrapper.mixf(i, x1);
         trail1[len1] = x1;
-        len1 += 1;
         if (is_distinguished_point(x1, params.threshold))
             break;
     }
@@ -144,21 +145,20 @@ optional<tuple<u64,u64,u64>> walk_nolen1(ProblemWrapper& wrapper, Counters &ctr,
     /* move the longest sequence until the remaining number of steps is equal */
     /* to the shortest sequence. */
     for (; len0 > len1; len0--)
-        x0 = wrapper.mixf(i, x0);
-    
+        x0 = wrapper.mixf(i, x0);    
+
     /* at this stage, len0 <= len1 */
     x1 = trail1[len1 - len0];
-
     if (x0 == x1) { /* robin-hood */
         ctr.walk_robinhood();
         return nullopt;
     }
 
     /* now both sequences needs exactly `len0` steps to reach the common distinguished point */
-    for (u64 j = len1 - len0;; ++j) {
+    for (u64 j = len1 - len0;; j++) {
         /* walk them together */
         u64 y0 = wrapper.mixf(i, x0);
-        u64 y1 = trail1[j];
+        u64 y1 = trail1[j+1];
         /* do the outputs collide? If yes, return true and exit. */
         if (y0 == y1) {
             /* careful: x0 & x1 contain inputs before mixing */
@@ -197,7 +197,10 @@ optional<tuple<u64,u64,u64>> process_distinguished_point(ProblemWrapper &wrapper
         return nullopt;    /* duh */
     }
 
-    ctr.found_collision(x0, len0, x1, len1);
+    u64 y0 = wrapper.mix(i, x0);
+    u64 y1 = wrapper.mix(i, x1);
+    assert(wrapper.mixf(i, x0) == wrapper.mixf(i, x1));
+    ctr.found_collision(std::min(y0, y1), len0, std::max(y0, y1), len1);
     
     if (wrapper.mix_good_pair(i, x0, x1)) {
         printf("\nFound golden collision! i=%" PRIx64 " root_seed=%" PRIx64 " seed0=%" PRIx64 ". Dict --> seed1=%" PRIx64 "\n", 

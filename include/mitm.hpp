@@ -109,6 +109,8 @@ public:
 
     u64 mix(u64 i, u64 x) const
     {
+        //u64 z = (i ^ (x * 0xc4ceb9fe1a85ec53ull)) * 0xc6a4a7935bd1e995LLU;
+        // return z & in_mask;
         return i ^ x;
     }
 
@@ -137,21 +139,21 @@ public:
             r[j] = choose(i, x[j]) ? fy[j] : gy[j];
     }
 
-    pair<u64, u64> swap(u64 i, u64 a, u64 b) const
+    pair<u64, u64> swapmix(u64 i, u64 a, u64 b) const
     {
         u64 x0 = choose(i, a) ? a : b;
         u64 x1 = choose(i, b) ? a : b;
         assert(choose(i, x0));
         assert(not choose(i, x1));
-        return pair(x0, x1);    
+        return pair(mix(i, x0), mix(i, x1));
     }
 
     bool mix_good_pair(u64 i, u64 a, u64 b) 
     {
         if (choose(i, a) == choose(i, b))
             return false;
-        auto [x0, x1] = swap(i, a, b);
-        return pb.is_good_pair(mix(i, x0), mix(i, x1));
+        auto [x0, x1] = swapmix(i, a, b);
+        return pb.is_good_pair(x0, x1);
     }
 };
 
@@ -216,21 +218,21 @@ public:
             r[j] = choose(i, x[j]) ? fy[j] : gy[j];
     }
 
-    pair<u64, u64> swap(u64 i, u64 a, u64 b) const
+    pair<u64, u64> swapmix(u64 i, u64 a, u64 b) const
     {
         u64 x0 = choose(i, a) ? a : b;
         u64 x1 = choose(i, b) ? a : b;
         assert(choose(i, x0));
         assert(not choose(i, x1));
-        return pair(x0, x1);    
+        return pair(mix(i, x0), mix(i, x1));
     }
 
     bool mix_good_pair(u64 i, u64 a, u64 b) 
     {
         if (choose(i, a) == choose(i, b))
             return false;
-        auto [x0, x1] = swap(i, a, b);
-        return pb.is_good_pair(mix(i, x0), mix(i, x1));
+        auto [x0, x1] = swapmix(i, a, b);
+        return pb.is_good_pair(x0, x1);
     }
 };
 
@@ -272,18 +274,14 @@ pair<u64, u64> claw_search(const Problem& pb, Parameters &params, PRNG &prng)
         EqualSizeClawWrapper<Problem> wrapper(pb);
         params.finalize(wrapper.n, wrapper.m);
         auto [i, a, b] = _Engine::run(wrapper, params, prng);
-        auto [u, v] = wrapper.swap(i, a, b);
-        x0 = wrapper.mix(i, u);
-        x1 = wrapper.mix(i, v);
+        std::tie(x0, x1) = wrapper.swapmix(i, a, b);
     } else if (pb.n < pb.m) {
         if (params.verbose)
             printf("  - using |Domain| << |Range| mode.  Expecting 0.9*n/w rounds.\n");
         LargerRangeClawWrapper<Problem> wrapper(pb);
         params.finalize(wrapper.n, wrapper.m);
         auto [i, a, b] = _Engine::run(wrapper, params, prng);
-        auto [u, v] = wrapper.swap(i, a, b);
-        x0 = wrapper.mix(i, u);
-        x1 = wrapper.mix(i, v);
+        std::tie(x0, x1) = wrapper.swapmix(i, a, b);
     } else {
         printf("Larger domain not yet supported...\n");
         assert(0);
