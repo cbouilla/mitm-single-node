@@ -29,8 +29,8 @@ static inline v32 v32zero() { return (v32) _mm512_setzero_si512(); }
 // [a,b,c,d,e,f,g,h,i,j,k,l,m,n,o,p], [q,r,s,t,u,v,w,x,y,z,aa,bb,cc,dd,ee,ff] ---> [a,c,...,cc,ee], [b, d, ..., dd, ff]
 static inline void v32desinterleave(v64 x, v64 y, v32 *fst, v32 *snd)
 { 
-    static constexpr __m512i idx_fst = (__m512i) (v32) {0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30};
-    static constexpr __m512i idx_snd = (__m512i) (v32) {1, 3, 5, 7, 9, 11, 13, 15, 17, 19, 21, 23, 25, 27, 29, 31};
+    const __m512i idx_fst = (__m512i) (v32) {0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30};
+    const __m512i idx_snd = (__m512i) (v32) {1, 3, 5, 7, 9, 11, 13, 15, 17, 19, 21, 23, 25, 27, 29, 31};
     *fst = (v32) _mm512_permutex2var_epi32((__m512i) x, idx_fst, (__m512i) y);
     *snd = (v32) _mm512_permutex2var_epi32((__m512i) x, idx_snd, (__m512i) y);
 }
@@ -38,8 +38,8 @@ static inline void v32desinterleave(v64 x, v64 y, v32 *fst, v32 *snd)
 // [a,b,c,d,e,f,g,h,i,j,k,l,m,n,o,p], [q,r,s,t,u,v,w,x,y,z,aa,bb,cc,dd,ee,ff] ---> [a, q, b, r, ...], [..., o, ee, p, ff]
 static inline void v32interleave(v32 lo, v32 hi, v64 mask, v64 *fst, v64 *snd) 
 { 
-    static constexpr __m512i idx_fst = (__m512i) (v32) {0, 16, 1, 17, 2, 18, 3, 19, 4, 20, 5, 21, 6, 22, 7, 23};
-    static constexpr __m512i idx_snd = (__m512i) (v32) {8, 24, 9, 25, 10, 26, 11, 27, 12, 28, 13, 29, 14, 30, 15, 31};
+    const __m512i idx_fst = (__m512i) (v32) {0, 16, 1, 17, 2, 18, 3, 19, 4, 20, 5, 21, 6, 22, 7, 23};
+    const __m512i idx_snd = (__m512i) (v32) {8, 24, 9, 25, 10, 26, 11, 27, 12, 28, 13, 29, 14, 30, 15, 31};
     __m512i x = _mm512_permutex2var_epi32((__m512i) lo, idx_fst, (__m512i) hi);
     __m512i y = _mm512_permutex2var_epi32((__m512i) lo, idx_snd, (__m512i) hi);
     *fst = (v64) x & mask;
