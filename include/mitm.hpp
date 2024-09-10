@@ -50,7 +50,7 @@ public:
 
 
 template <typename _Engine, class Parameters, typename AbstractProblem>
-pair<u64, u64> collision_search(const AbstractProblem& Pb, Parameters &params, PRNG &prng)
+optional<pair<u64, u64>> collision_search(const AbstractProblem& Pb, Parameters &params, PRNG &prng)
 {
     static_assert(std::is_base_of<Engine, _Engine>::value,
             "engine not derived from mitm::Engine");
@@ -58,13 +58,18 @@ pair<u64, u64> collision_search(const AbstractProblem& Pb, Parameters &params, P
     ConcreteCollisionProblem wrapper(Pb);
 
     params.finalize(Pb.n, Pb.m);
-    auto [i, x, y] = _Engine::run(wrapper, params, prng);
-    u64 a = wrapper.mix(i, x);
-    u64 b = wrapper.mix(i, y);
-    assert(a != b);
-    assert(Pb.f(a) == Pb.f(b));
-    assert(Pb.is_good_pair(a, b));
-    return pair(a, b);
+    auto collision = _Engine::run(wrapper, params, prng);
+    if (collision) {
+        auto [i, x, y] = *collision;
+        u64 a = wrapper.mix(i, x);
+        u64 b = wrapper.mix(i, y);
+        assert(a != b);
+        assert(Pb.f(a) == Pb.f(b));
+        assert(Pb.is_good_pair(a, b));
+        return optional(pair(a, b));
+    } else {
+        return nullopt;
+    }
 }
 
 /****************************************************************************************/
@@ -174,6 +179,19 @@ public:
         assert(m <= 64);
         assert(n <= m);
         choice_mask = 1ull << n;
+
+        /* check vmixf */
+        PRNG vprng;
+        u64 i = vprng.rand() & out_mask;
+        constexpr int vlen = Problem::vlen; 
+        u64 x[vlen] __attribute__ ((aligned(sizeof(u64) * pb.vlen))); 
+        u64 y[vlen] __attribute__ ((aligned(sizeof(u64) * pb.vlen)));
+        for (int i = 0; i < pb.vlen; i++)
+            x[i] = vprng.rand() & out_mask;
+        vmixf(i, x, y);
+        for (int j = 0; j < pb.vlen; j++)
+            assert(y[j] == mixf(i, x[j]));
+        n_eval = 0;
     }
 
     inline u64 full_mix(u64 i, u64 x) const
@@ -238,12 +256,10 @@ public:
 
 
 template <class _Engine, class Parameters, class Problem>
-pair<u64, u64> claw_search(const Problem& pb, Parameters &params, PRNG &prng)
+optional<pair<u64, u64>> claw_search(const Problem& pb, Parameters &params, PRNG &prng)
 {
     static_assert(std::is_base_of<Engine, _Engine>::value,
             "engine not derived from mitm::Engine");
-
-    u64 x0, x1;
 
     if (params.verbose)
         printf("Starting claw search with f : {0,1}^%d --> {0, 1}^%d\n", pb.n, pb.m);
@@ -268,34 +284,44 @@ pair<u64, u64> claw_search(const Problem& pb, Parameters &params, PRNG &prng)
         }
     }
 
+    optional<tuple<u64,u64,u64>> claw;
+    u64 x0, x1;
+
     if (pb.n == pb.m) {
         if (params.verbose)
             printf("  - using |Domain| == |Range| mode.  Expecting 1.8*n/w rounds.\n");
         EqualSizeClawWrapper<Problem> wrapper(pb);
         params.finalize(wrapper.n, wrapper.m);
-        auto [i, a, b] = _Engine::run(wrapper, params, prng);
-        std::tie(x0, x1) = wrapper.swapmix(i, a, b);
+        claw = _Engine::run(wrapper, params, prng);
+        if (claw) {
+            auto [i, a, b] = *claw;
+            std::tie(x0, x1) = wrapper.swapmix(i, a, b);
+        }
     } else if (pb.n < pb.m) {
         if (params.verbose)
             printf("  - using |Domain| << |Range| mode.  Expecting 0.9*n/w rounds.\n");
         LargerRangeClawWrapper<Problem> wrapper(pb);
         params.finalize(wrapper.n, wrapper.m);
-        auto [i, a, b] = _Engine::run(wrapper, params, prng);
-        std::tie(x0, x1) = wrapper.swapmix(i, a, b);
+        claw = _Engine::run(wrapper, params, prng);
+        if (claw) {
+            auto [i, a, b] = *claw;
+            std::tie(x0, x1) = wrapper.swapmix(i, a, b);
+        }
     } else {
         printf("Larger domain not yet supported...\n");
         assert(0);
     }
 
-    /* quality control */
-    assert((x0 & ((1 << pb.n) - 1)) == x0);
-    assert((x1 & ((1 << pb.n) - 1)) == x1);    
-    assert(pb.f(x0) == pb.g(x1));
-    assert(pb.is_good_pair(x0, x1));
-    return pair(x0, x1);
+    if (claw) {
+        /* quality control */
+        assert((x0 & ((1 << pb.n) - 1)) == x0);
+        assert((x1 & ((1 << pb.n) - 1)) == x1);    
+        assert(pb.f(x0) == pb.g(x1));
+        assert(pb.is_good_pair(x0, x1));
+        return pair(x0, x1);
+    } else {
+        return nullopt;
+    }
 }
-
-
 }
-
 #endif

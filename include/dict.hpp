@@ -74,17 +74,19 @@ public:
 	u64 key_mask;
 	const u64 n_slots;     /* size of A */
 	vector<u64> A;
-  
+  	double threshold, theta, gamma;
+
 	static u64 get_nslots(u64 nbytes, u64 forced_multiple)
 	{
 		u64 w = nbytes / (sizeof(u64));
 		return (w / forced_multiple) * forced_multiple;
 	}
 
-	PcsDict(u64 m, u64 w) : m(m), n_slots(w)
+	PcsDict(u64 m, u64 w, double theta, double gamma) : m(m), n_slots(w), theta(theta), gamma(gamma)
 	{
 		start_mask = make_mask(m);
 		key_mask = (m == 64) ? 0 : 0xffffffffffffffff << m;
+		threshold = gamma / theta;
 		A.resize(n_slots);
 		flush();
 	}
@@ -99,15 +101,19 @@ public:
 	}
   
   	// return (start'), maybe
-	optional<u64> pop_insert(u64 end, u64 start)
+	optional<u64> pop_insert(u64 end, u64 start, u64 len0)
 	{
 		u64 idx = end % n_slots;
 		u64 key = ((end / n_slots) << m) & key_mask;
 
 		u64 e = A[idx];
 		u64 ekey = e & key_mask;
-		assert((start & start_mask) == start);
-		A[idx] = start ^ key;
+
+		//if (e == 0 || len0 >= threshold)         // gamma == 0.8 seems best (+13.5% vs threshold=0)
+		//if (e == 0 || len0 >= drand48() * threshold)         // gamma == 1.1 seems best (+13%)
+		double xx = (double) len0 / threshold;        // gamma == 0.85 seems best (+14%)
+		if (e == 0 || xx*xx >= drand48())         // gamma == 1.1 seems best (+13%)
+			A[idx] = start ^ key;
 
 		if (ekey != key || e == 0)
 			return nullopt;

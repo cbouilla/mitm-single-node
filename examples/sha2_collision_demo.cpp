@@ -110,7 +110,12 @@ int main(int argc, char* argv[])
 
         SHA2CollisionProblem pb(n, prng);
         auto collision = mitm::collision_search<mitm::ScalarSequentialEngine>(pb, params, prng);
-        printf("f(%" PRIx64 ") = g(%" PRIx64 ")\n", collision.first, collision.second);
+        if (collision) {
+            auto [x0, x1] = *collision;
+            printf("f(%" PRIx64 ") = g(%" PRIx64 ")\n", x0, x1);
+        } else {
+            printf("Golden collision not found\n");
+        }
         
         return EXIT_SUCCESS;
 }

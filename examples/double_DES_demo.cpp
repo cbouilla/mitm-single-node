@@ -4,7 +4,7 @@
 
 #include "mitm.hpp"
 #include "sequential/pcs_engine.hpp"
-#include "double_des_problem.hpp"
+#include "double_DES_problem.hpp"
 
 int n = 20;         // default problem size (easy)
 u64 seed = 0x1337;  // default fixed seed
@@ -52,8 +52,13 @@ int main(int argc, char* argv[])
         printf("2DES demo! seed=%016" PRIx64 ", n=%d\n", prng.seed, n); 
 
         mitm::DoubleDES_Problem pb(n, prng);            
-        auto claw = mitm::claw_search<mitm::ScalarSequentialEngine>(pb, params, prng);
-        printf("f(%" PRIx64 ") = g(%" PRIx64 ")\n", claw.first, claw.second);
-        
+         auto claw = mitm::claw_search<mitm::ScalarSequentialEngine>(pb, params, prng);
+        if (claw) {
+            auto [x0, x1] = *claw;
+            printf("f(%" PRIx64 ") = g(%" PRIx64 ")\n", x0, x1);
+        } else {
+            printf("Golden collision not found\n");
+        }
+
         return EXIT_SUCCESS;
 }

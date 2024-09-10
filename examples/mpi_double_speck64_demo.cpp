@@ -66,8 +66,10 @@ int main(int argc, char* argv[])
         printf("double-speck64 demo! seed=%016" PRIx64 ", n=%d\n", prng.seed, n); 
     mitm::DoubleSpeck64_Problem Pb(n, prng);
     auto claw = mitm::claw_search<mitm::MpiEngine>(Pb, params, prng);
-    if (params.role == mitm::CONTROLLER)
-        printf("f(%" PRIx64 ") = g(%" PRIx64 ")\n", claw.first, claw.second);
+    if (claw && params.role == mitm::CONTROLLER) {
+        auto [x0, x1] = *claw;
+        printf("f(%" PRIx64 ") = g(%" PRIx64 ")\n", x0, x1);
+    }
     
     MPI_Finalize();    
     return EXIT_SUCCESS;

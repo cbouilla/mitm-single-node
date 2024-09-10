@@ -15,12 +15,12 @@ class ScalarSequentialEngine : Engine {
 public:
 
 template<class ProblemWrapper>
-static tuple<u64,u64,u64> run(ProblemWrapper& wrapper, Parameters &params, PRNG &prng)
+static optional<tuple<u64,u64,u64>> run(ProblemWrapper& wrapper, Parameters &params, PRNG &prng)
 {
     int jbits = std::log2(10 * params.w) + std::log2(1 / params.theta) + 8;
     u64 jmask = make_mask(jbits);
     u64 w = PcsDict::get_nslots(params.nbytes_memory, 1);
-    PcsDict dict(jbits, w);
+    PcsDict dict(jbits, w, params.theta, params.gamma);
     
     Counters ctr;
     ctr.ready(wrapper.n, w);
@@ -32,7 +32,7 @@ static tuple<u64,u64,u64> run(ProblemWrapper& wrapper, Parameters &params, PRNG 
         params.beta, params.points_per_version, std::log2(params.points_per_version));
 
     optional<tuple<u64,u64,u64>> solution;    /* (i, x0, x1)  */
-    for (;;) {
+    for (u64 nver = 0; nver < params.max_versions; nver++) {
         /* These simulations show that if 10w distinguished points are generated
          * for each version of the function, and theta = 2.25sqrt(w/n) then ...
          */
@@ -58,13 +58,17 @@ static tuple<u64,u64,u64> run(ProblemWrapper& wrapper, Parameters &params, PRNG 
             auto [end, len] = *dp;
             ctr.found_distinguished_point(len);
             
-            auto solution = process_distinguished_point(wrapper, ctr, params, dict, i, root_seed, j, end, len);
+            solution = process_distinguished_point(wrapper, ctr, params, dict, i, root_seed, j, end, len);
             if (solution)
-                return *solution;
+                break;
         }
         dict.flush();
         ctr.flush_dict();
-    } // main loop
+        if (solution)
+            break;
+    }
+    ctr.done();
+    return solution;
 }
 };
 

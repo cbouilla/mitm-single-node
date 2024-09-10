@@ -169,7 +169,7 @@ optional<tuple<u64,u64,u64>> walk_nolen1(ProblemWrapper& wrapper, Counters &ctr,
     }
 }
 
-
+// returns (i, x0, x1)
 template<class ProblemWrapper>
 optional<tuple<u64,u64,u64>> process_distinguished_point(ProblemWrapper &wrapper, Counters &ctr, const Parameters &params, PcsDict &dict, 
                                                         u64 i, u64 root_seed, u64 seed0, u64 end, u64 len0)
@@ -177,7 +177,7 @@ optional<tuple<u64,u64,u64>> process_distinguished_point(ProblemWrapper &wrapper
     u64 start0 = (root_seed + params.multiplier * seed0) & wrapper.out_mask;
 
     // auto probe = dict.pop_insert(end, start0, len0);
-    auto probe = dict.pop_insert(end, seed0);
+    auto probe = dict.pop_insert(end, seed0, len0);
     if (not probe) {
         ctr.probe_failure();
         return nullopt;

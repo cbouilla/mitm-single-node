@@ -5,7 +5,7 @@
 #include <mpi.h>
 
 #include "mpi/common.hpp"
-#include "double_speck64_problem.hpp"
+#include "double_DES_problem.hpp"
 
 u64 seed = 1337;
 
@@ -17,7 +17,7 @@ int main(int argc, char* argv[])
     params.setup(MPI_COMM_WORLD, 0);  // no controller process
     
     mitm::PRNG prng(seed);
-    mitm::DoubleSpeck64_Problem pb(32, prng);
+    mitm::DoubleDES_Problem pb(56, prng);
     mitm::benchmark(pb, params);
 
     MPI_Finalize();    

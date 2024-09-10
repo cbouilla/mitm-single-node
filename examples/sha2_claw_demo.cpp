@@ -121,7 +121,12 @@ int main(int argc, char* argv[])
 
     SHA2ClawProblem pb(n, prng);
     auto claw = mitm::claw_search<mitm::ScalarSequentialEngine>(pb, params, prng);
-    printf("f(%" PRIx64 ") = g(%" PRIx64 ")\n", claw.first, claw.second);
+    if (claw) {
+        auto [x0, x1] = *claw;
+        printf("f(%" PRIx64 ") = g(%" PRIx64 ")\n", x0, x1);
+    } else {
+        printf("Golden collision not found\n");
+    }
         
     return EXIT_SUCCESS;
 }

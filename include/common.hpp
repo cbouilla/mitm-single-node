@@ -21,9 +21,12 @@ public:
     int n_recv = 1;               /* #instances of the dictionary */
 
     /* algorithm parameters */
-    double beta = 10;             /* use function variant for beta*w distinguished points */
+    double alpha = 2.35;          /* auto-chosen theta == alpha * sqrt(w/n) */
+    double beta = 8;              /* use function variant for beta*w distinguished points */
     double theta = -1;            /* proportion of distinguished points. -1 == auto-choose */
-    u64 multiplier = 0x2545f4914f6cdd1dull;
+    double gamma = 0;             /* rejection threshold for the dictionary */
+
+    u64 multiplier = 0x2545f4914f6cdd1dull;       /* to generate starting points */
 
     /* other relevant quantities deduced from the above */
     u64 threshold;                /* any integer less than this is a DP */
@@ -33,10 +36,12 @@ public:
 
 	/* utilities */
     bool verbose = 1;             /* print progress information */
+    u64 max_versions = 0xffffffffffffffffull;       /* how many functions to try before giving up */
 
-    static double optimal_theta(double w, int n)
+
+    double optimal_theta(double w, int n)
     {
-        return 2.25 * std::sqrt((double) w / (1ll << n));
+        return alpha * std::sqrt((double) w / (1ll << n));
     }
 
     void finalize(int n, int m)
@@ -96,6 +101,7 @@ public:
 	double last_update;             // timestamp of the last flush
 	u64 n_dp_i = 0;                     // since last flush
 	u64 n_collisions_i = 0;             // since last flush
+	u64 n_coll_unique = 0;             // since last flush
 	u64 colliding_len_min_i = 0;
 	u64 colliding_len_max_i = 0;
 
@@ -146,49 +152,6 @@ public:
 	
 	void collision_failure() {
 		bad_collision += 1;
-	}
-
-	void display()
-	{
-		if (not display_active)
-			return;
-		double now = wtime();
-		double delta = now - last_display;
-		if (delta >= min_delay) {
-			u64 N = 1ull << pb_n;
-			double dprate = (n_dp - n_dp_prev) / delta;
-			char hdprate[8];
-			human_format(dprate, hdprate);
-			printf("\r#i = %" PRId64 " (%.02f*n/w). %s DP/sec.  #DP (this i / total) %.02f*w / %.02f*n.  #coll (this i / total) %.02f*w / %0.2f*n",
-			 		n_flush, (double) n_flush * w / N, 
-			 		hdprate, 
-			 		(double) n_dp_i / w, (double) n_dp / N,
-			 		(double) n_collisions_i / w, (double) n_collisions / N);
-			fflush(stdout);
-			n_dp_prev = n_dp;
-			last_display = wtime();
-		}
-	}
-
-	void round_display()
-	{
-		u64 E_i = distinct_collisions_estimation(hll_i);
-		u64 E = distinct_collisions_estimation(hll);
-		u64 N = 1ull << pb_n;
-		double avglen = (double) n_points_trails / n_dp;
-		printf("\n%.2f avg trail length (x%.2f & x%.2f collliding).  %.2f%% probe failure.  %.2f%% walk-robinhhod.  %.2f%% walk-noncolliding.  %.2f%% same-value\n",
-                avglen, 
-                (double) colliding_len_min / n_collisions / avglen, 
-                (double) colliding_len_max / n_collisions / avglen, 
-                100. * bad_probe / n_dp_i, 
-                100. * bad_walk_robinhood / n_dp_i, 
-                100. * bad_walk_noncolliding / n_dp_i, 
-                100. * bad_collision / n_dp_i);
-		printf("#coll (this i / distinct / total / distinct) %.02f*w / %.02f*w / %.02f*n / %.02f*n\n", 
-				(double) n_collisions_i / w,
-                (double) E_i / w,
-                (double) n_collisions / N,
-                (double) E / N);
 	}
 
 	// call this when a new DP is found
@@ -259,28 +222,93 @@ public:
 		n_dp_i = n_collisions_i = colliding_len_min_i = colliding_len_max_i = 0;
 		last_update = wtime();
 		bad_dp = bad_probe = bad_walk_robinhood = bad_walk_noncolliding = bad_collision = 0;
+		n_coll_unique += distinct_collisions_estimation(hll_i);
 		hll_i.clear();
 		hll_i.resize(0x10000);
 	}
 
-	void done()
+	/************************** verbosity ************************/
+
+	// invoked regularly
+	void display()
 	{
-		end_time = wtime();
 		if (not display_active)
 			return;
-		double total_time = end_time - start_time;
+		double now = wtime();
+		double delta = now - last_display;
+		if (delta >= min_delay) {
+			u64 N = 1ull << pb_n;
+			double dprate = (n_dp - n_dp_prev) / delta;
+			char hdprate[8];
+			human_format(dprate, hdprate);
+			printf("\r#i = %" PRId64 " (%.02f*n/w). %s DP/sec.  #DP (this i / total) %.02f*w / %.02f*n.  #coll (this i / total) %.02f*w / %0.2f*n",
+			 		n_flush, (double) n_flush * w / N, 
+			 		hdprate, 
+			 		(double) n_dp_i / w, (double) n_dp / N,
+			 		(double) n_collisions_i / w, (double) n_collisions / N);
+			fflush(stdout);
+			n_dp_prev = n_dp;
+			last_display = wtime();
+		}
+	}
+
+/* 
+ X_i == #red balls in bin i
+ Y_i == #blue balls in bin i
+
+ #collisions == sum_i X_i Y_i
+
+ E[#collisions] == 2^m E[X_i * Y_i] == 2^m E[X_i] * E[Y_i] == 2^m (2^n / 2^m) * (2^n / 2^m) == 2^(2n - m)
+
+*/
+	// each new version of the function
+	void round_display()
+	{
+		u64 N = 1ull << pb_n;
+		u64 E_i = distinct_collisions_estimation(hll_i);
+		u64 E = distinct_collisions_estimation(hll);
+		double E_exp = N * (1 - std::pow(1 - 1. / N, n_collisions));
+		double avglen = (double) n_points_trails / n_dp;
+		printf("\n%.2f avg trail length (x%.2f & x%.2f collliding).  %.2f%% probe failure.  %.2f%% walk-robinhhod.  %.2f%% walk-noncolliding.  %.2f%% same-value\n",
+                avglen, 
+                (double) colliding_len_min / n_collisions / avglen, 
+                (double) colliding_len_max / n_collisions / avglen, 
+                100. * bad_probe / n_dp_i, 
+                100. * bad_walk_robinhood / n_dp_i, 
+                100. * bad_walk_noncolliding / n_dp_i, 
+                100. * bad_collision / n_dp_i);
+		printf("#coll (this i / distinct / total / distinct / expected) %.02f*w / %.02f*w / %.02f*n / %.02f*n / %.02f*n\n", 
+				(double) n_collisions_i / w,
+                (double) E_i / w,
+                (double) n_collisions / N,
+                (double) E / N,
+                (double) E_exp / N);
+		printf("\n");
+		fflush(stdout);
+	}
+
+	// last call
+	void done()
+	{
+		if (not display_active)
+			return;
+		double total_time = wtime() - start_time;
+		u64 N = 1ull << pb_n;
+		u64 E = distinct_collisions_estimation(hll);
+		u64 v = n_flush;
 		printf("\n----------------------------------------\n");
-		printf("Took %0.2f sec to find the golden inputs\n", total_time);
-		printf("Used %" PRId64 " ≈ 2^%0.2f mixing functions\n", 1+n_flush, std::log2(1+n_flush));
+		printf("Total running time %0.2fs\n", total_time);
+		printf("Used %" PRId64 " = %.2f*n/w mixing functions\n", v, (double) v / N * w);
 		// printf("Evaluated f() %" PRId64 " ≈ 2^%0.2f times\n", n_points, std::log2(n_points));
 		// printf("  - %" PRId64 " ≈ 2^%0.2f times to find DPs (%.1f%%)\n", 
 		// 	n_points_trails, std::log2(n_points_trails), 100.0 * n_points_trails / n_points);
 		// u64 n_points_walk = n_points - n_points_trails;
 		// printf("  - %" PRId64 " ≈ 2^%0.2f times in walks (%.1f%%)\n", 
 		// 	n_points_walk, std::log2(n_points_walk), 100.0 * n_points_walk / n_points);
-		printf("Found %" PRId64 " ≈ 2^%0.2f distinguished points\n", n_dp, std::log2(n_dp));
-		printf("Found %" PRId64 " ≈ 2^%0.2f collisions\n", n_collisions, std::log2(n_collisions));
-  }
+		// printf("Found %" PRId64 " ≈ 2^%0.2f distinguished points\n", n_dp, std::log2(n_dp));
+		printf("Found %.02f*n collisions (%.02f*n distinct)\n", (double) n_collisions / N, (double) E / N);
+		printf("Found %.02f*w collisions / version (%.02f*w distinct)\n", (double) n_collisions / v / w, (double) n_coll_unique / v / w);
+	}
 };  
 }
 #endif
