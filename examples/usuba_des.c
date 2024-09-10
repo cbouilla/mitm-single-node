@@ -1,3 +1,5 @@
+#include <assert.h>
+
 #include "types.h"
 
 #if defined(__AVX2__)
@@ -13,6 +15,7 @@
 #define NOT(a)    _mm256_xor_si256(ONES,a)
 
 #define DATATYPE __m256i
+#define VLEN 256
 
 /////////////////////////////////////////////////////
 
@@ -77,6 +80,7 @@ static void real_ortho_256x256(__m256i data[]) {
 #define NOT(a)    _mm512_xor_si512(ONES,a)
 
 #define DATATYPE __m512i
+#define VLEN 512
 ///////////////////////////////////////////////////////////////////////////////////
 
 static void real_ortho_512x512(__m512i data[]) {
@@ -6874,11 +6878,6 @@ static void invdes64__ (const DATATYPE plaintext__[64], const DATATYPE key__[64]
 }
 #endif
 
-
-#define VLEN  (8 * sizeof(v32)) 
-#include <assert.h>
-#include <stdio.h>
-
 // in fact, we need a transpose "256x64 to 64x256" and an untranspose 64x256 to 256x64"
 
 /*
@@ -6987,6 +6986,30 @@ void transpose_64x256(const u64 *A, u64 *At)
 	transpose_64x64(A + 3, 4, At + 192, 1);
 }
 
+void transpose_512x64(const u64 *A, u64 *At)
+{
+  transpose_64x64(A + 0,   1, At,     8);
+  transpose_64x64(A + 64,  1, At + 1, 8);
+  transpose_64x64(A + 128, 1, At + 2, 8);
+  transpose_64x64(A + 192, 1, At + 3, 8);
+  transpose_64x64(A + 256, 1, At + 4, 8);
+  transpose_64x64(A + 320, 1, At + 5, 8);
+  transpose_64x64(A + 384, 1, At + 6, 8);
+  transpose_64x64(A + 448, 1, At + 7, 8);
+}
+
+void transpose_64x512(const u64 *A, u64 *At)
+{
+  transpose_64x64(A,     8, At,       1);
+  transpose_64x64(A + 1, 8, At + 64,  1);
+  transpose_64x64(A + 2, 8, At + 128, 1);
+  transpose_64x64(A + 3, 8, At + 192, 1);
+  transpose_64x64(A + 4, 8, At + 256, 1);
+  transpose_64x64(A + 5, 8, At + 320, 1);
+  transpose_64x64(A + 6, 8, At + 384, 1);
+  transpose_64x64(A + 7, 8, At + 448, 1);
+}
+
 void test()
 {
 	u64 in[VLEN];
@@ -7016,10 +7039,12 @@ void des_encrypt_decrypt(u64 encryption_input, u64 decryption_input, const u64 *
 {
 	// test();
 
-	assert(VLEN == 256);
-	assert(sizeof(DATATYPE) == 32);
 	DATATYPE keys_ortho[64];
+  #if VLEN == 256
 	transpose_256x64(keys, (u64 *) keys_ortho);
+  #else
+  transpose_512x64(keys, (u64 *) keys_ortho);
+  #endif
 
 	/* check transposition
 	 * u64 check[VLEN];
@@ -7032,12 +7057,20 @@ void des_encrypt_decrypt(u64 encryption_input, u64 decryption_input, const u64 *
 	for (int i = 0; i < 64; i++)
     	enc_in_ortho[63-i] = (encryption_input >> i) & 1 ? ONES : ZERO;
 	des56__(enc_in_ortho, keys_ortho, enc_out_ortho);
-	transpose_64x256((u64 *) enc_out_ortho, encryption_outputs);
+	#if VLEN == 256
+  transpose_64x256((u64 *) enc_out_ortho, encryption_outputs);
+  #else
+  transpose_64x512((u64 *) enc_out_ortho, encryption_outputs);
+  #endif
 
 	DATATYPE dec_in_ortho[64], dec_out_ortho[64];
 	for (int i = 0; i < 64; i++)
     	dec_in_ortho[63-i] = (decryption_input >> i) & 1 ? ONES : ZERO;
 
 	invdes56__(dec_in_ortho, keys_ortho, dec_out_ortho);
+  #if VLEN == 256
 	transpose_64x256((u64 *) dec_out_ortho, decryption_outputs);
+  #else
+  transpose_64x512((u64 *) dec_out_ortho, decryption_outputs);
+  #endif
 }

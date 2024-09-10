@@ -423,11 +423,12 @@ void benchmark(const Problem& pb, const MpiParameters &params)
 		MPI_Barrier(params.world_comm);
 
         double start = wtime();
+        u64 mask = make_mask(pb.n);
         u64 N = 1ull << 20; 
         for (u64 i = 0; i < N; i++) {
             pb.vfg(x, y, z);
             for (int j = 0; j < vlen; j++)
-                x[j] = (x[j] & 1) ? y[j] : z[j];
+                x[j] = ((x[j] & 1) ? y[j] : z[j]) & mask;
         }
         display_stats(N, start, vlen, params);
     }
