@@ -366,7 +366,7 @@ void BCast_result(MpiParameters &params, vector<pair<u64,u64>> &result)
 
 static void display_stats(u64 N, double start, int vlen, const MpiParameters &params)
 {
-	double rate = N / (wtime() - start);
+	double rate = vlen * N / (wtime() - start);
     double rate_min = rate;
     double rate_max = rate;
     double rate_avg = rate;
@@ -420,7 +420,10 @@ void benchmark(const Problem& pb, const MpiParameters &params)
         for (int i = 0; i < vlen; i++)
             x[i] = i;
 
+		MPI_Barrier(params.world_comm);
+
         double start = wtime();
+        u64 N = 1ull << 20; 
         for (u64 i = 0; i < N; i++) {
             pb.vfg(x, y, z);
             for (int j = 0; j < vlen; j++)
