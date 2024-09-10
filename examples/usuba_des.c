@@ -7020,7 +7020,11 @@ void test()
 		in[i] = 0;
 	in[0] = 0xffffffffffffffffull;
 
+  #if defined(__AVX2__)
 	transpose_256x64(in, mid);
+  #elif defined(__AVX512F__)
+  transpose_256x64(in, mid);
+  #endif
 
 	for (int i = 0; i < VLEN; i += 4) {
 		// printf("mid[%d] = %016" PRIx64 "\n", i, mid[i]);
@@ -7031,7 +7035,6 @@ void test()
 	for (int i = 1; i < VLEN; i++)
 		assert(out[i] == 0);
 	assert(in[0] == 0xffffffffffffffffull);
-	
 }
 
 /* processes batches of size 256 or 512 (8 * sizeof(v32)), depending on the arch */
@@ -7040,9 +7043,9 @@ void des_encrypt_decrypt(u64 encryption_input, u64 decryption_input, const u64 *
 	// test();
 
 	DATATYPE keys_ortho[64];
-  #if VLEN == 256
+  #if defined(__AVX2__)
 	transpose_256x64(keys, (u64 *) keys_ortho);
-  #else
+  #elif defined(__AVX512F__)
   transpose_512x64(keys, (u64 *) keys_ortho);
   #endif
 
@@ -7057,9 +7060,9 @@ void des_encrypt_decrypt(u64 encryption_input, u64 decryption_input, const u64 *
 	for (int i = 0; i < 64; i++)
     	enc_in_ortho[63-i] = (encryption_input >> i) & 1 ? ONES : ZERO;
 	des56__(enc_in_ortho, keys_ortho, enc_out_ortho);
-	#if VLEN == 256
+	#if defined(__AVX2__)
   transpose_64x256((u64 *) enc_out_ortho, encryption_outputs);
-  #else
+  #elif defined(__AVX512F__)
   transpose_64x512((u64 *) enc_out_ortho, encryption_outputs);
   #endif
 
@@ -7068,9 +7071,9 @@ void des_encrypt_decrypt(u64 encryption_input, u64 decryption_input, const u64 *
     	dec_in_ortho[63-i] = (decryption_input >> i) & 1 ? ONES : ZERO;
 
 	invdes56__(dec_in_ortho, keys_ortho, dec_out_ortho);
-  #if VLEN == 256
+  #if defined(__AVX2__)
 	transpose_64x256((u64 *) dec_out_ortho, decryption_outputs);
-  #else
+  #elif defined(__AVX512F__)
   transpose_64x512((u64 *) dec_out_ortho, decryption_outputs);
   #endif
 }
