@@ -17,62 +17,34 @@
 
 #define DATATYPE __m512i
 #define VLEN 512
+#define LANES 8
+
+constexpr v64 vM1_HI = {0xffffffff00000000, 0xffffffff00000000, 0xffffffff00000000, 0xffffffff00000000, 
+                        0xffffffff00000000, 0xffffffff00000000, 0xffffffff00000000, 0xffffffff00000000};
+constexpr v64 vM1_LO = {0x00000000ffffffff, 0x00000000ffffffff, 0x00000000ffffffff, 0x00000000ffffffff, 
+                        0x00000000ffffffff, 0x00000000ffffffff, 0x00000000ffffffff, 0x00000000ffffffff};
+constexpr v64 vM2_HI = {0xffff0000ffff0000, 0xffff0000ffff0000, 0xffff0000ffff0000, 0xffff0000ffff0000, 
+                        0xffff0000ffff0000, 0xffff0000ffff0000, 0xffff0000ffff0000, 0xffff0000ffff0000};
+constexpr v64 vM2_LO = {0x0000ffff0000ffff, 0x0000ffff0000ffff, 0x0000ffff0000ffff, 0x0000ffff0000ffff, 
+                        0x0000ffff0000ffff, 0x0000ffff0000ffff, 0x0000ffff0000ffff, 0x0000ffff0000ffff};
+constexpr v64 vM3_HI = {0xff00ff00ff00ff00, 0xff00ff00ff00ff00, 0xff00ff00ff00ff00, 0xff00ff00ff00ff00, 
+                        0xff00ff00ff00ff00, 0xff00ff00ff00ff00, 0xff00ff00ff00ff00, 0xff00ff00ff00ff00};
+constexpr v64 vM3_LO = {0x00ff00ff00ff00ff, 0x00ff00ff00ff00ff, 0x00ff00ff00ff00ff, 0x00ff00ff00ff00ff, 
+                        0x00ff00ff00ff00ff, 0x00ff00ff00ff00ff, 0x00ff00ff00ff00ff, 0x00ff00ff00ff00ff};
+constexpr v64 vM4_HI = {0xf0f0f0f0f0f0f0f0, 0xf0f0f0f0f0f0f0f0, 0xf0f0f0f0f0f0f0f0, 0xf0f0f0f0f0f0f0f0, 
+                        0xf0f0f0f0f0f0f0f0, 0xf0f0f0f0f0f0f0f0, 0xf0f0f0f0f0f0f0f0, 0xf0f0f0f0f0f0f0f0};
+constexpr v64 vM4_LO = {0x0f0f0f0f0f0f0f0f, 0x0f0f0f0f0f0f0f0f, 0x0f0f0f0f0f0f0f0f, 0x0f0f0f0f0f0f0f0f, 
+                        0x0f0f0f0f0f0f0f0f, 0x0f0f0f0f0f0f0f0f, 0x0f0f0f0f0f0f0f0f, 0x0f0f0f0f0f0f0f0f};
+constexpr v64 vM5_HI = {0xcccccccccccccccc, 0xcccccccccccccccc, 0xcccccccccccccccc, 0xcccccccccccccccc, 
+                        0xcccccccccccccccc, 0xcccccccccccccccc, 0xcccccccccccccccc, 0xcccccccccccccccc};
+constexpr v64 vM5_LO = {0x3333333333333333, 0x3333333333333333, 0x3333333333333333, 0x3333333333333333, 
+                        0x3333333333333333, 0x3333333333333333, 0x3333333333333333, 0x3333333333333333};
+constexpr v64 vM6_HI = {0xaaaaaaaaaaaaaaaa, 0xaaaaaaaaaaaaaaaa, 0xaaaaaaaaaaaaaaaa, 0xaaaaaaaaaaaaaaaa, 
+                        0xaaaaaaaaaaaaaaaa, 0xaaaaaaaaaaaaaaaa, 0xaaaaaaaaaaaaaaaa, 0xaaaaaaaaaaaaaaaa};
+constexpr v64 vM6_LO = {0x5555555555555555, 0x5555555555555555, 0x5555555555555555, 0x5555555555555555, 
+                        0x5555555555555555, 0x5555555555555555, 0x5555555555555555, 0x5555555555555555};
+
 ///////////////////////////////////////////////////////////////////////////////////
-
-static void real_ortho_512x512(__m512i data[]) {
-
-  __m512i mask_l[9] = {
-  _mm512_set1_epi64(0xaaaaaaaaaaaaaaaaUL),
-  _mm512_set1_epi64(0xccccccccccccccccUL),
-  _mm512_set1_epi64(0xf0f0f0f0f0f0f0f0UL),
-  _mm512_set1_epi64(0xff00ff00ff00ff00UL),
-  _mm512_set1_epi64(0xffff0000ffff0000UL),
-  _mm512_set1_epi64(0xffffffff00000000UL),
-  _mm512_set_epi64(0UL,-1UL,0UL,-1UL,0UL,-1UL,0UL,-1UL),
-  _mm512_set_epi64(0UL,0UL,-1UL,-1UL,0UL,0UL,-1UL,-1UL),
-  _mm512_set_epi64(0UL,0UL,0UL,0UL,-1UL,-1UL,-1UL,-1UL),
-  };
-
-  __m512i mask_r[9] = {
-  _mm512_set1_epi64(0x5555555555555555UL),
-  _mm512_set1_epi64(0x3333333333333333UL),
-  _mm512_set1_epi64(0x0f0f0f0f0f0f0f0fUL),
-  _mm512_set1_epi64(0x00ff00ff00ff00ffUL),
-  _mm512_set1_epi64(0x0000ffff0000ffffUL),
-  _mm512_set1_epi64(0x00000000ffffffffUL),
-  _mm512_set_epi64(-1UL,0UL,-1UL,0UL,-1UL,0UL,-1UL,0UL),
-  _mm512_set_epi64(-1UL,-1UL,0UL,0UL,-1UL,-1UL,0UL,0UL),
-  _mm512_set_epi64(-1UL,-1UL,-1UL,-1UL,0UL,0UL,0UL,0UL),
-  };
-  
-  for (int i = 0; i < 9; i ++) {
-  int n = (1UL << i);
-  for (int j = 0; j < 512; j += (2 * n))
-    for (int k = 0; k < n; k ++) {
-    __m512i u = _mm512_and_si512(data[j + k], mask_l[i]);
-    __m512i v = _mm512_and_si512(data[j + k], mask_r[i]);
-    __m512i x = _mm512_and_si512(data[j + n + k], mask_l[i]);
-    __m512i y = _mm512_and_si512(data[j + n + k], mask_r[i]);
-    if (i <= 5) {
-      data[j + k] = _mm512_or_si512(u, _mm512_srli_epi64(x, n));
-      data[j + n + k] = _mm512_or_si512(_mm512_slli_epi64(v, n), y);
-    } else if (i == 6) {
-      /* Note the "inversion" of srli and slli. */
-      data[j + k] = _mm512_or_si512(u, _mm512_bslli_epi128(x, 8));
-      data[j + n + k] = _mm512_or_si512(_mm512_bsrli_epi128(v, 8), y);
-    } else if (i == 7) {
-      /* might be 0b01001110 instead */
-      data[j + k] = _mm512_or_si512(u, _mm512_permutex_epi64(x,0b10110001));
-      data[j + n + k] = _mm512_or_si512(_mm512_permutex_epi64(v,0b10110001), y);
-    } else {
-      /* might be 0,1,2,3,4,5,6,7 */
-      __m512i ctrl = _mm512_set_epi64(4,5,6,7,0,1,2,3);
-      data[j + k] = _mm512_or_si512(u, _mm512_permutexvar_epi64(ctrl,x));
-      data[j + n + k] = _mm512_or_si512(_mm512_permutexvar_epi64(ctrl,v), y);
-    }
-    }
-  }
-}
 
 #elif defined(__AVX2__)
 #include <immintrin.h>
@@ -88,60 +60,25 @@ static void real_ortho_512x512(__m512i data[]) {
 
 #define DATATYPE __m256i
 #define VLEN 256
+#define LANES 4
 
-/////////////////////////////////////////////////////
-
-static void real_ortho_256x256(__m256i data[]) {
-
-  __m256i mask_l[8] = {
-	_mm256_set1_epi64x(0xaaaaaaaaaaaaaaaaUL),
-	_mm256_set1_epi64x(0xccccccccccccccccUL),
-	_mm256_set1_epi64x(0xf0f0f0f0f0f0f0f0UL),
-	_mm256_set1_epi64x(0xff00ff00ff00ff00UL),
-	_mm256_set1_epi64x(0xffff0000ffff0000UL),
-	_mm256_set1_epi64x(0xffffffff00000000UL),
-	_mm256_set_epi64x(0UL,-1UL,0UL,-1UL),
-	_mm256_set_epi64x(0UL,0UL,-1UL,-1UL),
-  
-  };
-
-  __m256i mask_r[8] = {
-	_mm256_set1_epi64x(0x5555555555555555UL),
-	_mm256_set1_epi64x(0x3333333333333333UL),
-	_mm256_set1_epi64x(0x0f0f0f0f0f0f0f0fUL),
-	_mm256_set1_epi64x(0x00ff00ff00ff00ffUL),
-	_mm256_set1_epi64x(0x0000ffff0000ffffUL),
-	_mm256_set1_epi64x(0x00000000ffffffffUL),
-	_mm256_set_epi64x(-1UL,0UL,-1UL,0UL),
-	_mm256_set_epi64x(-1UL,-1UL,0UL,0UL),
-  };
-  
-  for (int i = 0; i < 8; i ++) {
-	int n = (1UL << i);
-	for (int j = 0; j < 256; j += (2 * n))
-	  for (int k = 0; k < n; k ++) {
-		__m256i u = _mm256_and_si256(data[j + k], mask_l[i]);
-		__m256i v = _mm256_and_si256(data[j + k], mask_r[i]);
-		__m256i x = _mm256_and_si256(data[j + n + k], mask_l[i]);
-		__m256i y = _mm256_and_si256(data[j + n + k], mask_r[i]);
-		if (i <= 5) {
-		  data[j + k] = _mm256_or_si256(u, _mm256_srli_epi64(x, n));
-		  data[j + n + k] = _mm256_or_si256(_mm256_slli_epi64(v, n), y);
-		} else if (i == 6) {
-		  /* Note the "inversion" of srli and slli. */
-		  data[j + k] = _mm256_or_si256(u, _mm256_slli_si256(x, 8));
-		  data[j + n + k] = _mm256_or_si256(_mm256_srli_si256(v, 8), y);
-		} else {
-		  data[j + k] = _mm256_or_si256(u, _mm256_permute2x128_si256( x , x , 1));
-		  data[j + n + k] = _mm256_or_si256(_mm256_permute2x128_si256( v , v , 1), y);
-		}
-	  }
-  }
-}
+constexpr v64 vM1_HI = {0xffffffff00000000, 0xffffffff00000000, 0xffffffff00000000, 0xffffffff00000000};
+constexpr v64 vM1_LO = {0x00000000ffffffff, 0x00000000ffffffff, 0x00000000ffffffff, 0x00000000ffffffff};
+constexpr v64 vM2_HI = {0xffff0000ffff0000, 0xffff0000ffff0000, 0xffff0000ffff0000, 0xffff0000ffff0000};
+constexpr v64 vM2_LO = {0x0000ffff0000ffff, 0x0000ffff0000ffff, 0x0000ffff0000ffff, 0x0000ffff0000ffff};
+constexpr v64 vM3_HI = {0xff00ff00ff00ff00, 0xff00ff00ff00ff00, 0xff00ff00ff00ff00, 0xff00ff00ff00ff00};
+constexpr v64 vM3_LO = {0x00ff00ff00ff00ff, 0x00ff00ff00ff00ff, 0x00ff00ff00ff00ff, 0x00ff00ff00ff00ff};
+constexpr v64 vM4_HI = {0xf0f0f0f0f0f0f0f0, 0xf0f0f0f0f0f0f0f0, 0xf0f0f0f0f0f0f0f0, 0xf0f0f0f0f0f0f0f0};
+constexpr v64 vM4_LO = {0x0f0f0f0f0f0f0f0f, 0x0f0f0f0f0f0f0f0f, 0x0f0f0f0f0f0f0f0f, 0x0f0f0f0f0f0f0f0f};
+constexpr v64 vM5_HI = {0xcccccccccccccccc, 0xcccccccccccccccc, 0xcccccccccccccccc, 0xcccccccccccccccc};
+constexpr v64 vM5_LO = {0x3333333333333333, 0x3333333333333333, 0x3333333333333333, 0x3333333333333333};
+constexpr v64 vM6_HI = {0xaaaaaaaaaaaaaaaa, 0xaaaaaaaaaaaaaaaa, 0xaaaaaaaaaaaaaaaa, 0xaaaaaaaaaaaaaaaa};
+constexpr v64 vM6_LO = {0x5555555555555555, 0x5555555555555555, 0x5555555555555555, 0x5555555555555555};
 
 #else
 #error "no AVX?"
 #endif
+
 
 
 /* This code was generated by Usuba.
@@ -6973,46 +6910,111 @@ void transpose_64x64(const u64 *A, int strideA, u64 *At, int strideAt)
 }
 
 
-void transpose_256x64(const u64 *A, u64 *At)
+template<int incA, int strideA>
+static inline v64 load(const u64 *A, int i)
 {
+	if (incA == 1) {
+		return v64load(A + i*strideA);
+	} else {
+		u64 tmp[LANES] __attribute__ ((aligned(sizeof(DATATYPE))));
+		for (int j = 0; j < LANES; j++)
+			tmp[j] = A[i*strideA + j*incA];
+		return v64load(tmp);
+	}
+}
+
+template<int incA, int strideA>
+static inline void store(u64 *A, int i, v64 x)
+{
+	if (incA == 1)
+		v64store(A + i*strideA, x);
+	else
+		for (int j = 0; j < LANES; j++)
+			A[i*strideA + j*incA] = x[j];
+}
+
+
+template<int incA, int strideA, int incAt, int strideAt>
+void vtranspose_64x64(const u64 *A, u64 *At)
+{
+	v64 T[64];
+
+	/* to unroll manually */
+	for (int l = 0; l < 32; l++) {
+		v64 Ml = load<incA, strideA>(A, l);
+		v64 Mlp32 = load<incA, strideA>(A, l + 32);
+		T[l] =       (Ml & vM1_LO)        | ((Mlp32 & vM1_LO) << 32);
+		T[l + 32] = ((Ml & vM1_HI) >> 32) |  (Mlp32 & vM1_HI);
+	}
+
+	for (int l0 = 0; l0 < 64; l0 += 32) {
+		for (int l = l0; l < l0 + 16; l++) {
+			v64 val1 =  (T[l] & vM2_LO)        | ((T[l + 16] & vM2_LO) << 16);
+			v64 val2 = ((T[l] & vM2_HI) >> 16) |  (T[l + 16] & vM2_HI);
+			T[l] = val1;
+			T[l + 16] = val2;
+		}
+	}
+
+	for (int l0 = 0; l0 < 64; l0 += 16) {
+		for (int l = l0; l < l0 + 8; l++) {
+			v64 val1 =  (T[l] & vM3_LO)       | ((T[l + 8] & vM3_LO) << 8);
+			v64 val2 = ((T[l] & vM3_HI) >> 8) |  (T[l + 8] & vM3_HI);
+			T[l] = val1;
+			T[l + 8] = val2;
+		}
+	}
+
+	for (int l0 = 0; l0 < 64; l0 += 8) {
+		for (int l = l0; l < l0 + 4; l++) {
+			v64 val1 =  (T[l] & vM4_LO)       | ((T[l + 4] & vM4_LO) << 4);
+			v64 val2 = ((T[l] & vM4_HI) >> 4) |  (T[l + 4] & vM4_HI);
+			T[l] = val1;
+			T[l + 4] = val2;
+		}
+	}
+
+	for (int l0 = 0; l0 < 64; l0 += 4) {
+		for (int l = l0; l < l0 + 2; l++) {
+			v64 val1 =  (T[l] & vM5_LO)       | ((T[l + 2] & vM5_LO) << 2);
+			v64 val2 = ((T[l] & vM5_HI) >> 2) |  (T[l + 2] & vM5_HI);
+			T[l] = val1;
+			T[l + 2] = val2;
+		}
+	}
+
+	for (int l = 0; l < 64; l += 2) {
+		v64 val1 =  (T[l] & vM6_LO)       | ((T[l + 1] & vM6_LO) << 1);
+		v64 val2 = ((T[l] & vM6_HI) >> 1) | ( T[l + 1] & vM6_HI);
+		store<incAt, strideAt>(At, l, val1);
+		store<incAt, strideAt>(At, l + 1, val2);
+	}
+}
+
+void transpose_in(const u64 *A, u64 *At)
+{
+	/*
 	transpose_64x64(A + 0,   1, At,     4);
 	transpose_64x64(A + 64,  1, At + 1, 4);
 	transpose_64x64(A + 128, 1, At + 2, 4);
 	transpose_64x64(A + 192, 1, At + 3, 4);
+	*/
+	vtranspose_64x64<64, 1, 1, LANES>(A, At);
 }
 
-void transpose_64x256(const u64 *A, u64 *At)
+void transpose_out(const u64 *A, u64 *At)
 {
+	
+	/*
 	transpose_64x64(A    , 4, At,       1);
 	transpose_64x64(A + 1, 4, At + 64,  1);
 	transpose_64x64(A + 2, 4, At + 128, 1);
 	transpose_64x64(A + 3, 4, At + 192, 1);
+	*/
+	vtranspose_64x64<1, LANES, 64, 1>(A, At);
 }
 
-void transpose_512x64(const u64 *A, u64 *At)
-{
-  transpose_64x64(A + 0,   1, At,     8);
-  transpose_64x64(A + 64,  1, At + 1, 8);
-  transpose_64x64(A + 128, 1, At + 2, 8);
-  transpose_64x64(A + 192, 1, At + 3, 8);
-  transpose_64x64(A + 256, 1, At + 4, 8);
-  transpose_64x64(A + 320, 1, At + 5, 8);
-  transpose_64x64(A + 384, 1, At + 6, 8);
-  transpose_64x64(A + 448, 1, At + 7, 8);
-}
-
-void transpose_64x512(const u64 *A, u64 *At)
-{
-  transpose_64x64(A,     8, At,       1);
-  transpose_64x64(A + 1, 8, At + 64,  1);
-  transpose_64x64(A + 2, 8, At + 128, 1);
-  transpose_64x64(A + 3, 8, At + 192, 1);
-  transpose_64x64(A + 4, 8, At + 256, 1);
-  transpose_64x64(A + 5, 8, At + 320, 1);
-  transpose_64x64(A + 6, 8, At + 384, 1);
-  transpose_64x64(A + 7, 8, At + 448, 1);
-}
-
+/*
 void test()
 {
 	u64 in[VLEN];
@@ -7030,7 +7032,7 @@ void test()
   #endif
 
 	for (int i = 0; i < VLEN; i += 4) {
-		// printf("mid[%d] = %016" PRIx64 "\n", i, mid[i]);
+		printf("mid[%d] = %016" PRIx64 "\n", i, mid[i]);
 		assert(mid[i] == 0x0000001);
 	}
 	
@@ -7039,44 +7041,35 @@ void test()
 		assert(out[i] == 0);
 	assert(in[0] == 0xffffffffffffffffull);
 }
+*/
 
 /* processes batches of size 256 or 512 (8 * sizeof(v32)), depending on the arch */
 void des_encrypt_decrypt(u64 encryption_input, u64 decryption_input, const u64 *keys, u64 *encryption_outputs, u64 *decryption_outputs)
 {
 	// test();
 
-	DATATYPE keys_ortho[64];
-  #if defined(__AVX512F__)
-  transpose_512x64(keys, (u64 *) keys_ortho);
-  #elif defined(__AVX2__)
-	transpose_256x64(keys, (u64 *) keys_ortho);
-  #endif
+	DATATYPE keys_ortho[64] __attribute__ ((aligned(sizeof(DATATYPE))));
+	transpose_in(keys, (u64 *) keys_ortho);
 
-	/* check transposition
-	 * u64 check[VLEN];
-	 * transpose_64x256((u64 *) keys_ortho, check);
-	 * for (int i = 0; i < VLEN; i++)
-     * 	assert(check[i] == keys[i]);
-     */
+	/* check transposition 
+	u64 check[VLEN];
+	transpose_64x256((u64 *) keys_ortho, check);
+	for (int i = 0; i < VLEN; i++)
+		assert(check[i] == keys[i]);
+	*/
 
-	DATATYPE enc_in_ortho[64], enc_out_ortho[64];
+	DATATYPE enc_in_ortho[64] __attribute__ ((aligned(sizeof(DATATYPE))));
+	DATATYPE enc_out_ortho[64] __attribute__ ((aligned(sizeof(DATATYPE))));
 	for (int i = 0; i < 64; i++)
-    	enc_in_ortho[63-i] = (encryption_input >> i) & 1 ? ONES : ZERO;
+		enc_in_ortho[63-i] = (encryption_input >> i) & 1 ? ONES : ZERO;
 	des56__(enc_in_ortho, keys_ortho, enc_out_ortho);
-  #if defined(__AVX512F__)
-  transpose_64x512((u64 *) enc_out_ortho, encryption_outputs);
-	#elif defined(__AVX2__)
-  transpose_64x256((u64 *) enc_out_ortho, encryption_outputs);
-  #endif
+	transpose_out((u64 *) enc_out_ortho, encryption_outputs);
 
-	DATATYPE dec_in_ortho[64], dec_out_ortho[64];
+	DATATYPE dec_in_ortho[64] __attribute__ ((aligned(sizeof(DATATYPE))));
+	DATATYPE dec_out_ortho[64] __attribute__ ((aligned(sizeof(DATATYPE))));
 	for (int i = 0; i < 64; i++)
-    	dec_in_ortho[63-i] = (decryption_input >> i) & 1 ? ONES : ZERO;
+		dec_in_ortho[63-i] = (decryption_input >> i) & 1 ? ONES : ZERO;
 
 	invdes56__(dec_in_ortho, keys_ortho, dec_out_ortho);
-  #if defined(__AVX512F__)
-  transpose_64x512((u64 *) dec_out_ortho, decryption_outputs);
-  #elif defined(__AVX2__)
-	transpose_64x256((u64 *) dec_out_ortho, decryption_outputs);
-  #endif
+	transpose_out((u64 *) dec_out_ortho, decryption_outputs);
 }

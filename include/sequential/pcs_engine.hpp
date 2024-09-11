@@ -91,12 +91,12 @@ static void start_chain(const Parameters &params, u64 out_mask, u64 root_seed, u
 
 
 template<class ProblemWrapper>
-static tuple<u64,u64,u64> run(ProblemWrapper& wrapper, Parameters &params, PRNG &prng)
+static optional<tuple<u64,u64,u64>> run(ProblemWrapper& wrapper, Parameters &params, PRNG &prng)
 {
     int jbits = std::log2(10 * params.w) + std::log2(1 / params.theta) + 8;
     u64 w = PcsDict::get_nslots(params.nbytes_memory, 1);
-    PcsDict dict(jbits, w);
-    
+    PcsDict dict(jbits, w, params.theta, params.gamma);
+
     Counters ctr;
     ctr.ready(wrapper.n, w);
 
@@ -151,6 +151,7 @@ static tuple<u64,u64,u64> run(ProblemWrapper& wrapper, Parameters &params, PRNG 
                 start_chain(params, wrapper.out_mask, root_seed, j, x, len, seed, k);
         }
     } // main loop
+    return nullopt;
 }
 };
 

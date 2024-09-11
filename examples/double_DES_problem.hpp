@@ -18,9 +18,9 @@ extern "C"{
     void DES_set_key_unchecked(const u8 *key, DES_key_schedule *schedule);
     void DES_encrypt1(u32 *data, DES_key_schedule *ks, int enc);
 
-    /* but we ship our own bitsliced version */
-    void des_encrypt_decrypt(u64 encryption_input, u64 decryption_input, const u64 *keys, u64 *encryption_outputs, u64 *decryption_outputs);
 }
+/* but we ship our own bitsliced version */
+void des_encrypt_decrypt(u64 encryption_input, u64 decryption_input, const u64 *keys, u64 *encryption_outputs, u64 *decryption_outputs);
 
 namespace mitm {
 
@@ -323,6 +323,7 @@ public:
     {
         openssl_des_test();
         usuba_des_test();
+        printf("DES: tests pass\n");
 
         in_mask = make_mask(n);
         assert(n <= 56);

@@ -34,12 +34,12 @@ target_link_libraries(mpi_double_speck64_bench PUBLIC MPI::MPI_CXX)
 
 ###### DES
 
-add_executable(double_DES_demo usuba_des.c double_DES_demo.cpp)
+add_executable(double_DES_demo usuba_des.cpp double_DES_demo.cpp)
 target_include_directories(double_DES_demo PRIVATE ../include)
 target_link_libraries(double_DES_demo PRIVATE OpenSSL::Crypto)
 
 
-add_executable(mpi_double_DES_bench usuba_des.c mpi_double_DES_bench.cpp)
+add_executable(mpi_double_DES_bench usuba_des.cpp mpi_double_DES_bench.cpp)
 target_include_directories(mpi_double_DES_bench PRIVATE ../include)
 target_link_libraries(mpi_double_DES_bench PRIVATE OpenSSL::Crypto)
 target_link_libraries(mpi_double_DES_bench PUBLIC MPI::MPI_CXX)

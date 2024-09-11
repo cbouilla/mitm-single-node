@@ -52,7 +52,7 @@ int main(int argc, char* argv[])
         printf("2DES demo! seed=%016" PRIx64 ", n=%d\n", prng.seed, n); 
 
         mitm::DoubleDES_Problem pb(n, prng);            
-         auto claw = mitm::claw_search<mitm::ScalarSequentialEngine>(pb, params, prng);
+         auto claw = mitm::claw_search<mitm::VectorSequentialEngine>(pb, params, prng);
         if (claw) {
             auto [x0, x1] = *claw;
             printf("f(%" PRIx64 ") = g(%" PRIx64 ")\n", x0, x1);
