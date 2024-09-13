@@ -135,13 +135,12 @@ public:
         constexpr int vlen = Problem::vlen; 
         n_eval += vlen;
         u64 y[vlen] __attribute__ ((aligned(sizeof(u64) * vlen))); 
-        u64 fy[vlen] __attribute__ ((aligned(sizeof(u64) * vlen)));
-        u64 gy[vlen] __attribute__ ((aligned(sizeof(u64) * vlen)));
-        for (int j = 0; j < vlen; j++)
+        bool choices[vlen];
+        for (int j = 0; j < vlen; j++) {
             y[j] = mix(i, x[j]);
-        pb.vfg(y, fy, gy);
-        for (int j = 0; j < vlen; j++)
-            r[j] = choose(i, x[j]) ? fy[j] : gy[j];
+            choices[j] = choose(i, x[j]);
+        }
+        pb.vfg(y, choices, r);
     }
 
     pair<u64, u64> swapmix(u64 i, u64 a, u64 b) const
@@ -227,13 +226,12 @@ public:
         constexpr int vlen = Problem::vlen; 
         n_eval += vlen;
         u64 y[vlen] __attribute__ ((aligned(sizeof(u64) * vlen))); 
-        u64 fy[vlen] __attribute__ ((aligned(sizeof(u64) * vlen)));
-        u64 gy[vlen] __attribute__ ((aligned(sizeof(u64) * vlen)));
-        for (int j = 0; j < vlen; j++)
+        bool choice[vlen];
+        for (int j = 0; j < vlen; j++) {
             y[j] = mix(i, x[j]);
-        pb.vfg(y, fy, gy);
-        for (int j = 0; j < vlen; j++)
-            r[j] = choose(i, x[j]) ? fy[j] : gy[j];
+            choice[j] = choose(i, x[j]);
+        }
+        pb.vfg(y, choice, r);
     }
 
     pair<u64, u64> swapmix(u64 i, u64 a, u64 b) const
@@ -270,18 +268,18 @@ optional<pair<u64, u64>> claw_search(const Problem& pb, Parameters &params, PRNG
         // check consistency of the vector function 
         PRNG vprng;
         u64 x[pb.vlen] __attribute__ ((aligned(sizeof(u64) * pb.vlen))); 
-        u64 y[pb.vlen] __attribute__ ((aligned(sizeof(u64) * pb.vlen)));
         u64 z[pb.vlen] __attribute__ ((aligned(sizeof(u64) * pb.vlen)));
         u64 mask = make_mask(pb.n);
-        for (int i = 0; i < pb.vlen; i++)
+        bool choice[pb.vlen];
+        for (int i = 0; i < pb.vlen; i++) {
             x[i] = vprng.rand() & mask;
-        pb.vfg(x, y, z);
+            choice[i] = vprng.rand() & 1;
+        }
+        pb.vfg(x, choice, z);
         // for (int i = 0; i < pb.vlen; i++)
         //     printf("y[%d] = %" PRIx64 " vs f(x[%d]) = %" PRIx64 "\n", i, y[i], i, pb.f(x[i]));
-        for (int i = 0; i < pb.vlen; i++) {
-            assert(y[i] == pb.f(x[i]));
-            assert(z[i] == pb.g(x[i]));
-        }
+        for (int i = 0; i < pb.vlen; i++)
+            assert(z[i] == (choice[i] ? pb.f(x[i]) : pb.g(x[i])));
     }
 
     optional<tuple<u64,u64,u64>> claw;

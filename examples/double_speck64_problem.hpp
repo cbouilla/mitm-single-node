@@ -108,7 +108,7 @@ public:
         return ((u64) Pt[0] ^ ((u64) Pt[1] << 32)) & out_mask;
     }
 
-    void vfg(const u64 k[], u64 rf[], u64 rg[]) const
+    void vfg(const u64 k[], const bool choice[], u64 out[]) const
     {
         v32 zero = v32zero();
         v64 klo = v64load(k);
@@ -124,12 +124,17 @@ public:
         v32 vMf[2];
         vSpeck64128Encrypt(vP, vMf, rk);
         v64 vmask = v64bcast(out_mask);
+        u64 rf[vlen] __attribute__ ((aligned(sizeof(u64) * vlen)));
         v32interleave(vMf[0], vMf[1], vmask, (v64 *) &rf[0], (v64 *) &rf[vlen / 2]);
         
         v32 vC[2] = {v32bcast(C[0][0]), v32bcast(C[0][1])};
         v32 vMg[2];
         vSpeck64128Decrypt(vMg, vC, rk);
+        u64 rg[vlen] __attribute__ ((aligned(sizeof(u64) * vlen)));
         v32interleave(vMg[0], vMg[1], vmask, (v64 *) &rg[0], (v64 *) &rg[vlen / 2]);
+    
+        for (int i = 0; i < vlen; i++)
+            out[i] = choice[i] ? rf[i] : rg[i];    // TODO: blend
     }
 
     bool is_good_pair(u64 khi, u64 klo) const

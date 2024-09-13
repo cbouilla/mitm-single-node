@@ -25,6 +25,8 @@ static inline v64 v64load(const void *addr) { return (v64) _mm512_load_si512((__
 static inline void v64store(void *addr, v64 x) { _mm512_store_si512((__m512i *) addr, (__m512i) x);}
 
 static inline v32 v32zero() { return (v32) _mm512_setzero_si512(); }
+static inline v64 v64zero() { return (v64) _mm512_setzero_si512(); }
+
 
 // [a,b,c,d,e,f,g,h,i,j,k,l,m,n,o,p], [q,r,s,t,u,v,w,x,y,z,aa,bb,cc,dd,ee,ff] ---> [a,c,...,cc,ee], [b, d, ..., dd, ff]
 static inline void v32desinterleave(v64 x, v64 y, v32 *fst, v32 *snd)
@@ -61,6 +63,9 @@ static inline void v32store(void *addr, v32 x) { _mm256_store_si256((__m256i *) 
 static inline v64 v64load(const void *addr) { return (v64) _mm256_load_si256((__m256i *) addr);}
 static inline void v64store(void *addr, v64 x) { _mm256_store_si256((__m256i *) addr, (__m256i) x);}
 
+static inline v32 v32zero() { return (v32) _mm256_setzero_si256(); }
+static inline v64 v64zero() { return (v64) _mm256_setzero_si256(); }
+
 
 // [a,b,c,d,e,f,g,h], [i,j,k,l,m,n,o,p] ---> [a, c, e, g, i, k, m, o], [b, d, f, h, j, l, n, p]
 static inline void v32desinterleave(v64 x, v64 y, v32 *fst, v32 *snd)
@@ -83,7 +88,6 @@ static inline void v32interleave(v32 lo, v32 hi, v64 mask, v64 *fst, v64 *snd)
     *snd = (v64) y & mask;
 }
 
-static inline v32 v32zero() { return (v32) _mm256_setzero_si256(); }
 #endif
 #endif
 

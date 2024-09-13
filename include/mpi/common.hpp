@@ -415,10 +415,12 @@ void benchmark(const Problem& pb, const MpiParameters &params)
             printf("Benchmarking vector implementation (vlen=%d)\n", vlen);
 
         u64 x[vlen] __attribute__ ((aligned(sizeof(u64) * vlen))); 
-        u64 y[vlen] __attribute__ ((aligned(sizeof(u64) * vlen)));
         u64 z[vlen] __attribute__ ((aligned(sizeof(u64) * vlen)));
-        for (int i = 0; i < vlen; i++)
+        bool choice[vlen];
+        for (int i = 0; i < vlen; i++) {
+        	choice[i] = i & 1;
             x[i] = i;
+        }
 
 		MPI_Barrier(params.world_comm);
 
@@ -426,9 +428,9 @@ void benchmark(const Problem& pb, const MpiParameters &params)
         u64 mask = make_mask(pb.n);
         u64 N = 1ull << 20; 
         for (u64 i = 0; i < N; i++) {
-            pb.vfg(x, y, z);
+            pb.vfg(x, choice, z);
             for (int j = 0; j < vlen; j++)
-                x[j] = ((x[j] & 1) ? y[j] : z[j]) & mask;
+                x[j] = z[j] & mask;
         }
         display_stats(N, start, vlen, params);
     }

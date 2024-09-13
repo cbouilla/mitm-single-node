@@ -20,7 +20,7 @@ extern "C"{
 
 }
 /* but we ship our own bitsliced version */
-void des_encrypt_decrypt(u64 encryption_input, u64 decryption_input, const u64 *keys, u64 *encryption_outputs, u64 *decryption_outputs);
+void des_both(const u64 *enc_in_ortho, const u64 *dec_in_ortho, const u64 *keys, const u64 *enc, u64 *outputs);
 
 namespace mitm {
 
@@ -35,6 +35,8 @@ public:
 
     u64 P[2] = {0, 0xffffffffffffffffull};         /* two plaintext-ciphertext pairs */
     u64 C[2];
+
+    v64 vP0[64], vC0[64];
 
     // 0 <= k < 2**56;
     static u64 des56(u64 k, u64 in, int enc)
@@ -85,9 +87,16 @@ public:
         return des56(k, C[0], 0);
     }
 
-    void vfg(const u64 k[], u64 rf[], u64 rg[]) const
+    void vfg(const u64 k[], const bool choice[], u64 out[]) const
     {
-        des_encrypt_decrypt(P[0], C[0], k, rf, rg);
+        u64 enc[vlen / 64] __attribute__ ((aligned(sizeof(u64) * vlen)));
+        for (int i = 0; i < vlen / 64; i++) {
+            enc[i] = 0;
+            for (int j = 0; j < 64; j++)
+                enc[i] ^= ((u64) choice[i*64 + j]) << j;
+        }
+
+        des_both((u64 *) vP0, (u64 *) vC0, k, enc, out);
     }
 
     bool is_good_pair(u64 k0, u64 k1) const
@@ -258,63 +267,44 @@ public:
 
     static void usuba_des_test()
     {
-        u64 K[vlen] __attribute__ ((aligned(sizeof(u64) * vlen)));
-        u64 enc[vlen] __attribute__ ((aligned(sizeof(u64) * vlen)));
-        u64 dec[vlen] __attribute__ ((aligned(sizeof(u64) * vlen)));
-
-        for (int i = 0; i < vlen; i++)
-            K[i] = 0;
-        
-        /* test vectors : disabled
-        for (int j = 0; j < 64; j++) {
-            des_encrypt_decrypt(test_inputs[j], test_outputs[j], K, enc, dec);
-            for (int i = 0; i < vlen; i++) {
-                if (i == 0) printf("enc[%d] = %" PRIx64 " / dec[%d] = %" PRIx64 "\n", i, enc[i], i, dec[i]);
-                assert(enc[i] == 1ull << (63 - j));
-                assert(dec[i] == 1ull << (63 - j));
-            }
-        }
-
-        for (int j = 0; j < 19; j++) {
-            auto [k, in, out] = test_vectors[j];
-            for (int i = 0; i < vlen; i++)
-                K[i] = k;
-            des_encrypt_decrypt(in, out, K, enc, dec);
-            for (int i = 0; i < vlen; i++) {
-                // dec[i] = reverseBits(dec[i]);
-                if (i == 0) {
-                    printf("usuba enc: %016" PRIx64 " vs expected: %016" PRIx64 "\n", enc[i], out);
-                    printf("usuba dec: %016" PRIx64 " vs expected: %016" PRIx64 "\n", dec[i], in);
-                }
-                assert(enc[i] == out);
-                assert(dec[i] == in);
-            }
-        }*/
-
-        // finally
         PRNG vprng;
+        u64 K[vlen] __attribute__ ((aligned(sizeof(u64) * vlen)));
+        u64 out[vlen] __attribute__ ((aligned(sizeof(u64) * vlen)));
+
         for (int i = 0; i < vlen; i++)
             K[i] = vprng.rand() & 0x00ffffffffffffffull;
-        des_encrypt_decrypt(0, 0, K, enc, dec);
-        for (int i = 0; i < vlen; i++) {
-            u64 check_enc = des56(K[i], 0, 1);
-            // printf("in==0, usuba: %016" PRIx64 " vs openssl: %016" PRIx64 "\n", enc[i], check_enc);
-            assert(enc[i] == check_enc);
+        
+        u64 choice[vlen / 64] __attribute__ ((aligned(sizeof(u64) * vlen)));
+        for (int i = 0; i < vlen / 64; i++)
+            choice[i] = vprng.rand();
 
-            u64 check_dec = des56(K[i], 0, 0);
-            // printf("in==0, usuba: %016" PRIx64 " vs openssl: %016" PRIx64 "\n", dec[i], check_dec);
-            assert(dec[i] == check_dec);
+        v64 vin1[64], vin2[64];
+        for (int i = 0; i < 64; i++) {
+            vin1[i] = v64zero();
+            vin2[i] = v64zero();
+        }
+
+        des_both((const u64*) vin1, (const u64*) vin2, K, choice, out);
+
+        for (int i = 0; i < vlen; i++) {
+            bool bit = (choice[i / 64] >> (i % 64)) & 1;
+            u64 check = des56(K[i], 0, bit);
+            // printf("in==0, usuba: %016" PRIx64 " vs openssl: %016" PRIx64 "\n", enc[i], check_enc);
+            assert(out[i] == check);
         }
 
         u64 in1 = vprng.rand();
         u64 in2 = vprng.rand();
-        des_encrypt_decrypt(in1, in2, K, enc, dec);
+        for (int i = 0; i < 64; i++) {
+            vin1[63-i] = (in1 >> i) & 1 ? v64bcast(-1) : v64bcast(0);
+            vin2[63-i] = (in2 >> i) & 1 ? v64bcast(-1) : v64bcast(0);
+        }
+        des_both((const u64*) vin1, (const u64*) vin2, K, choice, out);
         for (int i = 0; i < vlen; i++) {
-            u64 check1 = des56(K[i], in1, 1);
-            u64 check2 = des56(K[i], in2, 0);
-            // printf("in==$$ usuba: %016" PRIx64 " vs openssl: %016" PRIx64 "\n", enc[i], check1);
-            assert(enc[i] == check1);
-            assert(dec[i] == check2);
+            bool bit = (choice[i / 64] >> (i % 64)) & 1;
+            u64 check = bit ? des56(K[i], in1, 1) : des56(K[i], in2, 0);
+            // printf("in==$$ usuba: %016" PRIx64 " vs openssl: %016" PRIx64 "\n", out[i], check);
+            assert(out[i] == check);
         }
     }
 
@@ -336,6 +326,11 @@ public:
         C[1] = des56(k1, mid, 1);
         assert(f(k0) == g(k1));
         assert(is_good_pair(k0, k1));
+
+        for (int i = 0; i < 64; i++) {
+            vP0[63-i] = (P[0] >> i) & 1 ? v64bcast(-1) : v64bcast(0);
+            vC0[63-i] = (C[0] >> i) & 1 ? v64bcast(-1) : v64bcast(0);
+        }
     }
 };
 }

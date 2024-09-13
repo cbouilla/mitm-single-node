@@ -65,11 +65,10 @@ public:
   	 * if a vectorized implementation is available, set vlen to the right size 
   	 * and override this functions without changing its behavior.
   	 */
-	void vfg(const u64 x[], u64 y[], u64 z[]) const
+	void vfg(const u64 x[], const bool choice[], u64 y[]) const
 	{
 		for (int i = 0; i < vlen; i++) {
-			y[i] = f(x[i]);
-			z[i] = g(x[i]);
+			y[i] = choice[i] ? f(x[i]) : g(x[i]);
 		}
 	}
 };
