@@ -19,7 +19,6 @@ mitm::Parameters process_command_line_options(int argc, char **argv)
         {"nrounds", required_argument, NULL, 'o'},
         {"alpha", required_argument, NULL, 'a'},
         {"beta", required_argument, NULL, 'b'},
-        {"gamma", required_argument, NULL, 'g'},
         {NULL, 0, NULL, 0}
     };
 
@@ -41,9 +40,6 @@ mitm::Parameters process_command_line_options(int argc, char **argv)
             break;
         case 'b':
             params.beta = std::stof(optarg);
-            break;
-        case 'g':
-            params.gamma = std::stof(optarg);
             break;
         case 'n':
             n = std::stoi(optarg);

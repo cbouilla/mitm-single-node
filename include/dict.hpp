@@ -69,24 +69,27 @@ public:
  */
 class PcsDict {
 public:
-	u64 m;
-	u64 start_mask;
+	u64 jbits, lbits;
+	u64 jmask, lmask;
+	u64 len_mask;
 	u64 key_mask;
 	const u64 n_slots;     /* size of A */
-	vector<u64> A;
-  	double threshold, theta, gamma;
-
+	
+	vector<u64> A;         // A[i][0:jbits] == j.  A[i][jbits:lbits] == len1.  A[lbits:64] == key bits
+  	
 	static u64 get_nslots(u64 nbytes, u64 forced_multiple)
 	{
 		u64 w = nbytes / (sizeof(u64));
 		return (w / forced_multiple) * forced_multiple;
 	}
 
-	PcsDict(u64 m, u64 w, double theta, double gamma) : m(m), n_slots(w), theta(theta), gamma(gamma)
+	PcsDict(u64 jbits, u64 w) : jbits(jbits), n_slots(w)
 	{
-		start_mask = make_mask(m);
-		key_mask = (m == 64) ? 0 : 0xffffffffffffffff << m;
-		threshold = gamma / theta;
+		assert(jbits <= 56);
+		jmask = make_mask(jbits);
+		lmask = make_mask(8);
+		lbits = jbits + 8;
+		key_mask = (lbits == 64) ? 0 : 0xffffffffffffffff << lbits;
 		A.resize(n_slots);
 		flush();
 	}
@@ -100,25 +103,30 @@ public:
 			A[i] = 0;
 	}
   
-  	// return (start'), maybe
-	optional<u64> pop_insert(u64 end, u64 start, u64 len0)
+  	// return (start', len'), maybe. Return len' == 0 if unknown
+	optional<pair<u64, u64>> pop_insert(u64 end, u64 start, u64 len0)
 	{
 		u64 idx = end % n_slots;
-		u64 key = ((end / n_slots) << m) & key_mask;
+		u64 key = (end / n_slots) << lbits;
 
 		u64 e = A[idx];
 		u64 ekey = e & key_mask;
+		u64 elen = (e >> jbits) & lmask;
 
-		//if (e == 0 || len0 >= threshold)         // gamma == 0.8 seems best (+13.5% vs threshold=0)
-		//if (e == 0 || len0 >= drand48() * threshold)         // gamma == 1.1 seems best (+13%)
-		double xx = (double) len0 / threshold;        // gamma == 0.85 seems best (+14%)
-		if (e == 0 || xx*xx >= drand48())         // gamma == 1.1 seems best (+13%)
-			A[idx] = start ^ key;
+		if (e == 0 || len0 >= elen) {
+			// actual insertion
+			if (len0 > lmask)
+				len0 = lmask;
+			A[idx] = start ^ (len0 << jbits) ^ key;
+		}
 
 		if (ekey != key || e == 0)
 			return nullopt;
-		else
-			return optional(e & start_mask);
+		
+		if (elen == lmask)
+			elen = 0;
+
+		return optional(pair(e & jmask, elen));
 	}
 };
 

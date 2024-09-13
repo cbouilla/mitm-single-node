@@ -17,16 +17,16 @@ public:
 template<class ProblemWrapper>
 static optional<tuple<u64,u64,u64>> run(ProblemWrapper& wrapper, Parameters &params, PRNG &prng)
 {
-    int jbits = std::log2(10 * params.w) + std::log2(1 / params.theta) + 8;
+    int jbits = std::log2(10 * params.w) + 8;
     u64 jmask = make_mask(jbits);
     u64 w = PcsDict::get_nslots(params.nbytes_memory, 1);
-    PcsDict dict(jbits, w, params.theta, params.gamma);
+    PcsDict dict(jbits, w);
     
     Counters ctr;
     ctr.ready(wrapper.n, w);
 
     double log2_w = std::log2(w);
-    printf("Starting collision search with seed=%016" PRIx64 "\n", prng.seed);
+    printf("Starting collision search with seed=%016" PRIx64 " (scalar engine)\n", prng.seed);
     printf("Initialized a dict with %" PRId64 " slots = 2^%0.2f slots\n", dict.n_slots, log2_w);
     printf("Generating %.1f*w = %" PRId64 " = 2^%0.2f distinguished point / version\n", 
         params.beta, params.points_per_version, std::log2(params.points_per_version));
@@ -93,15 +93,15 @@ static void start_chain(const Parameters &params, u64 out_mask, u64 root_seed, u
 template<class ProblemWrapper>
 static optional<tuple<u64,u64,u64>> run(ProblemWrapper& wrapper, Parameters &params, PRNG &prng)
 {
-    int jbits = std::log2(10 * params.w) + std::log2(1 / params.theta) + 8;
+    int jbits = std::log2(10 * params.w) + 8;
     u64 w = PcsDict::get_nslots(params.nbytes_memory, 1);
-    PcsDict dict(jbits, w, params.theta, params.gamma);
+    PcsDict dict(jbits, w);
 
     Counters ctr;
     ctr.ready(wrapper.n, w);
 
     double log2_w = std::log2(w);
-    printf("Starting collision search with seed=%016" PRIx64 "\n", prng.seed);
+    printf("Starting collision search with seed=%016" PRIx64 " (vectorized engine)\n", prng.seed);
     printf("Initialized a dict with %" PRId64 " slots = 2^%0.2f slots\n", dict.n_slots, log2_w);
     printf("Generating %.1f*w = %" PRId64 " = 2^%0.2f distinguished point / version\n", 
         params.beta, params.points_per_version, std::log2(params.points_per_version));

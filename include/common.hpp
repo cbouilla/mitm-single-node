@@ -21,10 +21,9 @@ public:
     int n_recv = 1;               /* #instances of the dictionary */
 
     /* algorithm parameters */
-    double alpha = 2.35;          /* auto-chosen theta == alpha * sqrt(w/n) */
+    double alpha = 2.5;           /* auto-chosen theta == alpha * sqrt(w/n) */
     double beta = 8;              /* use function variant for beta*w distinguished points */
     double theta = -1;            /* proportion of distinguished points. -1 == auto-choose */
-    double gamma = 0;             /* rejection threshold for the dictionary */
 
     u64 multiplier = 0x2545f4914f6cdd1dull;       /* to generate starting points */
 

@@ -15,7 +15,7 @@ namespace mitm {
 template<typename ProblemWrapper>
 tuple<u64,u64,u64> controller(const ProblemWrapper& wrapper, const MpiParameters &params, PRNG &prng)
 {
-    printf("Starting MPI collision search with seed=%016" PRIx64 "\n", prng.seed);
+    printf("Starting MPI collision search with seed=%016" PRIx64 " (MPI engine)\n", prng.seed);
     
 	char hbsize[8], hdsize[8], htdsize[8];
 	u64 bsize_node = 4 * 3 * sizeof(u64) * params.buffer_capacity * params.n_send * params.n_recv / params.n_nodes;
