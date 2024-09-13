@@ -200,8 +200,6 @@ optional<tuple<u64,u64,u64>> process_distinguished_point(ProblemWrapper &wrapper
         return nullopt;         /* robin-hood, or dict false positive */
 
     auto [x0, x1, len1] = *collision;
-    if (len1_maybe != len1)
-        printf("len1_maybe=%ld VS len1 actual=%ld\n", len1_maybe, len1);
     assert(len1_maybe == 0 || len1_maybe == len1);
     if (x0 == x1) {
         ctr.collision_failure();

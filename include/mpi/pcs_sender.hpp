@@ -11,11 +11,26 @@
 
 namespace mitm {
 
+// not DRY wrt sequential/pcs_engine.hpp
+static void start_chain(const Parameters &params, u64 out_mask, u64 root_seed, u64 &j, u64 x[], u64 len[], u64 seed[], u64 jinc, int k)
+{
+    u64 start;
+    for (;;) {
+        j += jinc;
+        start = (root_seed + j * params.multiplier) & out_mask;
+        if (not is_distinguished_point(start, params.threshold))  // refuse to start from a DP
+            break;
+    }
+    x[k] = start;
+    len[k] = 0;
+    seed[k] = j;    
+}
+
+
 template<class ProblemWrapper>
 void sender(ProblemWrapper& wrapper, const MpiParameters &params)
 {
-	u64 mask = make_mask(wrapper.m);
-    int jbits = std::log2(10 * params.w) + std::log2(1 / params.theta) + 8;
+    int jbits = std::log2(10 * params.w) + 8;
     u64 jmask = make_mask(jbits);
 	for (;;) {
 		/* get data from controller */
@@ -30,8 +45,20 @@ void sender(ProblemWrapper& wrapper, const MpiParameters &params)
     	double last_ping = wtime();
 		u64 i = msg[0];
 		u64 root_seed = msg[1];
-		for (u64 j = params.local_rank ;; j += params.n_send) {
 
+		/* current state of the chains */
+		constexpr int vlen = ProblemWrapper::vlen;
+    	u64 x[vlen] __attribute__ ((aligned(sizeof(u64) * vlen)));
+    	u64 y[vlen] __attribute__ ((aligned(sizeof(u64) * vlen)));
+    	u64 len[vlen], seed[vlen];
+		u64 j = params.local_rank;
+
+		/* infinite loop to generate DPs */
+        for (int k = 0; k < vlen; k++)
+            start_chain(params, wrapper.out_mask, root_seed, j, x, len, seed, params.n_send, k);
+		assert((j & jmask) == j);
+
+		for (;;) {
 			/* call home? */
             if ((n_dp % 10000 == 9999) && (wtime() - last_ping >= params.ping_delay)) {
 				last_ping = wtime();
@@ -46,30 +73,25 @@ void sender(ProblemWrapper& wrapper, const MpiParameters &params)
             	}
             }
 
-			/* 
-			 * start a new chain from a fresh "random" starting point. These are chosen to be
-			 * 1) "randomly" spread over [0:2^n]
-			 * 2) distinct for each senders
-			 * 3) not distinguished
-			 */
-			if ((j & jmask) != j) {
-				printf("j=%" PRIx64 " vs jmask=%" PRIx64 ". n_dp=%" PRIx64 " local_rank=%d, n_send=%d\n", 
-					j, jmask, n_dp, params.local_rank, params.n_send);
-				MPI_Abort(MPI_COMM_WORLD, 1);
+			/* advance all the chains */
+        	wrapper.vmixf(i, x, y);
+
+			/* test for distinguished points */ 
+			for (int k = 0; k < vlen; k++) {
+			    len[k] += 1;
+			    x[k] = y[k];
+			    bool dp = is_distinguished_point(x[k], params.threshold);
+			    bool failure = (len[k] == params.dp_max_it);
+			    if (dp) {
+					n_dp += 1;
+					int target_recv = (int) (x[k] % params.n_recv);
+					sendbuf.push3(seed[k], x[k] / params.n_recv, len[k], target_recv);			        
+			    }
+			    if (dp || failure) {
+			        start_chain(params, wrapper.out_mask, root_seed, j, x, len, seed, params.n_send, k);
+			        assert((j & jmask) == j);
+			    }
 			}
-			u64 start = (root_seed + j * params.multiplier) & mask;
-			if (is_distinguished_point(start, params.threshold))    // refuse to start from a DP
-                continue;
-
-            auto dp = generate_dist_point(wrapper, i, params, start);
-            if (not dp)
-                continue;       /* bad chain start */
-
-			n_dp += 1;
-            auto [end, len] = *dp;
-
-            int target_recv = (int) (end % params.n_recv);
-            sendbuf.push3(j, end / params.n_recv, len, target_recv);
 		}
 
 		// now is a good time to collect stats

@@ -29,6 +29,8 @@ void receiver(ProblemWrapper& wrapper, const MpiParameters &params)
 		u64 root_seed = msg[1];
 		wrapper.n_eval = 0;
 		Counters ctr;
+	    ctr.ready(wrapper.n, params.w);
+
 		// receive and process data from senders
 		for (;;) {
 			if (recvbuf.complete())

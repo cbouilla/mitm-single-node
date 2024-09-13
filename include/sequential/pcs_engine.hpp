@@ -115,9 +115,6 @@ static optional<tuple<u64,u64,u64>> run(ProblemWrapper& wrapper, Parameters &par
     u64 len[vlen], seed[vlen];
 
     for (;;) {
-        /* These simulations show that if 10w distinguished points are generated
-         * for each version of the function, and theta = 2.25sqrt(w/n) then ...
-         */
         if (ctr.n_dp_i >= params.points_per_version) {
             /* new version of the function */
             i = prng.rand() & wrapper.out_mask;
