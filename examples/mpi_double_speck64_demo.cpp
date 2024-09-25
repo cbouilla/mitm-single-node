@@ -16,11 +16,13 @@ u64 seed = 0;       // default random seed
 
 mitm::Parameters process_command_line_options(int argc, char **argv, mitm::MpiParameters &params)
 {
-    struct option longopts[5] = {
+    struct option longopts[7] = {
         {"ram", required_argument, NULL, 'r'},
         {"n", required_argument, NULL, 'n'},
         {"seed", required_argument, NULL, 's'},
         {"recv-per-node", required_argument, NULL, 'e'},
+        {"alpha", required_argument, NULL, 'a'},
+        {"beta", required_argument, NULL, 'b'},
         {NULL, 0, NULL, 0}
     };
 
@@ -40,6 +42,12 @@ mitm::Parameters process_command_line_options(int argc, char **argv, mitm::MpiPa
             break;
         case 'e':
             params.recv_per_node = std::stoi(optarg);
+            break;
+        case 'a':
+            params.alpha = std::stof(optarg);
+            break;
+        case 'b':
+            params.beta = std::stof(optarg);
             break;
         default:
             errx(1, "Unknown option %s\n", optarg);
