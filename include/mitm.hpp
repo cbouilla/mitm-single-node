@@ -26,7 +26,7 @@ public:
         static_assert(std::is_base_of<AbstractCollisionProblem, AbstractProblem>::value,
             "problem not derived from mitm::AbstractCollisionProblem");
         assert(m <= 64);
-        assert(0);   // not reay yet
+        // assert(0);   // not reay yet
     }
 
     /* randomization by a family of permutations of {0, 1}^n */
