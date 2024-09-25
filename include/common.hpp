@@ -115,21 +115,18 @@ public:
 	
 	vector<u8> hll, hll_i;
 
-	Counters() {}
-	Counters(bool display_active) : display_active(display_active) {}
-
-	void ready(int n, u64 _w)
+	Counters(int n, u64 w) : w(w), pb_n(n)
 	{
 		hll.resize(0x10000);
 		hll_i.resize(0x10000);
-		pb_n = n;
-		w = _w;
 		double now = wtime();
 		start_time = now;
 		start_time = now;
 		last_display = now;
 		last_update = now;
 	}
+
+	// Counters(int n, u64 w, bool display_active) : Counters(n, w), display_active(display_active) {}
 
 	void dp_failure()
 	{ 
@@ -251,15 +248,6 @@ public:
 		}
 	}
 
-/* 
- X_i == #red balls in bin i
- Y_i == #blue balls in bin i
-
- #collisions == sum_i X_i Y_i
-
- E[#collisions] == 2^m E[X_i * Y_i] == 2^m E[X_i] * E[Y_i] == 2^m (2^n / 2^m) * (2^n / 2^m) == 2^(2n - m)
-
-*/
 	// each new version of the function
 	void round_display()
 	{

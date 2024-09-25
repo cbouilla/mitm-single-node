@@ -22,8 +22,7 @@ static optional<tuple<u64,u64,u64>> run(ProblemWrapper& wrapper, Parameters &par
     u64 w = PcsDict::get_nslots(params.nbytes_memory, 1);
     PcsDict dict(jbits, w);
     
-    Counters ctr;
-    ctr.ready(wrapper.n, w);
+    Counters ctr(wrapper.n, w);
 
     double log2_w = std::log2(w);
     printf("Starting collision search with seed=%016" PRIx64 " (scalar engine)\n", prng.seed);
@@ -97,8 +96,7 @@ static optional<tuple<u64,u64,u64>> run(ProblemWrapper& wrapper, Parameters &par
     u64 w = PcsDict::get_nslots(params.nbytes_memory, 1);
     PcsDict dict(jbits, w);
 
-    Counters ctr;
-    ctr.ready(wrapper.n, w);
+    Counters ctr(wrapper.n, w);
 
     double log2_w = std::log2(w);
     printf("Starting collision search with seed=%016" PRIx64 " (vectorized engine)\n", prng.seed);
