@@ -28,8 +28,7 @@ void receiver(ProblemWrapper& wrapper, const MpiParameters &params)
 		u64 i = msg[0];
 		u64 root_seed = msg[1];
 		wrapper.n_eval = 0;
-		Counters ctr;
-	    ctr.ready(wrapper.n, params.w);
+		Counters ctr(wrapper.n, params.w);
 
 		// receive and process data from senders
 		for (;;) {
@@ -65,6 +64,8 @@ void receiver(ProblemWrapper& wrapper, const MpiParameters &params)
 		MPI_Reduce(dmin, NULL, 2, MPI_DOUBLE, MPI_MIN, 0, params.world_comm);
 		MPI_Reduce(dmax, NULL, 2, MPI_DOUBLE, MPI_MAX, 0, params.world_comm);
 		MPI_Reduce(davg, NULL, 2, MPI_DOUBLE, MPI_SUM, 0, params.world_comm);
+
+		MPI_Reduce(ctr.hll_i.data(), NULL, 0x10000, MPI_UINT8_T, MPI_MAX, 0, params.world_comm);
 		dict.flush();
 	}
 }

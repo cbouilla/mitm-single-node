@@ -36,21 +36,25 @@ tuple<u64,u64,u64> controller(const ProblemWrapper& wrapper, const MpiParameters
 	u64 mask = make_mask(wrapper.m);
 	double start = wtime();
 
+	vector<u8> hll(0x10000);   // HyperLogLog for all collisions since the beginning
+
 	for (;;) {
         u64 i = prng.rand() & mask;             /* index of families of mixing functions */
        	u64 root_seed = prng.rand();
 
-		/* get data from controller */
+		/* send job order to everybody */
 		u64 msg[3] = {i, root_seed, stop};
 		MPI_Bcast(msg, 3, MPI_UINT64_T, 0, params.world_comm);
 		
 		if (stop)
 			break;
 
+		vector<u8> hll_i(0x10000);      // HyperLogLog for all collisions for this round
 		int n_active_senders = params.n_send;
 		u64 ndp = 0;                      // #DP found for this i by all senders
 		double round_start = wtime();
 		double last_display = round_start;
+
 		while (n_active_senders > 0) {
 			u64 buffer[10];
 			MPI_Status status;
@@ -121,7 +125,13 @@ tuple<u64,u64,u64> controller(const ProblemWrapper& wrapper, const MpiParameters
 		human_format(nf_recv / params.n_recv / delta, hrrate);
 		u64 data_round = ndp * 3 * sizeof(u64) / params.n_nodes;
 		human_format(data_round / delta, hnrate);
-		
+
+		// HyperLogLog
+		MPI_Reduce(MPI_IN_PLACE, hll_i.data(), 0x10000, MPI_UINT8_T, MPI_MAX, 0, params.world_comm);
+		for (int j = 0; j < 0x10000; j++)
+			if (hll_i[j] > hll[j])
+				hll[j] = hll_i[j];
+
 		printf("\n");
 		printf("Round %" PRId64 " (%.2f*n/w).  %.1fs.  #DP (round / total) %.2f*w / %.2f*n.  #coll (round / total) %.2f*w / %.2f*n.  Total #f=2^%.3f.  node-->%sB/s \n",
 			nround, (double) nround * params.w / N, delta, (double) ndp / params.w, (double) ndp_total / N, (double) ncoll / params.w, (double) ncoll_total / N, std::log2(nf_total), hnrate);
@@ -131,6 +141,10 @@ tuple<u64,u64,u64> controller(const ProblemWrapper& wrapper, const MpiParameters
                 dmin[1], davg[1], 100. * davg[1] / delta, dmax[1], std::log2(nf_recv), 100. * nf_recv / nf_round, hrrate);
 		printf("            %.2f%% probe failure.  %.2f%% walk-robinhhod.  %.2f%% walk-noncolliding.  %.2f%% same-value\n",
                 100. * iavg[3] / ndp, 100. * iavg[4] / ndp, 100. * iavg[5] / ndp, 100. * iavg[6] / ndp);
+		
+		u64 E_i = Counters::distinct_collisions_estimation(hll_i);
+		u64 E = Counters::distinct_collisions_estimation(hll);
+		printf("            #distinct coll (this i / total) %.02f*w / %.02f*n\n", (double) E_i / params.w, (double) E / N);
 		printf("\n");
 		fflush(stdout);
 
