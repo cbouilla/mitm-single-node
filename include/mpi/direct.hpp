@@ -500,10 +500,12 @@ public:
                 return bufptr;
             }
             // backoff ?
-            if (action and start >= 0)
+            if (action and start >= 0) {
                 println("worker starved for {}s but got an incoming buffer", wtime() - start);
+                start = -1;
+            }
             if (not action and start < 0)
-                start = wtime;   // start the timer
+                start = wtime();   // start the timer
         }
     }
 
