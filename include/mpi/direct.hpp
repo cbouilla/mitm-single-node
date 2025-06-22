@@ -1,5 +1,5 @@
-#ifndef MITM_NAIVE_MPI_ISEND
-#define MITM_NAIVE_MPI_ISEND
+#ifndef MITM_MPI_DIRECT
+#define MITM_MPI_DIRECT
 
 #include <vector>
 #include <cassert>

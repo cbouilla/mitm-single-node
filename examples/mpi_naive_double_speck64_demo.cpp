@@ -6,17 +6,19 @@
 
 #include "double_speck64_problem.hpp"
 #include "mpi/direct.hpp"
-
+#include "mpi/benchmark.hpp"
 
 int n = 20;         // default problem size (easy)
 u64 seed = 0x1337;  // default fixed seed
+bool bench = 0;
 
 void process_command_line_options(int argc, char **argv, mitm::MpiParameters &params)
 {
     struct option longopts[5] = {
         {"n", required_argument, NULL, 'n'},
         {"seed", required_argument, NULL, 's'},
-        {"threads-per-host", no_argument, NULL, 't'},
+        {"threads-per-host", required_argument, NULL, 't'},
+        {"benchmark", no_argument, NULL, 'b'},
         {NULL, 0, NULL, 0}
     };
 
@@ -34,6 +36,9 @@ void process_command_line_options(int argc, char **argv, mitm::MpiParameters &pa
         case 't':
             params.n_threads = std::stoi(optarg);
             break;
+        case 'b':
+            bench = 1;
+            break;
         default:
             errx(1, "Unknown option %s\n", optarg);
         }
@@ -47,31 +52,26 @@ int main(int argc, char* argv[])
     MPI_Init_thread(NULL, NULL, MPI_THREAD_FUNNELED, &provided);
     assert(provided >= MPI_THREAD_FUNNELED);
 
-
     mitm::MpiParameters params(MPI_COMM_WORLD);
     process_command_line_options(argc, argv, params);
     mitm::PRNG prng(seed);
-    mitm::DoubleSpeck64_Problem Pb(n, prng);
+    mitm::DoubleSpeck64_Problem pb(n, prng);
     
-
-    // auto console = spdlog::stdout_color_mt("console");
-    // spdlog::set_pattern("[%H:%M:%S] [%^%l%$] [tid=%t] %v");
-    // spdlog::set_level(spdlog::level::debug); // Set global log level to debug
-    // spdlog::debug("This message should be displayed..");    
-    
-
     if (params.verbose) {
-        printf("************************************************************************\n");
-        printf("double-speck64 demo! seed=%016" PRIx64 ", n=%d\n", prng.seed, n); 
+        println("************************************************************************");
+        println("double-speck64 demo! seed={:016x}, n={}", prng.seed, n); 
     }
 
-    vector<pair<u64, u64>> claws = mitm::mpi_direct_claw_search(Pb, params);
+    if (bench)
+        mitm::benchmark(pb, params);
+
+    vector<pair<u64, u64>> claws = mitm::mpi_direct_claw_search(pb, params);
 
     if (params.verbose)
         for (auto it = claws.begin(); it != claws.end(); it++) {
             auto [x0, x1] = *it;
-            assert(Pb.f(x0) == Pb.g(x1));
-            printf("f(%" PRIx64 ") = g(%" PRIx64 ")\n", x0, x1);
+            assert(pb.f(x0) == pb.g(x1));
+            println("f({:x}) = g({:x})", x0, x1);
         }
 
     assert(claws.size() == 1);
