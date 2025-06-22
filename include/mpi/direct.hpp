@@ -478,7 +478,7 @@ public:
 
     bool poll_incoming()
     {
-        bool action = 0
+        bool action = 0;
         while (Buffer *bufptr = incoming.try_pop()) {
             process_incoming_buffer(bufptr);
             action = 1;
@@ -595,7 +595,7 @@ vector<pair<u64, u64>> mpi_direct_claw_search(const Problem &pb, MpiParameters &
         // phase 1 == probe the dict with g()
         
         proc.start_phase(phase);
-        double phase_start = wtime();        
+        // double phase_start = wtime();        
 
         #pragma omp parallel
         {
