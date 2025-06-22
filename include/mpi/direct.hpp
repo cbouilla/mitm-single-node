@@ -310,8 +310,8 @@ public:
         double delta = wtime() - start;
         human_format(done / delta, hfrate);
         human_format(bytes_sent / delta, hnrate);
-        println("\rDone: {:.1f}%. {} f/s. net: {}B/s ({} active send, {} outgoing, {} incoming). {} free buffers", 
-            progress, hfrate, hnrate, sendbuf.size(), outgoing.size(), incoming.size(), freelist.size());
+        println("\rDone: {:.1f}%. {} f/s. net: {}B/s ({} active send, {} ready recv, {} outgoing, {} incoming). {} free buffers", 
+            progress, hfrate, hnrate, sendbuf.size(), recvbuf.size(), outgoing.size(), incoming.size(), freelist.size());
         std::fflush(stdout);
     }
 
@@ -394,9 +394,7 @@ public:
     
             // potentially allocate new reception buffers
             for (size_t i = recvbuf.size(); i < recvbuf.capacity(); i++) {
-                bool ok = initiate_reception();
-                if (not ok)
-                    println("warning! Buffer starvation in coordinator");
+                initiate_reception();
             }
 
             // detect local sender termination and notify other MPI processes
