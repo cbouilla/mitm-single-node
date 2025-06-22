@@ -123,27 +123,28 @@ public:
 
     void release(Buffer * bufptr)
     {
-        println("release --> {}", (void *) bufptr);
         ready.push(bufptr);
         for (size_t i = 0; i < all.size(); i++)
             if (bufptr == &all[i]) {
+                println("release --> {} (all[{}]. busy={}", (void *) bufptr, i, (int) busy[i]);
                 assert(busy[i]);
                 busy[i] = 0;
-                break;
+                return;
             }
+        assert(0);
     }
 
     Buffer * try_acquire()
     {
         Buffer *bufptr = ready.try_pop();
-        println("try_acquire --> {}", (void *) bufptr);
         for (size_t i = 0; i < all.size(); i++)
             if (bufptr == &all[i]) {
+                println("try_acquire --> {} (all[{}]. busy={}", (void *) bufptr, i, (int) busy[i]);
                 assert(not busy[i]);
                 busy[i] = 1;
-                break;
+                return bufptr;
             }
-        return bufptr;
+        assert(0);
     }
 
     size_t size()
