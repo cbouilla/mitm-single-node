@@ -145,6 +145,7 @@ public:
                 return bufptr;
             }
         assert(bufptr == nullptr);
+        return bufptr;
     }
 
     size_t size()
