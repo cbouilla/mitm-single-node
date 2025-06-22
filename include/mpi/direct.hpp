@@ -123,12 +123,15 @@ public:
 
     void release(Buffer * bufptr)
     {
-        ready.push(bufptr);
         for (size_t i = 0; i < all.size(); i++)
             if (bufptr == &all[i]) {
+                #pragma omp critical (freelist)
+                {
+                    ready.push(bufptr);
+                    assert(busy[i]);
+                    busy[i] = 0;
+                }
                 println("release --> {} (all[{}]. busy={}", (void *) bufptr, i, (int) busy[i]);
-                assert(busy[i]);
-                busy[i] = 0;
                 return;
             }
         assert(0);
@@ -136,15 +139,18 @@ public:
 
     Buffer * try_acquire()
     {
-        Buffer *bufptr = ready.try_pop();
+        Buffer *bufptr; 
+        #pragma omp critical (freelist)
+        {
+        bufptr = ready.try_pop();
         for (size_t i = 0; i < all.size(); i++)
             if (bufptr == &all[i]) {
                 println("try_acquire --> {} (all[{}]. busy={}", (void *) bufptr, i, (int) busy[i]);
                 assert(not busy[i]);
                 busy[i] = 1;
-                return bufptr;
+                break;
             }
-        assert(bufptr == nullptr);
+        }
         return bufptr;
     }
 
