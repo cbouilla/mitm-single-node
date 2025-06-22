@@ -114,7 +114,7 @@ public:
     {
         capacity = cap;
         all.resize(n);
-        busy.resize(n);
+        busy.resize(n, 0);
         for (size_t i = 0; i < n; i++) {
             all[i].reserve(capacity);
             ready.push(&all[i]);
