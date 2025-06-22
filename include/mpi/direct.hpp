@@ -431,6 +431,8 @@ public:
         recvreq.clear();
         recvbuf.clear();
 
+        MPI_Barrier(params.comm);
+
         void *foo;
         int bar;
         MPI_Buffer_detach(&foo, &bar);

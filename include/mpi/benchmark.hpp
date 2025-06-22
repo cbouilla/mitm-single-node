@@ -50,7 +50,7 @@ void benchmark(const Problem& pb, MpiParameters &params)
             println("Autodetect: using {} threads", params.n_threads);
     }
     if (params.verbose)
-        println("Benchmarking scalar implementation (using {} MPI processes with {})", params.mpi_size, params.n_threads);
+        println("Benchmarking scalar implementation (using {} MPI processes with {} threads)", params.mpi_size, params.n_threads);
 
     MPI_Barrier(params.comm);
 
