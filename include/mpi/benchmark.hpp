@@ -2,6 +2,7 @@
 #define MITM_MPI_BENCHMARK
 
 #include <mpi.h>
+#include <omp.h>
 #include <err.h>
 
 #include "../common.hpp"
@@ -10,25 +11,27 @@ namespace mitm {
 
 static void display_stats(u64 N, double start, int vlen, const MpiParameters &params)
 {
-	double rate = vlen * N / (wtime() - start);
+	double rate = vlen * N * params.n_threads / (wtime() - start);
     double rate_min = rate;
     double rate_max = rate;
-    double rate_avg = rate;
+    double rate_sum = rate;
     MPI_Allreduce(MPI_IN_PLACE, &rate_min, 1, MPI_DOUBLE, MPI_MIN, params.comm);
     MPI_Allreduce(MPI_IN_PLACE, &rate_max, 1, MPI_DOUBLE, MPI_MAX, params.comm);
-    MPI_Allreduce(MPI_IN_PLACE, &rate_avg, 1, MPI_DOUBLE, MPI_SUM, params.comm);
-    rate_avg /= params.mpi_size;
+    MPI_Allreduce(MPI_IN_PLACE, &rate_sum, 1, MPI_DOUBLE, MPI_SUM, params.comm);
+    double rate_avg = rate_sum / params.mpi_size;
     double rate_std = (rate - rate_avg) * (rate - rate_avg);
     MPI_Allreduce(MPI_IN_PLACE, &rate_std, 1, MPI_DOUBLE, MPI_SUM, params.comm);
     rate_std /= params.mpi_size;
     rate_std = std::sqrt(rate_std);
     if (params.verbose) {
-        char hmin[8], hmax[8], havg[8], hstd[8];
+        char hmin[8], hmax[8], havg[8], hstd[8], htotal[8];
         human_format(rate_min, hmin);
         human_format(rate_max, hmax);
         human_format(rate_avg, havg);
         human_format(rate_std, hstd);
-        printf("Benchmark. f/s (per host): min %s max %s avg %s std %s\n", hmin, hmax, havg, hstd);
+        human_format(rate_sum, htotal);
+        println("Per MPI process. f/s: min {} max {} avg {} stdev {}", hmin, hmax, havg, hstd);
+        println("Aggregated. f/s: {}", htotal);
     }
 }
 
@@ -85,7 +88,7 @@ void benchmark(const Problem& pb, MpiParameters &params)
 		MPI_Barrier(params.comm);
         
         start = wtime();
-        u64 N = 1ull << 20; 
+        u64 N = 1ull << 22; 
         #pragma omp parallel
         {
             u64 mask = make_mask(pb.n);
