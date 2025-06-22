@@ -283,7 +283,7 @@ public:
         params(_params), capacity(params.buffer_capacity), comm(params.comm), chunksize(params.chunksize), pb(pb)
     {
         assert(params.n_threads != 0);
-        u64 n_buffers = params.mpi_size * params.n_threads + params.n_recv_buffers + params.n_slack_buffers;
+        u64 n_buffers = params.send_buffers_ratio * params.mpi_size * params.n_threads + params.n_recv_buffers + params.n_slack_buffers;
         N = 1ull << pb.n;
         ncoll = 0;
 
