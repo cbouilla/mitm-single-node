@@ -154,6 +154,7 @@ private:
     LockfreeStack incoming;                 // received buffers waiting to be processed
     vector<Buffer *> sendbuf, recvbuf;                // coordinator: active send/recv buffers
     vector<MPI_Request> sendreq, recvreq;           // coordinator: active send/recv requests
+    bool coordinator_priority;                      // if the coordinator lacks reception buffers, the workers can't allocate
 
     MpiParameters &params;
     size_t capacity;                                // shorthand for params.mpi_buffer_capacity
@@ -205,17 +206,20 @@ private:
         freelist.release(bufptr);
     }
 
-    bool initiate_reception()
+    void initiate_reception()
     {
         Buffer *bufptr = freelist.try_acquire();
-        if (bufptr == nullptr)
-            return 0;
+        if (bufptr == nullptr) {
+            #pragma omp atomic write
+            coordinator_priority = 1;
+        }
+        #pragma omp atomic write
+        coordinator_priority = 0;
         Buffer &buf = *bufptr;
         buf.resize(capacity);
         recvbuf.push_back(bufptr);
         MPI_Request &req = recvreq.emplace_back();
         MPI_Irecv(buf.data(), capacity, MPI_UINT64_T, MPI_ANY_SOURCE, MPI_ANY_TAG, comm, &req);
-        return 1;
     }
 
 
@@ -263,6 +267,7 @@ public:
         if (not sendbuf.empty())
             printf("warning: starting new phase with active send buffers");
         freelist.clear();
+        coordinator_priority = 0;
 
         phase = i;
         lo = params.mpi_rank * N / params.mpi_size;
@@ -318,11 +323,9 @@ public:
     void coordinator()
     {
         // prepare the reception buffers
-        for (size_t i = 0; i < recvbuf.capacity(); i++) {
-            bool ok = initiate_reception();
-            assert(ok);
-        }
-    
+        for (size_t i = 0; i < recvbuf.capacity(); i++)
+            initiate_reception();
+            
         u64 mpi_buffer_size = params.mpi_size * (8 + MPI_BSEND_OVERHEAD);
         u8 mpi_buffer[mpi_buffer_size];
         MPI_Buffer_attach(mpi_buffer, mpi_buffer_size);
@@ -393,9 +396,8 @@ public:
             }
     
             // potentially allocate new reception buffers
-            for (size_t i = recvbuf.size(); i < recvbuf.capacity(); i++) {
+            for (size_t i = recvbuf.size(); i < recvbuf.capacity(); i++)
                 initiate_reception();
-            }
 
             // detect local sender termination and notify other MPI processes
             if (this_host_done() and not signaled_termination) {
@@ -490,12 +492,17 @@ public:
         for (;;) {
             bool action = 0;
             action = poll_incoming();
-            Buffer *bufptr = freelist.try_acquire();
-            if (bufptr != nullptr) {
-                bufptr->resize(0);
-                if (start >= 0)
-                    println("worker got buffer after waiting {}s", wtime() - start);
-                return bufptr;
+            bool must_wait;
+            #pragma omp atomic read
+            must_wait = coordinator_priority;
+            if (not must_wait) {
+                Buffer *bufptr = freelist.try_acquire();
+                if (bufptr != nullptr) {
+                    bufptr->resize(0);
+                    if (start >= 0)
+                        println("worker got buffer after waiting {}s", wtime() - start);
+                    return bufptr;
+                }
             }
             // backoff ?
             if (action and start >= 0) {
