@@ -204,6 +204,8 @@ private:
             break;
         }
         freelist.release(bufptr);
+        if (params.verbose)
+            println("buffer {} released by coordinator (service)", (void *) bufptr);
     }
 
     void initiate_reception()
@@ -214,6 +216,8 @@ private:
             coordinator_priority = 1;
             return;
         }
+        if (params.verbose)
+            println("buffer {} acquired by coordinator (for recv)", (void *) bufptr);
         #pragma omp atomic write
         coordinator_priority = 0;
         Buffer &buf = *bufptr;
@@ -348,6 +352,7 @@ public:
                 sendbuf.push_back(bufptr);
                 Buffer &buf = *bufptr;
                 // println("coordinator, retrieving outgoing buffer of size {} for rank {}. Currently sending={}, outgoing= {}", buf.size(), rank, sendbuf.size(), outgoing.size());
+                assert(not signaled_termination);
                 MPI_Request &req = sendreq.emplace_back();
                 MPI_Isend(buf.data(), buf.size(), MPI_UINT64_T, rank, TAG_POINTS, comm, &req);
                 bytes_sent += buf.size() * sizeof(u64);
@@ -368,6 +373,8 @@ public:
                 sendbuf.pop_back();
                 sendreq.pop_back();
                 freelist.release(bufptr);
+                if (params.verbose)
+                    println("buffer {} released by coordinator (sent)", (void *) bufptr);
             }
     
             // process completely received buffers
@@ -429,8 +436,11 @@ public:
         for (size_t i = 0; i < recvreq.size(); i++)
             MPI_Cancel(&recvreq[i]);
         MPI_Waitall(recvreq.size(), recvreq.data(), MPI_STATUSES_IGNORE);
-        for (size_t i = 0; i < recvbuf.size(); i++)
+        for (size_t i = 0; i < recvbuf.size(); i++) {
             freelist.release(recvbuf[i]);
+            if (params.verbose)
+                    println("buffer {} released by coordinator (after waitall)", (void *) &recvbuf[i]);
+        }
         recvreq.clear();
         recvbuf.clear();
 
@@ -478,6 +488,8 @@ public:
             }
         }
         freelist.release(bufptr);
+        if (params.verbose)
+            println("buffer {} released by process_incoming_buffer", (void *) bufptr);
     }
 
     bool poll_incoming()
@@ -503,14 +515,16 @@ public:
                 Buffer *bufptr = freelist.try_acquire();
                 if (bufptr != nullptr) {
                     bufptr->resize(0);
-                    if (start >= 0)
-                        println("worker got buffer after waiting {}s", wtime() - start);
+                    // if (start >= 0)
+                    //     println("worker got buffer after waiting {}s", wtime() - start);
+                    if (params.verbose)
+                        println("buffer {} acquired by worker", (void *) bufptr);
                     return bufptr;
                 }
             }
             // backoff ?
             if (action and start >= 0) {
-                println("worker starved for {}s but got an incoming buffer", wtime() - start);
+                // println("worker starved for {}s but got an incoming buffer", wtime() - start);
                 start = -1;
             }
             if (not action and start < 0)
@@ -563,8 +577,6 @@ public:
                     if (buffers[i]->size() == buffers[i]->capacity()) {
                         send_buffer(buffers[i], i);
                         buffers[i] = get_worker_buffer();
-                        assert(buffers[i]->capacity() == capacity);
-                        assert(buffers[i]->size() == 0);
                     }
                     buffers[i]->push_back(x);
                     buffers[i]->push_back(z);
