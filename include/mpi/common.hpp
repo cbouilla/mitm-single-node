@@ -25,7 +25,7 @@ public:
     double send_buffers_ratio = 1.5;             // allocated send buffers = this * strictly required
     int min_backoff = 1000;                      // µs
     int max_backoff = 100000;                    // µs
-    int max_current_send = 16;                   // somewhat arbitrary
+    int max_concurrent_send = 16;                // somewhat arbitrary. why not 2 * size ?
 
 	MpiParameters(MPI_Comm comm) : comm(comm)
 	{
