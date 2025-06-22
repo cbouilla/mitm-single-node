@@ -212,6 +212,7 @@ private:
         if (bufptr == nullptr) {
             #pragma omp atomic write
             coordinator_priority = 1;
+            return;
         }
         #pragma omp atomic write
         coordinator_priority = 0;
