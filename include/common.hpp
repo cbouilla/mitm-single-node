@@ -7,7 +7,6 @@
 #include <cstring>
 
 // base classes for PCS and naive algorithm
-
 #include "tools.hpp"
 #include "dict.hpp"
 
@@ -16,11 +15,16 @@ namespace mitm {
 class Parameters {
 public:
     /* hardware-dependent */
-    u64 nbytes_memory = 0;        /* how much RAM to use on each machine */
-    int n_nodes = 1;              /* #hosts (with shared RAM) */
-    int n_recv = 1;               /* #instances of the dictionary */
+    // int n_nodes = 1;               /* DEPRECATED --- #hosts (with shared RAM) */
+    // int n_recv = 1;                /* DEPRECATED --- #instances of the dictionary */
+	int n_threads = 0;             /* #threads per process.  0 == autodetect */
 
-    /* algorithm parameters */
+	/* direct algorithm parameters */
+	double dict_capacity_ratio = 1.5;         /* the total distributed dict size is this times 2**n */ 
+	size_t chunksize = 4096;         /* how many values are grabbed by each thread in each iteration --- somewhat arbitrary */
+
+    /* PCS algorithm parameters */
+    u64 nbytes_memory = 0;        /* how much RAM to use on each machine */
     double alpha = 2.5;           /* auto-chosen theta == alpha * sqrt(w/n) */
     double beta = 8;              /* use function variant for beta*w distinguished points */
     double theta = -1;            /* proportion of distinguished points. -1 == auto-choose */
@@ -37,12 +41,12 @@ public:
     bool verbose = 1;             /* print progress information */
     u64 max_versions = 0xffffffffffffffffull;       /* how many functions to try before giving up */
 
-
     double optimal_theta(double w, int n)
     {
         return alpha * std::sqrt((double) w / (1ll << n));
     }
 
+    #if 0
     void finalize(int n, int m)
     {
         if (nbytes_memory == 0)
@@ -72,6 +76,7 @@ public:
             printf("***** WARNING *****\n***** WARNING *****\n***** WARNING *****\n");            
         }
     }
+    #endif
 };
 
 
@@ -190,7 +195,7 @@ public:
 	/* uses the HyperLogLog algorithm */
 	static u64 distinct_collisions_estimation(const vector<u8> h)
 	{
-		double acc;
+		double acc = 0;
 		double alpha = 0.7213 / (1 + 1.079 / 0x10000);
 		for (int i = 0; i < 0x10000; i++)
 			acc += 1.0 / (1 << h[i]);

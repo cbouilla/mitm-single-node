@@ -1,0 +1,613 @@
+#ifndef MITM_NAIVE_MPI_ISEND
+#define MITM_NAIVE_MPI_ISEND
+
+#include <vector>
+#include <cassert>
+#include <cmath>
+
+#include <mpi.h>
+#include <omp.h>
+
+#include "problem.hpp"
+#include "mpi/common.hpp"
+#include "dict.hpp"
+
+
+/*
+ * direct MITM with distributed dictionnary. MPI + OpenMP version
+ */
+
+namespace mitm {
+
+using Buffer = vector<u64>;
+enum tags {TAG_POINTS, TAG_MANAGEMENT};
+enum service {DONE};
+
+
+class LockfreeStack {
+private:
+    struct Node {
+        Buffer *payload;      // Pointer to the payload
+        int rank;
+        Node* next;
+    };
+    Node *head;
+
+public:
+    size_t n = 0;
+    LockfreeStack() : head(nullptr) {}
+
+    void push(Buffer *item)
+    {
+        pushrank(item, -1);
+    }
+    
+    void pushrank(Buffer *item, int rank)
+    {
+        assert(item != nullptr);
+        Node * node = new Node();
+        node->payload = item;
+        node->rank = rank;
+        for (;;) {
+            #pragma omp atomic read
+            node->next = head;
+            if (CAS(head, node->next, node)) {
+                #pragma omp atomic update
+                n += 1;
+                return;
+            }
+        }
+    }
+
+    bool is_empty()
+    {
+        Node *maybe;
+        #pragma omp atomic read
+        maybe = head;
+        return (maybe == nullptr);
+    }
+
+    size_t size()
+    {
+        size_t tmp;
+        #pragma omp atomic read
+        tmp = n;
+        return tmp;
+    }
+
+    pair<Buffer*,int> try_poprank()
+    {
+        Node *maybe;
+        for (;;) {
+            #pragma omp atomic read
+            maybe = head;
+            if (maybe == nullptr)
+                return pair(nullptr, -1); 
+            if (CAS(head, maybe, maybe->next))
+                break;
+        }
+        Buffer *bufptr = maybe->payload;
+        int rank = maybe->rank;
+        assert(bufptr != nullptr);
+        delete maybe;
+        #pragma omp atomic update
+        n -= 1;
+        return pair(bufptr, rank);
+    }
+
+    Buffer* try_pop()
+    {
+        auto [bufptr, rank] = try_poprank();
+        return bufptr;
+    }
+};
+
+/* Manage a collection of buffers.  The n vectors are **reserved** (but not **resized**) to capacity */
+class FreeList {
+private:
+    LockfreeStack ready;
+    vector<Buffer> all;
+    size_t capacity;
+public:
+    void setup(size_t cap, size_t n)
+    {
+        capacity = cap;
+        all.resize(n);
+        for (size_t i = 0; i < n; i++) {
+            all[i].reserve(capacity);
+            ready.push(&all[i]);
+        }
+    }
+
+    void release(Buffer * bufptr)
+    {
+        ready.push(bufptr);
+    }
+
+    Buffer * try_acquire()
+    {
+        return ready.try_pop();
+    }
+
+    size_t size()
+    {
+        return ready.size();
+    }
+
+    void clear()
+    {
+        if (ready.size() != all.size())
+            printf("freelist reset with busy buffers?\n");
+        while (try_acquire()) {};
+        for (size_t i = 0; i < all.size(); i++)
+            ready.push(&all[i]);
+    }
+};
+
+
+
+template <class Problem>
+class ClawSearchProcess {
+private:
+    FreeList freelist;
+    LockfreeStack outgoing;      // buffers waiting to be sent
+    LockfreeStack incoming;                 // received buffers waiting to be processed
+    vector<Buffer *> sendbuf, recvbuf;                // coordinator: active send/recv buffers
+    vector<MPI_Request> sendreq, recvreq;           // coordinator: active send/recv requests
+
+    MpiParameters &params;
+    size_t capacity;                                // shorthand for params.mpi_buffer_capacity
+    MPI_Comm comm;                                  // shorthand for params.comm
+    u64 chunksize;                                  // shorthand for params.chunksize
+
+    u64 N, lo, hi;
+    int n_workers_started;
+    int n_workers_done;
+    double start;
+
+    /*
+     * coordination between hosts
+     * ==========================
+     * - A host is ACTIVE if it may initiate a send operation or has ongoing send operations.
+     * - A host that is no longer ACTIVE is DONE.
+     * - A host sends everybody else the "DONE" management message when it is DONE.
+     *   (i.e., when all its send operations have completed and it won't start new ones)
+     * - The whole computation is FINISHED when all hosts are DONE (all messages have been received).
+     *
+     * coordination between hosts
+     * ==========================
+     * - A worker thread is DONE when it will no longer enqueue an outgoing buffer.
+     * - When all the workers in a host are DONE, and all the outgoing buffers have been completely sent, then this host is DONE.
+     *
+     */ 
+
+    int n_active_hosts;
+    bool signaled_termination;                      // did I tell the other hosts that I was done?
+    u64 bytes_sent;
+
+    CompactDict dict;
+    
+    void deactivate_host()
+    {
+        #pragma omp atomic update
+        n_active_hosts -= 1;
+    }
+
+    void process_service_message(int source, Buffer *bufptr)
+    {
+        Buffer &buf = *bufptr;
+        assert(buf.size() > 0);
+        switch(buf[0]) {
+        case DONE:
+            deactivate_host();
+            break;
+        }
+        freelist.release(bufptr);
+    }
+
+    bool initiate_reception()
+    {
+        Buffer *bufptr = freelist.try_acquire();
+        if (bufptr == nullptr)
+            return 0;
+        Buffer &buf = *bufptr;
+        buf.resize(capacity);
+        recvbuf.push_back(bufptr);
+        MPI_Request &req = recvreq.emplace_back();
+        MPI_Irecv(buf.data(), capacity, MPI_UINT64_T, MPI_ANY_SOURCE, MPI_ANY_TAG, comm, &req);
+        return 1;
+    }
+
+
+public:
+    const Problem &pb;
+    vector<pair<u64, u64>> result;
+    u64 ncoll = 0;
+    int phase = 0;
+
+    void worker_start()
+    {
+        #pragma omp atomic update
+        n_workers_started += 1;
+    }
+
+    void worker_done()
+    {
+        #pragma omp atomic update
+        n_workers_done += 1;
+    }
+
+    bool finished()
+    {
+        int tmp;
+        #pragma omp atomic read
+        tmp = n_active_hosts;
+        return (tmp == 0) or (tmp == 1 and params.mpi_size == 1);
+    }
+
+    bool this_host_done()
+    {
+        int nws, nwd;
+        #pragma omp atomic read
+        nws = n_workers_started;
+        #pragma omp atomic read
+        nwd = n_workers_done;
+        bool done = (nws > 0) && (nws == nwd) && outgoing.is_empty() && (sendbuf.empty());
+        return done;
+    }
+
+    void start_phase(int i)
+    {
+        if (not recvbuf.empty())
+            printf("warning: starting new phase with active reception buffers");
+        if (not sendbuf.empty())
+            printf("warning: starting new phase with active send buffers");
+        freelist.clear();
+
+        phase = i;
+        lo = params.mpi_rank * N / params.mpi_size;
+        hi = (params.mpi_rank + 1) * N / params.mpi_size;
+        n_active_hosts = params.mpi_size;
+        n_workers_started = 0;
+        n_workers_done = 0;
+        signaled_termination = 0;
+        start = wtime();
+        bytes_sent = 0;
+
+        std::string name[2] = {"fill", "probe"}; 
+        if (params.verbose)
+            println("starting phase {} ({})", i, name[i]);
+    }
+
+    ClawSearchProcess(const Problem &pb, MpiParameters &_params) : 
+        params(_params), capacity(params.buffer_capacity), comm(params.comm), chunksize(params.chunksize), pb(pb)
+    {
+        assert(params.n_threads != 0);
+        u64 n_buffers = params.mpi_size * params.n_threads + params.n_recv_buffers + params.n_slack_buffers;
+        N = 1ull << pb.n;
+        ncoll = 0;
+
+        freelist.setup(capacity, n_buffers);
+        dict.set_size((params.dict_capacity_ratio * N) / params.mpi_size);
+        recvbuf.reserve(params.n_recv_buffers);
+
+        if (params.verbose) {
+            char hbsize[8], hdsize[8];
+            human_format(n_buffers * capacity * sizeof(u64), hbsize);
+            human_format(dict.nbytes(), hdsize);
+            printf("RAM per node == %sB buffer + %sB dict (%" PRId64 " slots)\n", hbsize, hdsize, dict.n_slots);
+        }
+    }
+
+    void verbosity()
+    {
+        // worker progress ; "hash rate" ; network (MB/s, busy send, busy recv); mem (available buffers)
+        u64 range_size = N / params.mpi_size;
+        u64 remaining = hi - lo;
+        u64 done = range_size - remaining;
+        double progress = 100. * done / range_size;
+        char hfrate[8], hnrate[8];
+        double delta = wtime() - start;
+        human_format(done / delta, hfrate);
+        human_format(bytes_sent / delta, hnrate);
+        println("\rDone: {:.1f}%. {} f/s. net: {}B/s ({} active send, {} outgoing, {} incoming). {} free buffers", 
+            progress, hfrate, hnrate, sendbuf.size(), outgoing.size(), incoming.size(), freelist.size());
+        std::fflush(stdout);
+    }
+
+    void coordinator()
+    {
+        // prepare the reception buffers
+        for (size_t i = 0; i < recvbuf.capacity(); i++) {
+            bool ok = initiate_reception();
+            assert(ok);
+        }
+    
+        #pragma omp barrier            // needed otherwise the workers may steal all the buffers...
+
+        int backoff = params.min_backoff;
+        double last_verbose = start;
+
+        while (n_active_hosts > 0) {                   // loop until the action has died down
+            bool action = 0;
+
+            // start sending pending outgoing buffers
+            for (;;) {
+                auto [bufptr, rank] = outgoing.try_poprank();
+                if (bufptr == nullptr)
+                    break;
+                action = 1;
+                sendbuf.push_back(bufptr);
+                Buffer &buf = *bufptr;
+                // println("coordinator, retrieving outgoing buffer of size {} for rank {}. Currently sending={}, outgoing= {}", buf.size(), rank, sendbuf.size(), outgoing.size());
+                MPI_Request &req = sendreq.emplace_back();
+                MPI_Isend(buf.data(), buf.size(), MPI_UINT64_T, rank, TAG_POINTS, comm, &req);
+                bytes_sent += buf.size() * sizeof(u64);
+            }
+    
+            // recycle completely sent buffers
+            while (sendbuf.size() != 0) {
+                int flag, index;
+                MPI_Testany(sendreq.size(), sendreq.data(), &index, &flag, MPI_STATUS_IGNORE);
+                if (flag == 0)
+                    break;
+                // spdlog::debug("coordinator, sent complete. Currently sending={}, outgoing= {}", sendbuf.size(), outgoing.size());
+                action = 1;
+                Buffer *bufptr = sendbuf[index];
+                assert(sendreq[index] == MPI_REQUEST_NULL);
+                std::swap(sendbuf[index], sendbuf.back());
+                std::swap(sendreq[index], sendreq.back());
+                sendbuf.pop_back();
+                sendreq.pop_back();
+                freelist.release(bufptr);
+            }
+    
+            // process completely received buffers
+            while (recvbuf.size() != 0) {
+                int flag, index, count;
+                MPI_Status status;
+                MPI_Testany(recvreq.size(), recvreq.data(), &index, &flag, &status);
+                if (flag == 0)
+                    break;
+                action = 1;
+                MPI_Get_count(&status, MPI_UINT64_T, &count);
+                Buffer *bufptr = recvbuf[index];
+                Buffer &buf = *bufptr;
+                buf.resize(count); 
+                assert(recvreq[index] == MPI_REQUEST_NULL);
+                std::swap(recvbuf[index], recvbuf.back());
+                std::swap(recvreq[index], recvreq.back());
+                recvbuf.pop_back();
+                recvreq.pop_back();
+                // spdlog::debug("coordinator, received a buffer.");
+                if (status.MPI_TAG == TAG_MANAGEMENT) {
+                    process_service_message(status.MPI_SOURCE, bufptr);
+                } else {
+                    incoming.push(bufptr);
+                    // println("coordinator, pushed buffer to the incoming queue (size={}).", incoming.size());
+                }
+            }
+    
+            // potentially allocate new reception buffers
+            for (size_t i = recvbuf.size(); i < recvbuf.capacity(); i++) {
+                bool ok = initiate_reception();
+                if (not ok)
+                    println("warning! Buffer starvation in coordinator");
+            }
+
+            // detect local sender termination and notify other MPI processes
+            if (this_host_done() and not signaled_termination) {
+                u64 msg = DONE;
+                for (int i = 0; i < params.mpi_size; i++)
+                    if (i != params.mpi_rank)
+                        MPI_Bsend(&msg, 1, MPI_UINT64_T, i, TAG_MANAGEMENT, params.comm);
+                deactivate_host();
+                signaled_termination = 1;
+            }
+
+            if (params.verbose and wtime() >= last_verbose + 1) {
+                verbosity();
+                last_verbose = wtime();
+            }
+
+            if (action) {
+                backoff = params.min_backoff;
+            } else {
+                backoff = std::min(params.max_backoff, 2*backoff + 1);
+                wait(backoff);
+            }
+        }
+
+        // cancel the pending receives
+        for (size_t i = 0; i < recvreq.size(); i++)
+            MPI_Cancel(&recvreq[i]);
+        MPI_Waitall(recvreq.size(), recvreq.data(), MPI_STATUSES_IGNORE);
+        for (size_t i = 0; i < recvbuf.size(); i++)
+            freelist.release(recvbuf[i]);
+        recvreq.clear();
+        recvbuf.clear();
+    }
+
+    // this is specific to the direct mitm
+    void process_incoming_buffer(Buffer * bufptr)
+    {
+        Buffer &buf = *bufptr;
+        int maxkeys = 3 * pb.n;
+        u64 keys[maxkeys];
+        
+        for (auto i = buf.begin(); i != buf.end(); i++) {
+            u64 x = *i;
+            i++;
+            u64 z = *i;
+            switch (phase) {
+            case 0: {
+                dict.insert(z, x);
+                break;
+            }
+            case 1: {
+                int nkeys = dict.probe(z, maxkeys, keys);
+                if (nkeys > maxkeys)
+                    println("ERROR: too many keys");
+                for (int k = 0; k < nkeys; k++) {
+                    u64 y = keys[k];
+                    if (z != pb.f(y))
+                        continue;    // false positive from truncation in the hash table
+                    #pragma omp atomic update
+                    ncoll += 1;
+                    if (pb.is_good_pair(y, x)) {
+                        println("!! solution found !!");
+                        #pragma omp critical
+                        result.push_back(pair(y, x));
+                    }
+                }
+            }
+            }
+        }
+        freelist.release(bufptr);
+    }
+
+    void poll_incoming()
+    {
+        while (Buffer *bufptr = incoming.try_pop())
+            process_incoming_buffer(bufptr);
+    }
+
+    Buffer * get_worker_buffer()
+    {
+        for (;;) {
+            poll_incoming();
+            Buffer *bufptr = freelist.try_acquire();
+            if (bufptr != nullptr) {
+                bufptr->resize(0);
+                return bufptr;
+            }
+            // backoff ?
+            println("worker got nothing in get_worker_buffer");
+        }
+    }
+
+    pair<u64, u64> grab_chunk()
+    {
+        u64 local;
+        #pragma omp atomic update capture
+        { local = lo; lo += chunksize; }
+        return pair(local, std::min(local + chunksize, hi));
+    }
+
+    void send_buffer(Buffer *bufptr, int rank)
+    {
+        if (rank == params.mpi_rank) {
+            // fast-track: the current thread deals with it right now
+            process_incoming_buffer(bufptr);
+        } else {
+            // slow track: the coordinator deals with it
+            outgoing.pushrank(bufptr, rank);
+        }
+    }
+
+    // many such thread per node. This is specific to the direct mitm
+    void worker()
+    {
+        vector<Buffer *> buffers;
+        for (int i = 0; i < params.mpi_size; i++) {
+            Buffer *bufptr = get_worker_buffer();
+            Buffer &buf = *bufptr;
+            buf.resize(0);
+            buffers.push_back(bufptr);
+        }
+
+        #pragma omp barrier            // needed otherwise the workers may steal all the buffers...
+
+        worker_start();
+        for (;;) {
+            poll_incoming();
+            auto [chunk_lo, chunk_hi] = grab_chunk();
+            if (chunk_lo >= chunk_hi)
+                break;
+            for (u64 x = chunk_lo; x < chunk_hi; x++) {
+                    u64 z = (phase == 0) ? pb.f(x) : pb.g(x);
+                    u64 hash = (z * 0xdeadbeef) % 0x7fffffff;
+                    int i = ((int) hash) % params.mpi_size;
+                    if (buffers[i]->size() == buffers[i]->capacity()) {
+                        send_buffer(buffers[i], i);
+                        buffers[i] = get_worker_buffer();
+                        assert(buffers[i]->capacity() == capacity);
+                        assert(buffers[i]->size() == 0);
+                    }
+                    buffers[i]->push_back(x);
+                    buffers[i]->push_back(z);
+            }
+        }
+        // flush output buffers
+        for (size_t i = 0; i < buffers.size(); i++)
+            send_buffer(buffers[i], i);
+        worker_done();
+        // process incoming buffers while the whole computation is not finished
+        while (not finished())
+            poll_incoming();
+    }
+};
+
+
+template <class Problem>
+vector<pair<u64, u64>> mpi_direct_claw_search(const Problem &pb, MpiParameters &params)
+{
+    static_assert(std::is_base_of<AbstractClawProblem, Problem>::value,
+        "problem not derived from mitm::AbstractClawProblem");
+
+    if (params.verbose)
+        printf("Claw-finding: {0,1}^%d --> {0,1}^%d\n", pb.n, pb.m);
+
+    if (params.n_threads <= 0) {
+        params.n_threads = omp_get_max_threads();
+        if (params.verbose)
+            printf("Autodetect: using %d threads\n", params.n_threads);
+    }
+
+    double start = wtime();
+    ClawSearchProcess proc(pb, params);    
+
+    for (int phase = 0; phase < 2; phase++) {
+        // phase 0 == fill the dict with f()
+        // phase 1 == probe the dict with g()
+        
+        proc.start_phase(phase);
+        double phase_start = wtime();        
+
+        #pragma omp parallel
+        {
+            assert(params.mpi_size == 1 or omp_get_num_threads() > 1);
+            int tid = omp_get_thread_num();
+            if (tid == 0 and params.mpi_size > 1)
+                proc.coordinator();
+            else
+                proc.worker();
+        }
+
+        double delta = wtime() - phase_start;
+        printf("phase %d / rank %d: %.2fs\n", phase, params.mpi_rank, delta);
+
+        #if 0
+        if (params.verbose) {
+            double outgoing_fraction = 1. - ((double) params.recv_per_node) / params.n_recv;
+            double volume = sizeof(u64) * N / params.n_nodes * outgoing_fraction;  // outgoing bytes per node
+            char frate[8], nrate[8];
+            double delta = wtime() - phase_start;
+            human_format(N / params.n_send / delta, frate);
+            human_format(volume / delta, nrate);
+            printf("phase %d: %.1fs.  %s f/s per process, %sB/s outgoing per node. 2^%.2f collisions\n", 
+                phase, delta, frate, nrate, std::log2(ncoll));
+        }
+        #endif
+    } // phase
+
+    if (params.verbose)
+        printf("Total: %.1fs\n", wtime() - start);
+    
+    BCast_result(params, proc.result);
+    return proc.result;
+};
+
+}
+
+#endif

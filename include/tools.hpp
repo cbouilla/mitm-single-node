@@ -7,12 +7,18 @@
 #include <string>
 #include <vector>
 #include <optional>
+#include <time.h>
+
+#include <fmt/base.h>
+
 
 using std::vector;
 using std::pair;
 using std::tuple;
 using std::optional;
 using std::nullopt;
+using fmt::println;
+using fmt::print;
 
 #include "types.h"
 
@@ -20,16 +26,22 @@ namespace mitm {
 
 u64 make_mask(int n)
 {
-    return (n >= 64) ? 0xffffffffffffffffull : (1ull << n) - 1;
+   	return (n >= 64) ? 0xffffffffffffffffull : (1ull << n) - 1;
 }
 
-double wtime() /* with inline it doesn't violate one definition rule */
+double wtime()
 {
+	auto clock = std::chrono::high_resolution_clock::now();
+	auto nanoseconds = std::chrono::duration_cast<std::chrono::nanoseconds>(clock.time_since_epoch()).count();
+	double seconds = nanoseconds / (static_cast<double>(1000000000.0));
+	return seconds;
+}
 
-  auto clock = std::chrono::high_resolution_clock::now();
-  auto nanoseconds = std::chrono::duration_cast<std::chrono::nanoseconds>(clock.time_since_epoch()).count();
-  double seconds = nanoseconds / (static_cast<double>(1000000000.0));
-  return seconds;
+void wait(int microseconds) {
+    struct timespec ts;
+    ts.tv_sec = 0;
+    ts.tv_nsec = microseconds * 1000;
+    nanosleep(&ts, NULL);
 }
 
 // murmur64 hash functions, tailorized for 64-bit ints / Cf. Daniel Lemire
@@ -178,5 +190,18 @@ u64 human_parse(const std::string &_h)
     }
     return std::stoull(h);
 }
+
+
+template <class T>
+bool CAS(T &target, const T expected, const T desired)
+{
+    bool ok = false;
+    #pragma omp atomic compare capture
+    { 
+        ok = target == expected; if (ok) { target = desired; }
+    }
+    return ok;
+}
+
 }
 #endif

@@ -17,41 +17,61 @@ namespace mitm {
  */
 class CompactDict {
 public:
-    const u64 n_slots;     /* How many slots a dictionary have */
+    u64 n_slots = 0;     /* How many slots the dictionary have */
     struct __attribute__ ((packed)) entry { u32 k; u64 v; };
 
     vector<struct entry> A;
 
-    CompactDict(u64 n_slots) : n_slots(n_slots)
+    void set_size(u64 n)
     {
-        A.resize(n_slots, {0xffffffff, 0});
+    	n_slots = n;
+    	A.resize(n_slots, {0xffffffff, 0});
+    }
+
+    u64 nbytes()
+    {
+    	return n_slots * sizeof(struct entry);
     }
 
     void insert(u64 key, u64 value)
     {
-        u64 h = (key ^ (key >> 32)) % n_slots;
+        u64 h = murmur64(key) % n_slots;
+        u32 keymod = key % 0xfffffffb;
         for (;;) {
-            if (A[h].k == 0xffffffff)
-                break;
-            h += 1;
-            if (h == n_slots)
-                h = 0;
+        	for (;;) {
+        		u32 probe;
+        		#pragma omp atomic read
+        		probe = A[h].k;
+        	    if (probe == 0xffffffff)
+        	        break;
+        	    h += 1;
+        	    if (h == n_slots)
+        	        h = 0;
+        	}
+        	#pragma GCC diagnostic push
+			#pragma GCC diagnostic ignored "-Waddress-of-packed-member"
+        	bool ok = CAS((u32 &) A[h].k, 0xffffffff, keymod);
+			#pragma GCC diagnostic pop
+        	if (not ok)
+        		continue;
+        	A[h].v = value;
+        	return;
         }
-        A[h].k = key % 0xfffffffb;
-        A[h].v = value;
     }
 
     // return possible values matching this key
     // TODO: replace this by a custom iterator
-    int probe(u64 bigkey, u64 keys[])
+    int probe(u64 bigkey, int maxkeys, u64 keys[])
     {
         u32 key = bigkey % 0xfffffffb;
-        u64 h = (bigkey ^ (bigkey >> 32)) % n_slots;
+        u64 h = murmur64(key)	 % n_slots;
         int nkeys = 0;
         for (;;) {
             if (A[h].k == 0xffffffff)
                 return nkeys;
             if (A[h].k == key) {
+                if (nkeys == maxkeys)
+                	return maxkeys + 1;      // overflow
                 keys[nkeys] = A[h].v;
                 nkeys += 1;
             }
@@ -113,7 +133,7 @@ public:
 		u64 ekey = e & key_mask;
 		u64 elen = (e >> jbits) & lmask;
 
-		if (e == 0 || len0 >= elen) {
+		if (1 || e == 0 || len0 >= elen) {
 			// actual insertion
 			if (len0 > lmask)
 				len0 = lmask;
