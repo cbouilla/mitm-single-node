@@ -123,6 +123,7 @@ public:
 
     void release(Buffer * bufptr)
     {
+        println("release --> {}", (void *) bufptr);
         ready.push(bufptr);
         for (size_t i = 0; i < all.size(); i++)
             if (bufptr == &all[i]) {
@@ -135,6 +136,7 @@ public:
     Buffer * try_acquire()
     {
         Buffer *bufptr = ready.try_pop();
+        println("try_acquire --> {}", (void *) bufptr);
         for (size_t i = 0; i < all.size(); i++)
             if (bufptr == &all[i]) {
                 assert(not busy[i]);
