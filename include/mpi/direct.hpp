@@ -295,7 +295,7 @@ public:
             char hbsize[8], hdsize[8];
             human_format(n_buffers * capacity * sizeof(u64), hbsize);
             human_format(dict.nbytes(), hdsize);
-            println("RAM per node == {}B buffer ({} x {}) +{}sB dict ({} slots)", n_buffers, capacity, hbsize, hdsize, dict.n_slots);
+            println("RAM per node == {}B buffer ({} x {}) +{}B dict ({} slots)", hbsize, n_buffers, capacity,  hdsize, dict.n_slots);
         }
     }
 
@@ -476,23 +476,34 @@ public:
         freelist.release(bufptr);
     }
 
-    void poll_incoming()
+    bool poll_incoming()
     {
-        while (Buffer *bufptr = incoming.try_pop())
+        bool action = 0
+        while (Buffer *bufptr = incoming.try_pop()) {
             process_incoming_buffer(bufptr);
+            action = 1;
+        }
+        return action;
     }
 
     Buffer * get_worker_buffer()
     {
+        double start = -1;
         for (;;) {
-            poll_incoming();
+            bool action = 0;
+            action = poll_incoming();
             Buffer *bufptr = freelist.try_acquire();
             if (bufptr != nullptr) {
                 bufptr->resize(0);
+                if (start >= 0)
+                    println("worker got buffer after waiting {}s", wtime() - start);
                 return bufptr;
             }
             // backoff ?
-            println("worker got nothing in get_worker_buffer");
+            if (action and start >= 0)
+                println("worker starved for {}s but got an incoming buffer", wtime() - start);
+            if (not action and start < 0)
+                start = wtime;   // start the timer
         }
     }
 
@@ -593,9 +604,6 @@ vector<pair<u64, u64>> mpi_direct_claw_search(const Problem &pb, MpiParameters &
             else
                 proc.worker();
         }
-
-        double delta = wtime() - phase_start;
-        printf("phase %d / rank %d: %.2fs\n", phase, params.mpi_rank, delta);
 
         #if 0
         if (params.verbose) {
