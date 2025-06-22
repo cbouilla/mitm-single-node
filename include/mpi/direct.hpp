@@ -109,10 +109,12 @@ private:
     vector<Buffer> all;
     size_t capacity;
 public:
+    vector<bool> busy;
     void setup(size_t cap, size_t n)
     {
         capacity = cap;
         all.resize(n);
+        busy.resize(n);
         for (size_t i = 0; i < n; i++) {
             all[i].reserve(capacity);
             ready.push(&all[i]);
@@ -122,11 +124,24 @@ public:
     void release(Buffer * bufptr)
     {
         ready.push(bufptr);
+        for (size_t i = 0; i < all.size(); i++)
+            if (bufptr == &all[i]) {
+                assert(busy[i]);
+                busy[i] = 0;
+                break;
+            }
     }
 
     Buffer * try_acquire()
     {
-        return ready.try_pop();
+        Buffer *bufptr = ready.try_pop();
+        for (size_t i = 0; i < all.size(); i++)
+            if (bufptr == &all[i]) {
+                assert(not busy[i]);
+                busy[i] = 1;
+                break;
+            }
+        return bufptr;
     }
 
     size_t size()
@@ -137,10 +152,23 @@ public:
     void clear()
     {
         if (ready.size() != all.size())
-            printf("freelist reset with busy buffers?\n");
-        while (try_acquire()) {};
+            println("freelist reset with busy buffers?");
+        while (Buffer *bufptr = try_acquire())
+            for (size_t i = 0; i < all.size(); i++)
+                if (bufptr == &all[i]) {
+                    assert(busy[i]);
+                    break;
+                }
         for (size_t i = 0; i < all.size(); i++)
             ready.push(&all[i]);
+    }
+
+    void diags()
+    {
+        for (size_t i = 0; i < all.size(); i++)
+            if (busy[i])
+                println("Buffer {} lost", (void *) &all[i]);
+
     }
 };
 
@@ -149,7 +177,6 @@ public:
 template <class Problem>
 class ClawSearchProcess {
 private:
-    FreeList freelist;
     LockfreeStack outgoing;      // buffers waiting to be sent
     LockfreeStack incoming;                 // received buffers waiting to be processed
     vector<Buffer *> sendbuf, recvbuf;                // coordinator: active send/recv buffers
@@ -229,6 +256,7 @@ private:
 
 
 public:
+    FreeList freelist;
     const Problem &pb;
     vector<pair<u64, u64>> result;
     u64 ncoll = 0;
@@ -633,6 +661,9 @@ vector<pair<u64, u64>> mpi_direct_claw_search(const Problem &pb, MpiParameters &
             else
                 proc.worker();
         }
+        if (params.verbose)
+            proc.freelist.diags();
+        
 
         #if 0
         if (params.verbose) {
