@@ -323,6 +323,10 @@ public:
             assert(ok);
         }
     
+        u64 mpi_buffer_size = params.mpi_size * (8 + MPI_BSEND_OVERHEAD);
+        u8 mpi_buffer[mpi_buffer_size];
+        MPI_Buffer_attach(mpi_buffer, mpi_buffer_size);
+
         #pragma omp barrier            // needed otherwise the workers may steal all the buffers...
 
         int backoff = params.min_backoff;
@@ -426,6 +430,10 @@ public:
             freelist.release(recvbuf[i]);
         recvreq.clear();
         recvbuf.clear();
+
+        void *foo;
+        int bar;
+        MPI_Buffer_detach(&foo, &bar);
     }
 
     // this is specific to the direct mitm
