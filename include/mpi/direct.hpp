@@ -295,7 +295,7 @@ public:
             char hbsize[8], hdsize[8];
             human_format(n_buffers * capacity * sizeof(u64), hbsize);
             human_format(dict.nbytes(), hdsize);
-            printf("RAM per node == %sB buffer + %sB dict (%" PRId64 " slots)\n", hbsize, hdsize, dict.n_slots);
+            println("RAM per node == {}B buffer ({} x {}) +{}sB dict ({} slots)", n_buffers, capacity, hbsize, hdsize, dict.n_slots);
         }
     }
 
