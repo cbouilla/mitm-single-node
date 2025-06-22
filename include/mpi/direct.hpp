@@ -336,7 +336,7 @@ public:
             bool action = 0;
 
             // start sending pending outgoing buffers
-            for (;;) {
+            while (sendbuf.size() < params.max_concurrent_send) {
                 auto [bufptr, rank] = outgoing.try_poprank();
                 if (bufptr == nullptr)
                     break;

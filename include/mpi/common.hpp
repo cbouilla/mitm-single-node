@@ -22,7 +22,7 @@ public:
 	size_t buffer_capacity = 4096;               // somewhat arbitrary
 	int n_recv_buffers = 32;                     // somewhat arbitrary
 	int n_slack_buffers = 256;                   // somewhat arbitrary
-    double send_buffers_ratio = 1.25;            // allocated send buffers = this * strictly required
+    double send_buffers_ratio = 1.5;             // allocated send buffers = this * strictly required
     int min_backoff = 1000;                      // µs
     int max_backoff = 100000;                    // µs
     int max_current_send = 16;                   // somewhat arbitrary
