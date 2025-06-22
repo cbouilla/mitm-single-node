@@ -144,7 +144,7 @@ public:
                 busy[i] = 1;
                 return bufptr;
             }
-        assert(0);
+        assert(bufptr == nullptr);
     }
 
     size_t size()
