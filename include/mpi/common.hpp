@@ -19,13 +19,13 @@ public:
 	MPI_Comm comm;
 	int mpi_rank, mpi_size;
 
-	size_t buffer_capacity = 4096;               // somewhat arbitrary
+	size_t buffer_capacity = 16384;              // somewhat arbitrary
 	int n_recv_buffers = 32;                     // somewhat arbitrary
 	int n_slack_buffers = 256;                   // somewhat arbitrary
     double send_buffers_ratio = 1.5;             // allocated send buffers = this * strictly required
     int min_backoff = 1000;                      // µs
     int max_backoff = 100000;                    // µs
-    size_t max_concurrent_send = 16;             // somewhat arbitrary. why not 2 * size ?
+    size_t max_concurrent_send = -1;             // somewhat arbitrary. why not 2 * size ?
 
 	MpiParameters(MPI_Comm comm) : comm(comm)
 	{

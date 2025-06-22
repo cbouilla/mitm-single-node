@@ -423,6 +423,8 @@ public:
             }
         }
 
+        println("rank {}, coordinator exiting the loop with {} free buffers", params.mpi_rank, freelist.size());
+
         // cancel the pending receives
         for (size_t i = 0; i < recvreq.size(); i++)
             MPI_Cancel(&recvreq[i]);
@@ -432,6 +434,7 @@ public:
         recvreq.clear();
         recvbuf.clear();
 
+        println("rank {}, coordinator reaching the MPI barrier {} free buffers", params.mpi_rank, freelist.size());
         MPI_Barrier(params.comm);
 
         void *foo;
@@ -584,14 +587,20 @@ vector<pair<u64, u64>> mpi_direct_claw_search(const Problem &pb, MpiParameters &
     static_assert(std::is_base_of<AbstractClawProblem, Problem>::value,
         "problem not derived from mitm::AbstractClawProblem");
 
-    if (params.verbose)
-        printf("Claw-finding: {0,1}^%d --> {0,1}^%d\n", pb.n, pb.m);
+    if (params.verbose) {
+        println("Claw-finding: {{0,1}}^{} --> {{0,1}}^{}", pb.n, pb.m);
+        if (params.mpi_size > 1)
+            println("Running {} on MPI processes", params.mpi_size);
+    }
 
     if (params.n_threads <= 0) {
         params.n_threads = omp_get_max_threads();
         if (params.verbose)
-            printf("Autodetect: using %d threads\n", params.n_threads);
+            println("Autodetect: using {} threads", params.n_threads);
     }
+
+    if (params.max_concurrent_send <= 0) 
+        params.max_concurrent_send = 2 * params.mpi_size;
 
     double start = wtime();
     ClawSearchProcess proc(pb, params);    
@@ -628,7 +637,7 @@ vector<pair<u64, u64>> mpi_direct_claw_search(const Problem &pb, MpiParameters &
     } // phase
 
     if (params.verbose)
-        printf("Total: %.1fs\n", wtime() - start);
+        println("Total: {:.1f}s", wtime() - start);
     
     BCast_result(params, proc.result);
     return proc.result;
