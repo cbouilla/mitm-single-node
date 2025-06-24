@@ -61,10 +61,10 @@ public:
             bufptr = head;
             if (bufptr == nullptr)
                 return nullptr;
-            assert(bufptr->stack == this);
             if (CAS(head, bufptr, bufptr->stack_next))
                 break;
         }
+        assert(bufptr->stack == this);
         bufptr->stack = nullptr;
         #pragma omp atomic update
         n -= 1;
@@ -102,7 +102,8 @@ public:
         all.resize(n);
         for (size_t i = 0; i < n; i++) {
             all[i].reserve(capacity);
-            free.push(& all[i]);
+            assert(not all[i].busy);
+            free.push(&all[i]);
         }
     }
 
