@@ -475,7 +475,7 @@ public:
             }
             }
         }
-        recv_freelist.release(bufptr);
+        // recv_freelist.release(bufptr);
         // if (params.verbose)
         //     println("buffer {} released by process_incoming_buffer", (void *) bufptr);
     }
