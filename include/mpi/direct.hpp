@@ -19,39 +19,33 @@
 
 namespace mitm {
 
-using Buffer = vector<u64>;
 enum tags {TAG_POINTS, TAG_MANAGEMENT};
 enum service {DONE};
 
+class LockfreeStack;
+
+class Buffer : public vector<u64> {
+public:
+    Buffer* stack_next;
+    LockfreeStack *stack;
+    bool busy = false;
+    int rank = -1;
+};
 
 class LockfreeStack {
 private:
-    struct Node {
-        Buffer *payload;      // Pointer to the payload
-        int rank;
-        Node* next;
-    };
-    Node *head;
-
-public:
+    Buffer *head = nullptr;
     size_t n = 0;
-    LockfreeStack() : head(nullptr) {}
-
-    void push(Buffer *item)
+public:
+    void push(Buffer *bufptr)
     {
-        pushrank(item, -1);
-    }
-    
-    void pushrank(Buffer *item, int rank)
-    {
-        assert(item != nullptr);
-        Node * node = new Node();
-        node->payload = item;
-        node->rank = rank;
+        assert(bufptr != nullptr);
+        assert(bufptr->stack == nullptr);
+        bufptr->stack = this;
         for (;;) {
             #pragma omp atomic read
-            node->next = head;
-            if (CAS(head, node->next, node)) {
+            bufptr->stack_next = head;
+            if (CAS(head, bufptr->stack_next, bufptr)) {
                 #pragma omp atomic update
                 n += 1;
                 return;
@@ -59,9 +53,27 @@ public:
         }
     }
 
-    bool is_empty()
+    Buffer * try_pop()
     {
-        Node *maybe;
+        Buffer *bufptr;
+        for (;;) {
+            #pragma omp atomic read
+            bufptr = head;
+            if (bufptr == nullptr)
+                return nullptr;
+            assert(bufptr->stack == this);
+            if (CAS(head, bufptr, bufptr->stack_next))
+                break;
+        }
+        bufptr->stack = nullptr;
+        #pragma omp atomic update
+        n -= 1;
+        return bufptr;
+    }
+
+    bool empty()
+    {
+        Buffer *maybe;
         #pragma omp atomic read
         maybe = head;
         return (maybe == nullptr);
@@ -74,111 +86,53 @@ public:
         tmp = n;
         return tmp;
     }
-
-    pair<Buffer*,int> try_poprank()
-    {
-        Node *maybe;
-        for (;;) {
-            #pragma omp atomic read
-            maybe = head;
-            if (maybe == nullptr)
-                return pair(nullptr, -1); 
-            if (CAS(head, maybe, maybe->next))
-                break;
-        }
-        Buffer *bufptr = maybe->payload;
-        int rank = maybe->rank;
-        assert(bufptr != nullptr);
-        delete maybe;
-        #pragma omp atomic update
-        n -= 1;
-        return pair(bufptr, rank);
-    }
-
-    Buffer* try_pop()
-    {
-        auto [bufptr, rank] = try_poprank();
-        return bufptr;
-    }
 };
 
 /* Manage a collection of buffers.  The n vectors are **reserved** (but not **resized**) to capacity */
 class FreeList {
 private:
-    LockfreeStack ready;
+    LockfreeStack free;
     vector<Buffer> all;
-    size_t capacity;
+    size_t capacity = 0;
+
 public:
-    vector<bool> busy;
     void setup(size_t cap, size_t n)
     {
         capacity = cap;
         all.resize(n);
-        busy.resize(n, 0);
         for (size_t i = 0; i < n; i++) {
             all[i].reserve(capacity);
-            ready.push(&all[i]);
+            free.push(& all[i]);
         }
     }
 
-    void release(Buffer * bufptr)
+    void release(Buffer *bufptr)
     {
-        for (size_t i = 0; i < all.size(); i++)
-            if (bufptr == &all[i]) {
-                #pragma omp critical (freelist)
-                {
-                    ready.push(bufptr);
-                    assert(busy[i]);
-                    busy[i] = 0;
-                }
-                println("release --> {} (all[{}]. busy={}", (void *) bufptr, i, (int) busy[i]);
-                return;
-            }
-        assert(0);
+        assert(bufptr->busy);
+        bufptr->busy = 0;
+        free.push(bufptr);
     }
 
     Buffer * try_acquire()
     {
-        Buffer *bufptr; 
-        #pragma omp critical (freelist)
-        {
-        bufptr = ready.try_pop();
-        for (size_t i = 0; i < all.size(); i++)
-            if (bufptr == &all[i]) {
-                println("try_acquire --> {} (all[{}]. busy={}", (void *) bufptr, i, (int) busy[i]);
-                assert(not busy[i]);
-                busy[i] = 1;
-                break;
-            }
-        }
+        Buffer *bufptr = free.try_pop();
+        if (bufptr == nullptr)
+            return nullptr;
+        assert(not bufptr->busy);
+        bufptr->busy = 1;
         return bufptr;
     }
 
     size_t size()
     {
-        return ready.size();
+        return free.size();
     }
 
     void clear()
     {
-        if (ready.size() != all.size())
+        if (free.size() != all.size())
             println("freelist reset with busy buffers?");
-        while (Buffer *bufptr = try_acquire())
-            for (size_t i = 0; i < all.size(); i++)
-                if (bufptr == &all[i]) {
-                    assert(busy[i]);
-                    break;
-                }
-        for (size_t i = 0; i < all.size(); i++)
-            ready.push(&all[i]);
-    }
-
-    void diags()
-    {
-        for (size_t i = 0; i < all.size(); i++)
-            if (busy[i])
-                println("Buffer {} lost", (void *) &all[i]);
-
+        assert(free.size() == all.size());
     }
 };
 
@@ -299,7 +253,7 @@ public:
         nws = n_workers_started;
         #pragma omp atomic read
         nwd = n_workers_done;
-        bool done = (nws > 0) && (nws == nwd) && outgoing.is_empty() && (sendbuf.empty());
+        bool done = (nws > 0) && (nws == nwd) && outgoing.empty() && (sendbuf.empty());
         return done;
     }
 
@@ -383,7 +337,7 @@ public:
 
             // start sending pending outgoing buffers
             while (sendbuf.size() < params.max_concurrent_send) {
-                auto [bufptr, rank] = outgoing.try_poprank();
+                Buffer *bufptr = outgoing.try_pop();
                 if (bufptr == nullptr)
                     break;
                 action = 1;
@@ -392,7 +346,7 @@ public:
                 // println("coordinator, retrieving outgoing buffer of size {} for rank {}. Currently sending={}, outgoing= {}", buf.size(), rank, sendbuf.size(), outgoing.size());
                 assert(not signaled_termination);
                 MPI_Request &req = sendreq.emplace_back();
-                MPI_Isend(buf.data(), buf.size(), MPI_UINT64_T, rank, TAG_POINTS, comm, &req);
+                MPI_Isend(buf.data(), buf.size(), MPI_UINT64_T, buf.rank, TAG_POINTS, comm, &req);
                 bytes_sent += buf.size() * sizeof(u64);
             }
     
@@ -585,7 +539,8 @@ public:
             process_incoming_buffer(bufptr);
         } else {
             // slow track: the coordinator deals with it
-            outgoing.pushrank(bufptr, rank);
+            bufptr->rank = rank;
+            outgoing.push(bufptr);
         }
     }
 
@@ -671,9 +626,7 @@ vector<pair<u64, u64>> mpi_direct_claw_search(const Problem &pb, MpiParameters &
             else
                 proc.worker();
         }
-        if (params.verbose)
-            proc.freelist.diags();
-        
+        proc.freelist.clear();
 
         #if 0
         if (params.verbose) {
