@@ -195,19 +195,14 @@ private:
             deactivate_host();
             break;
         }
-        freelist.release(bufptr);
+        recv_freelist.release(bufptr);
     }
 
     void initiate_reception()
     {
-        Buffer *bufptr = freelist.try_acquire();
-        if (bufptr == nullptr) {
-            #pragma omp atomic write
-            coordinator_priority = 1;
+        Buffer *bufptr = recv_freelist.try_acquire();
+        if (bufptr == nullptr)
             return;
-        }
-        #pragma omp atomic write
-        coordinator_priority = 0;
         Buffer &buf = *bufptr;
         buf.resize(capacity);
         recvbuf.push_back(bufptr);
@@ -217,7 +212,7 @@ private:
 
 
 public:
-    FreeList freelist;
+    FreeList send_freelist, recv_freelist;
     const Problem &pb;
     vector<pair<u64, u64>> result;
     u64 ncoll = 0;
@@ -260,8 +255,8 @@ public:
             printf("warning: starting new phase with active reception buffers");
         if (not sendbuf.empty())
             printf("warning: starting new phase with active send buffers");
-        freelist.clear();
-        coordinator_priority = 0;
+        recv_freelist.clear();
+        send_freelist.clear();
 
         phase = i;
         lo = params.mpi_rank * N / params.mpi_size;
@@ -282,15 +277,18 @@ public:
         params(_params), capacity(params.buffer_capacity), comm(params.comm), chunksize(params.chunksize), pb(pb)
     {
         assert(params.n_threads != 0);
-        u64 n_buffers = params.send_buffers_ratio * params.mpi_size * params.n_threads + params.n_recv_buffers + params.n_slack_buffers;
+        u64 n_send_buffers = params.send_buffers_ratio * params.mpi_size * params.n_threads + params.n_slack_buffers;
+        u64 n_recv_buffers = params.n_recv_buffers + params.n_slack_buffers;
         N = 1ull << pb.n;
         ncoll = 0;
 
-        freelist.setup(capacity, n_buffers);
+        send_freelist.setup(capacity, n_send_buffers);
+        recv_freelist.setup(capacity, n_recv_buffers);
         dict.set_size((params.dict_capacity_ratio * N) / params.mpi_size);
         recvbuf.reserve(params.n_recv_buffers);
 
         if (params.verbose) {
+            u64 n_buffers = n_send_buffers + n_recv_buffers;
             char hbsize[8], hdsize[8];
             human_format(n_buffers * capacity * sizeof(u64), hbsize);
             human_format(dict.nbytes(), hdsize);
@@ -309,8 +307,9 @@ public:
         double delta = wtime() - start;
         human_format(done / delta, hfrate);
         human_format(bytes_sent / delta, hnrate);
-        println("\rDone: {:.1f}%. {} f/s. net: {}B/s ({} active send, {} ready recv, {} outgoing, {} incoming). {} free buffers", 
-            progress, hfrate, hnrate, sendbuf.size(), recvbuf.size(), outgoing.size(), incoming.size(), freelist.size());
+        println("\rDone: {:.1f}%. {} f/s. net: {}B/s ({} active send, {} ready recv, {} outgoing, {} incoming). {} / {} free buffers", 
+            progress, hfrate, hnrate, sendbuf.size(), recvbuf.size(), outgoing.size(), 
+            incoming.size(), send_freelist.size(), recv_freelist.size());
         std::fflush(stdout);
     }
 
@@ -361,7 +360,7 @@ public:
                 std::swap(sendreq[index], sendreq.back());
                 sendbuf.pop_back();
                 sendreq.pop_back();
-                freelist.release(bufptr);
+                send_freelist.release(bufptr);
                 // if (params.verbose)
                 //     println("buffer {} released by coordinator (sent)", (void *) bufptr);
             }
@@ -426,7 +425,7 @@ public:
             MPI_Cancel(&recvreq[i]);
         MPI_Waitall(recvreq.size(), recvreq.data(), MPI_STATUSES_IGNORE);
         for (size_t i = 0; i < recvbuf.size(); i++) {
-            freelist.release(recvbuf[i]);
+            recv_freelist.release(recvbuf[i]);
             // if (params.verbose)
             //         println("buffer {} released by coordinator (after waitall)", (void *) &recvbuf[i]);
         }
@@ -476,7 +475,7 @@ public:
             }
             }
         }
-        freelist.release(bufptr);
+        recv_freelist.release(bufptr);
         // if (params.verbose)
         //     println("buffer {} released by process_incoming_buffer", (void *) bufptr);
     }
@@ -495,21 +494,15 @@ public:
     {
         double start = -1;
         for (;;) {
-            bool action = 0;
-            action = poll_incoming();
-            bool must_wait;
-            #pragma omp atomic read
-            must_wait = coordinator_priority;
-            if (not must_wait) {
-                Buffer *bufptr = freelist.try_acquire();
-                if (bufptr != nullptr) {
-                    bufptr->resize(0);
-                    // if (start >= 0)
-                    //     println("worker got buffer after waiting {}s", wtime() - start);
-                    // if (params.verbose)
-                    //     println("buffer {} acquired by worker", (void *) bufptr);
-                    return bufptr;
-                }
+            bool action = poll_incoming();
+            Buffer *bufptr = send_freelist.try_acquire();
+            if (bufptr != nullptr) {
+                bufptr->resize(0);
+                // if (start >= 0)
+                //     println("worker got buffer after waiting {}s", wtime() - start);
+                // if (params.verbose)
+                //     println("buffer {} acquired by worker", (void *) bufptr);
+                return bufptr;
             }
             // backoff ?
             if (action and start >= 0) {
@@ -623,7 +616,8 @@ vector<pair<u64, u64>> mpi_direct_claw_search(const Problem &pb, MpiParameters &
             else
                 proc.worker();
         }
-        proc.freelist.clear();
+        proc.send_freelist.clear();
+        proc.recv_freelist.clear();
 
         #if 0
         if (params.verbose) {
