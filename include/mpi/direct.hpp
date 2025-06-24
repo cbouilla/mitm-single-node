@@ -196,8 +196,6 @@ private:
             break;
         }
         freelist.release(bufptr);
-        if (params.verbose)
-            println("buffer {} released by coordinator (service)", (void *) bufptr);
     }
 
     void initiate_reception()
@@ -208,8 +206,6 @@ private:
             coordinator_priority = 1;
             return;
         }
-        if (params.verbose)
-            println("buffer {} acquired by coordinator (for recv)", (void *) bufptr);
         #pragma omp atomic write
         coordinator_priority = 0;
         Buffer &buf = *bufptr;
@@ -366,8 +362,8 @@ public:
                 sendbuf.pop_back();
                 sendreq.pop_back();
                 freelist.release(bufptr);
-                if (params.verbose)
-                    println("buffer {} released by coordinator (sent)", (void *) bufptr);
+                // if (params.verbose)
+                //     println("buffer {} released by coordinator (sent)", (void *) bufptr);
             }
     
             // process completely received buffers
@@ -423,7 +419,7 @@ public:
             }
         }
 
-        println("rank {}, coordinator exiting the loop with {} free buffers", params.mpi_rank, freelist.size());
+        // println("rank {}, coordinator exiting the loop with {} free buffers", params.mpi_rank, freelist.size());
 
         // cancel the pending receives
         for (size_t i = 0; i < recvreq.size(); i++)
@@ -431,13 +427,13 @@ public:
         MPI_Waitall(recvreq.size(), recvreq.data(), MPI_STATUSES_IGNORE);
         for (size_t i = 0; i < recvbuf.size(); i++) {
             freelist.release(recvbuf[i]);
-            if (params.verbose)
-                    println("buffer {} released by coordinator (after waitall)", (void *) &recvbuf[i]);
+            // if (params.verbose)
+            //         println("buffer {} released by coordinator (after waitall)", (void *) &recvbuf[i]);
         }
         recvreq.clear();
         recvbuf.clear();
 
-        println("rank {}, coordinator reaching the MPI barrier {} free buffers", params.mpi_rank, freelist.size());
+        // println("rank {}, coordinator reaching the MPI barrier {} free buffers", params.mpi_rank, freelist.size());
         MPI_Barrier(params.comm);
 
         void *foo;
@@ -481,8 +477,8 @@ public:
             }
         }
         freelist.release(bufptr);
-        if (params.verbose)
-            println("buffer {} released by process_incoming_buffer", (void *) bufptr);
+        // if (params.verbose)
+        //     println("buffer {} released by process_incoming_buffer", (void *) bufptr);
     }
 
     bool poll_incoming()
@@ -510,8 +506,8 @@ public:
                     bufptr->resize(0);
                     // if (start >= 0)
                     //     println("worker got buffer after waiting {}s", wtime() - start);
-                    if (params.verbose)
-                        println("buffer {} acquired by worker", (void *) bufptr);
+                    // if (params.verbose)
+                    //     println("buffer {} acquired by worker", (void *) bufptr);
                     return bufptr;
                 }
             }
