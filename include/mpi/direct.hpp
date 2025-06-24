@@ -485,6 +485,7 @@ public:
         bool action = 0;
         while (Buffer *bufptr = incoming.try_pop()) {
             process_incoming_buffer(bufptr);
+            recv_freelist.release(bufptr);
             action = 1;
         }
         return action;
@@ -527,6 +528,7 @@ public:
         if (rank == params.mpi_rank) {
             // fast-track: the current thread deals with it right now
             process_incoming_buffer(bufptr);
+            send_freelist.release(bufptr);
         } else {
             // slow track: the coordinator deals with it
             bufptr->rank = rank;
