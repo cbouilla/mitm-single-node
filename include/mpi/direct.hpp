@@ -311,8 +311,8 @@ public:
         double delta = wtime() - start;
         human_format(done / delta, hfrate);
         human_format(bytes_sent / delta, hnrate);
-        u64 intra_flight = intra_freelist.capacity() - intra_freelist.size() - params.n_threads * params.mpi_size;
-        u64 inter_flight = inter_freelist.capacity() - inter_freelist.size() - params.mpi_size;
+        int intra_flight = intra_freelist.capacity() - intra_freelist.size() - (params.n_threads - 1 - n_workers_done) * params.mpi_size;
+        int inter_flight = inter_freelist.capacity() - inter_freelist.size() - params.mpi_size;
         println("\rDone: {:.1f}%. {} f/s. net: {}B/s ({} active send). {} / {} in-flight intra/inter buffers", 
             progress, hfrate, hnrate, n_active_sends, intra_flight, inter_flight);
         std::fflush(stdout);
