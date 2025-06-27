@@ -168,7 +168,7 @@ private:
     int phase = 0;
     u64 N, lo, hi;
     double start;
-    u64 bytes_sent;
+    vector<u64> bytes_sent;
 
     /*
      * coordination between hosts
@@ -294,7 +294,8 @@ public:
         n_workers_done = 0;
         n_active_sends = 0;
         start = wtime();
-        bytes_sent = 0;
+        for (int i = 0; i < params.mpi_size; i++)
+            bytes_sent[i] = 0;
 
         std::string name[2] = {"fill", "probe"}; 
         if (params.verbose)
@@ -311,7 +312,10 @@ public:
         char hfrate[8], hnrate[8];
         double delta = wtime() - start;
         human_format(done / delta, hfrate);
-        human_format(bytes_sent / delta, hnrate);
+        u64 total_bsent = 0;
+        for (int i = 0; i < params.mpi_size; i++)
+            total_bsent += bytes_sent[i];
+        human_format(total_bsent / delta, hnrate);
         int intra_flight = intra_freelist.capacity() - intra_freelist.size() - (params.n_threads - 1 - n_workers_done) * params.mpi_size;
         int inter_flight = inter_freelist.capacity() - inter_freelist.size() - params.mpi_size;
         println("\rDone: {:.1f}%. {} f/s. net: {}B/s ({} active send). {} / {} in-flight intra/inter buffers", 
@@ -373,6 +377,7 @@ public:
                 assert(not signaled_termination);
                 assert(sendreq[i] == MPI_REQUEST_NULL);
                 assert(sendbusy[i]);
+                bytes_sent[i] += sendbuf[i].size() * sizeof(u64);
                 sendbuf[i].clear();
                 sendbusy[i] = 0;
                 n_active_sends -= 1;
@@ -416,7 +421,6 @@ public:
                 }
                 MPI_Isend(sendbuf[i].data(), sendbuf[i].size(), MPI_UINT64_T, i, TAG_POINTS, comm, &sendreq[i]);
                 // println("Send to {} started ({} items) [flushing={} / active={}]", i, sendbuf[i].size(), flushing, n_active_sends);
-                bytes_sent += sendbuf[i].size() * sizeof(u64);
             }
     
             // process completely received buffers
@@ -507,9 +511,14 @@ public:
         for (int i = 0; i < params.mpi_size; i++) {
             MPI_Barrier(params.comm);
             if (i == params.mpi_rank) {
-                char hbs[8];
-                human_format(bytes_sent, hbs);
-                println("MPI rank {}, sent {}B", i, hbs);
+                print("MPI rank {} : ", i);
+                for (int j = 0; j < params.mpi_size; j++)
+                    if (j != i) {
+                        char hbs[8];
+                        human_format(bytes_sent[j], hbs);
+                        print(" {}B --> {} / ", hbs, j);
+                    }
+                println("");
             }
         }
 
