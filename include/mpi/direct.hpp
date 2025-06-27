@@ -563,8 +563,13 @@ public:
             u64 hi = lo + params.intra_buffer_capacity;
             bufptr->lo = hi;
             if (hi < bufptr->size()) {
+                Buffer &buf = *bufptr;
+                Buffer local;
+                local.reserve(params.intra_buffer_capacity);
+                for (u64 i = lo; i < hi; i++)
+                    local.push_back(buf[i]);
                 incoming.push(bufptr);
-                process_incoming_buffer(bufptr, lo, hi);
+                process_incoming_buffer(&local, 0, local.size());
             } else {
                 process_incoming_buffer(bufptr, lo, bufptr->size());
                 inter_freelist.release(bufptr);
