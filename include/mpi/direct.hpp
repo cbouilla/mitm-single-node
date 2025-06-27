@@ -502,7 +502,14 @@ public:
         recvreq.clear();
         recvbuf.clear();
         
-        MPI_Barrier(params.comm);
+        for (int i = 0; i < params.mpi_size; i++) {
+            MPI_Barrier(params.comm);
+            if (i == params.mpi_rank) {
+                char hbs[8];
+                human_format(bytes_sent, hbs);
+                println("MPI rank {}, sent {}B", i, hbs);
+            }
+        }
 
         void *foo;
         int bar;
