@@ -211,7 +211,7 @@ private:
     {
         #pragma omp atomic update
         n_workers_done += 1;
-        println("mpi rank {}: {} / {} Worker done!", params.mpi_rank, n_workers_done, n_workers_started);
+        // println("mpi rank {}: {} / {} Worker done!", params.mpi_rank, n_workers_done, n_workers_started);
     }
 
     bool all_workers_done()
@@ -332,6 +332,7 @@ public:
         std::queue<int> empty_recv;
 
         bool signaled_termination = 0;                     // did I tell the other hosts that we are done?
+        bool signaled_workers_done = 0;                    // did I tell the other hosts that we are done?
  
         // prepare the buffers
         sendbuf.resize(params.mpi_size);
@@ -391,6 +392,10 @@ public:
 
             // process the pending queues
             bool flushing = all_workers_done();
+            if (flushing and not signaled_workers_done) {
+                signaled_workers_done = 1;
+                prinln("MPI rank {}, all workers done\n", params.mpi_rank);
+            }
             for (int i = 0; i < params.mpi_size; i++) {
                 // println("to rank {}, sendbusy = {}, |pending| = {}", i, (int) sendbusy[i], pending[i].size());
                 if (sendbusy[i] || pending[i].empty())
