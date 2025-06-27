@@ -394,7 +394,7 @@ public:
             bool flushing = all_workers_done();
             if (flushing and not signaled_workers_done) {
                 signaled_workers_done = 1;
-                prinln("MPI rank {}, all workers done\n", params.mpi_rank);
+                println("MPI rank {}, all workers done\n", params.mpi_rank);
             }
             for (int i = 0; i < params.mpi_size; i++) {
                 // println("to rank {}, sendbusy = {}, |pending| = {}", i, (int) sendbusy[i], pending[i].size());
