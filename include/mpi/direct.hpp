@@ -294,8 +294,9 @@ public:
         n_workers_done = 0;
         n_active_sends = 0;
         start = wtime();
-        for (int i = 0; i < params.mpi_size; i++)
-            bytes_sent[i] = 0;
+
+        bytes_sent.clear();
+        bytes_sent.resize((size_t) params.mpi_size);
 
         std::string name[2] = {"fill", "probe"}; 
         if (params.verbose)
