@@ -159,10 +159,6 @@ private:
     LockfreeStack outgoing;                        // buffers waiting to be sent
     LockfreeStack incoming;                        // received buffers waiting to be processed
     
-    // reception buffers
-    vector<Buffer *> recvbuf;                          // active recv buffers (fixed number)
-    vector<MPI_Request> recvreq;                       // corresponding requests
-
     MpiParameters &params;
     MPI_Comm comm;                                  // shorthand for params.comm
     u64 chunksize;                                  // shorthand for params.chunksize
@@ -272,7 +268,6 @@ public:
         intra_freelist.setup(params.intra_buffer_capacity, n_intra_buffers);
         inter_freelist.setup(params.inter_buffer_capacity, n_inter_buffers);
         dict.set_size((params.dict_capacity_ratio * N) / params.mpi_size);
-        recvbuf.reserve(params.n_recv_buffers);
 
         if (params.verbose) {
             char hbsize[8], hdsize[8];
@@ -316,9 +311,10 @@ public:
         double delta = wtime() - start;
         human_format(done / delta, hfrate);
         human_format(bytes_sent / delta, hnrate);
-        println("\rDone: {:.1f}%. {} f/s. net: {}B/s ({} active send, {} ready recv, {} incoming). {} / {} free buffers", 
-            progress, hfrate, hnrate, n_active_sends, recvbuf.size(),  
-            incoming.size(), intra_freelist.size(), inter_freelist.size());
+        u64 intra_flight = intra_freelist.capacity() - intra_freelist.size() - params.n_threads * params.mpi_size;
+        u64 inter_flight = inter_freelist.capacity() - inter_freelist.size() - params.mpi_size;
+        println("\rDone: {:.1f}%. {} f/s. net: {}B/s ({} active send). {} / {} in-flight intra/inter buffers", 
+            progress, hfrate, hnrate, n_active_sends, intra_flight, inter_flight);
         std::fflush(stdout);
     }
 
@@ -394,7 +390,7 @@ public:
             bool flushing = all_workers_done();
             if (flushing and not signaled_workers_done) {
                 signaled_workers_done = 1;
-                println("MPI rank {}, all workers done\n", params.mpi_rank);
+                println("MPI rank {}, all workers done ({:.1f}s)", params.mpi_rank, start - wtime());
             }
             for (int i = 0; i < params.mpi_size; i++) {
                 // println("to rank {}, sendbusy = {}, |pending| = {}", i, (int) sendbusy[i], pending[i].size());
