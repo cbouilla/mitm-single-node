@@ -30,6 +30,7 @@ public:
     LockfreeStack *stack;
     bool busy = false;
     int rank = -1;
+    u64 lo = 0;
 };
 
 class LockfreeStack {
@@ -439,6 +440,7 @@ public:
                     process_service_message(status.MPI_SOURCE, bufptr);
                     inter_freelist.release(bufptr);
                 } else {
+                    bufptr->lo = 0;
                     incoming.push(bufptr);             // leave it to the workers
                 }
             }
@@ -517,16 +519,15 @@ public:
     }
 
     // this is specific to the direct mitm
-    void process_incoming_buffer(Buffer * bufptr)
+    void process_incoming_buffer(Buffer * bufptr, u64 lo, u64 hi)
     {
         Buffer &buf = *bufptr;
         int maxkeys = 3 * pb.n;
         u64 keys[maxkeys];
         
-        for (auto i = buf.begin(); i != buf.end(); i++) {
-            u64 x = *i;
-            i++;
-            u64 z = *i;
+        for (u64 i = lo; i < hi; i += 2) {
+            u64 x = buf[i];
+            u64 z = buf[i + 1];
             switch (phase) {
             case 0: {
                 dict.insert(z, x);
@@ -558,8 +559,16 @@ public:
         bool action = 0;
         while (Buffer *bufptr = incoming.try_pop()) {
             // potentially: take a bit of the work from the buffer and re-push it
-            process_incoming_buffer(bufptr);
-            inter_freelist.release(bufptr);
+            u64 lo = bufptr->lo; 
+            u64 hi = lo + params.intra_buffer_capacity;
+            bufptr->lo = hi;
+            if (hi < bufptr->size()) {
+                incoming.push(bufptr);
+                process_incoming_buffer(bufptr, lo, hi);
+            } else {
+                process_incoming_buffer(bufptr, lo, bufptr->size());
+                inter_freelist.release(bufptr);
+            }
             action = 1;
         }
         return action;
@@ -601,7 +610,7 @@ public:
     {
         if (rank == params.mpi_rank) {
             // fast-track: the current thread deals with it right now
-            process_incoming_buffer(bufptr);
+            process_incoming_buffer(bufptr, 0, bufptr->size());
             intra_freelist.release(bufptr);
         } else {
             // slow track: the coordinator deals with it
