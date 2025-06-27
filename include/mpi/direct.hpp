@@ -2,6 +2,7 @@
 #define MITM_MPI_DIRECT
 
 #include <vector>
+#include <queue>
 #include <cassert>
 #include <cmath>
 
@@ -11,7 +12,6 @@
 #include "problem.hpp"
 #include "mpi/common.hpp"
 #include "dict.hpp"
-
 
 /*
  * direct MITM with distributed dictionnary. MPI + OpenMP version
@@ -93,12 +93,10 @@ class FreeList {
 private:
     LockfreeStack free;
     vector<Buffer> all;
-    size_t capacity = 0;
 
 public:
-    void setup(size_t cap, size_t n)
+    void setup(size_t capacity, size_t n)
     {
-        capacity = cap;
         all.resize(n);
         for (size_t i = 0; i < n; i++) {
             all[i].reserve(capacity);
@@ -129,11 +127,19 @@ public:
         return free.size();
     }
 
+    size_t capacity()
+    {
+        return all.size();
+    }
+
+    bool full()
+    {
+        return (size() == capacity());
+    }
+
     void clear()
     {
-        if (free.size() != all.size())
-            println("freelist reset with busy buffers?");
-        assert(free.size() == all.size());
+        assert(full());
     }
 };
 
@@ -142,21 +148,30 @@ public:
 template <class Problem>
 class ClawSearchProcess {
 private:
-    LockfreeStack outgoing;      // buffers waiting to be sent
-    LockfreeStack incoming;                 // received buffers waiting to be processed
-    vector<Buffer *> sendbuf, recvbuf;                // coordinator: active send/recv buffers
-    vector<MPI_Request> sendreq, recvreq;           // coordinator: active send/recv requests
-    bool coordinator_priority;                      // if the coordinator lacks reception buffers, the workers can't allocate
+    FreeList intra_freelist;                       // buffers exchanged between threads
+    FreeList inter_freelist;                       // buffers exchanged between nodes
+    int n_active_hosts;                            // #active MPI processes
+    int n_workers_started = 0;                     
+    int n_workers_done = 0;
+    int n_active_sends = 0;                        // #ongoing MPI send operations
+
+    // communication between workers and coordinator
+    LockfreeStack outgoing;                        // buffers waiting to be sent
+    LockfreeStack incoming;                        // received buffers waiting to be processed
+    
+    // reception buffers
+    vector<Buffer *> recvbuf;                          // active recv buffers (fixed number)
+    vector<MPI_Request> recvreq;                       // corresponding requests
 
     MpiParameters &params;
-    size_t capacity;                                // shorthand for params.mpi_buffer_capacity
     MPI_Comm comm;                                  // shorthand for params.comm
     u64 chunksize;                                  // shorthand for params.chunksize
+    size_t bufratio;                                // shorthand for params.inter_buffer_capacity / params.inter_buffer_capacity;
 
+    int phase = 0;
     u64 N, lo, hi;
-    int n_workers_started;
-    int n_workers_done;
     double start;
+    u64 bytes_sent;
 
     /*
      * coordination between hosts
@@ -171,21 +186,10 @@ private:
      * ==========================
      * - A worker thread is DONE when it will no longer enqueue an outgoing buffer.
      * - When all the workers in a host are DONE, and all the outgoing buffers have been completely sent, then this host is DONE.
-     *
      */ 
-
-    int n_active_hosts;
-    bool signaled_termination;                      // did I tell the other hosts that I was done?
-    u64 bytes_sent;
 
     CompactDict dict;
     
-    void deactivate_host()
-    {
-        #pragma omp atomic update
-        n_active_hosts -= 1;
-    }
-
     void process_service_message(int source, Buffer *bufptr)
     {
         Buffer &buf = *bufptr;
@@ -195,28 +199,7 @@ private:
             deactivate_host();
             break;
         }
-        recv_freelist.release(bufptr);
     }
-
-    void initiate_reception()
-    {
-        Buffer *bufptr = recv_freelist.try_acquire();
-        if (bufptr == nullptr)
-            return;
-        Buffer &buf = *bufptr;
-        buf.resize(capacity);
-        recvbuf.push_back(bufptr);
-        MPI_Request &req = recvreq.emplace_back();
-        MPI_Irecv(buf.data(), capacity, MPI_UINT64_T, MPI_ANY_SOURCE, MPI_ANY_TAG, comm, &req);
-    }
-
-
-public:
-    FreeList send_freelist, recv_freelist;
-    const Problem &pb;
-    vector<pair<u64, u64>> result;
-    u64 ncoll = 0;
-    int phase = 0;
 
     void worker_start()
     {
@@ -228,6 +211,37 @@ public:
     {
         #pragma omp atomic update
         n_workers_done += 1;
+        println("mpi rank {}: {} / {} Worker done!", params.mpi_rank, n_workers_done, n_workers_started);
+    }
+
+    bool all_workers_done()
+    {
+        int nws, nwd;
+        #pragma omp atomic read
+        nws = n_workers_started;
+        #pragma omp atomic read
+        nwd = n_workers_done;
+        return (nws > 0) && (nwd == nws);
+    }
+
+    bool coordinator_done()
+    {
+        int tmp;
+        #pragma omp atomic read
+        tmp = n_active_sends;
+        return outgoing.empty() && intra_freelist.full() && (tmp == 0);
+    }
+
+    // all the send operations completed and we will no longer initiate any new send operation
+    bool this_host_done()
+    {
+        return all_workers_done() && coordinator_done();
+    }
+
+    void deactivate_host()
+    {
+        #pragma omp atomic update
+        n_active_hosts -= 1;
     }
 
     bool finished()
@@ -238,25 +252,43 @@ public:
         return (tmp == 0) or (tmp == 1 and params.mpi_size == 1);
     }
 
-    bool this_host_done()
+public:
+    const Problem &pb;
+    vector<pair<u64, u64>> result;
+    u64 ncoll = 0;
+
+
+    ClawSearchProcess(const Problem &pb, MpiParameters &_params) : 
+        params(_params), comm(params.comm), chunksize(params.chunksize), pb(pb)
     {
-        int nws, nwd;
-        #pragma omp atomic read
-        nws = n_workers_started;
-        #pragma omp atomic read
-        nwd = n_workers_done;
-        bool done = (nws > 0) && (nws == nwd) && outgoing.empty() && (sendbuf.empty());
-        return done;
+        assert(params.n_threads != 0);
+        bufratio = params.inter_buffer_capacity / params.intra_buffer_capacity;
+        u64 intra_inflight = params.mpi_size * params.n_threads + params.n_recv_buffers * bufratio;
+        u64 n_intra_buffers = params.send_buffers_ratio * intra_inflight + params.n_slack_buffers;
+        u64 n_inter_buffers = params.n_recv_buffers + params.n_slack_buffers;
+        N = 1ull << pb.n;
+        ncoll = 0;
+
+        intra_freelist.setup(params.intra_buffer_capacity, n_intra_buffers);
+        inter_freelist.setup(params.inter_buffer_capacity, n_inter_buffers);
+        dict.set_size((params.dict_capacity_ratio * N) / params.mpi_size);
+        recvbuf.reserve(params.n_recv_buffers);
+
+        if (params.verbose) {
+            char hbsize[8], hdsize[8];
+            u64 intrasize = n_intra_buffers * params.intra_buffer_capacity * sizeof(u64);
+            u64 intersize = n_inter_buffers * params.inter_buffer_capacity * sizeof(u64);
+            human_format(intrasize + intersize, hbsize);
+            human_format(dict.nbytes(), hdsize);
+            println("RAM per node == {}B buffer () +{}B dict ({} slots)", hbsize, hdsize, dict.n_slots);
+        }
     }
+
 
     void start_phase(int i)
     {
-        if (not recvbuf.empty())
-            printf("warning: starting new phase with active reception buffers");
-        if (not sendbuf.empty())
-            printf("warning: starting new phase with active send buffers");
-        recv_freelist.clear();
-        send_freelist.clear();
+        intra_freelist.clear();
+        inter_freelist.clear();
 
         phase = i;
         lo = params.mpi_rank * N / params.mpi_size;
@@ -264,36 +296,13 @@ public:
         n_active_hosts = params.mpi_size;
         n_workers_started = 0;
         n_workers_done = 0;
-        signaled_termination = 0;
+        n_active_sends = 0;
         start = wtime();
         bytes_sent = 0;
 
         std::string name[2] = {"fill", "probe"}; 
         if (params.verbose)
             println("starting phase {} ({})", i, name[i]);
-    }
-
-    ClawSearchProcess(const Problem &pb, MpiParameters &_params) : 
-        params(_params), capacity(params.buffer_capacity), comm(params.comm), chunksize(params.chunksize), pb(pb)
-    {
-        assert(params.n_threads != 0);
-        u64 n_send_buffers = params.send_buffers_ratio * params.mpi_size * params.n_threads + params.n_slack_buffers;
-        u64 n_recv_buffers = params.n_recv_buffers + params.n_slack_buffers;
-        N = 1ull << pb.n;
-        ncoll = 0;
-
-        send_freelist.setup(capacity, n_send_buffers);
-        recv_freelist.setup(capacity, n_recv_buffers);
-        dict.set_size((params.dict_capacity_ratio * N) / params.mpi_size);
-        recvbuf.reserve(params.n_recv_buffers);
-
-        if (params.verbose) {
-            u64 n_buffers = n_send_buffers + n_recv_buffers;
-            char hbsize[8], hdsize[8];
-            human_format(n_buffers * capacity * sizeof(u64), hbsize);
-            human_format(dict.nbytes(), hdsize);
-            println("RAM per node == {}B buffer ({} x {}) +{}B dict ({} slots)", hbsize, n_buffers, capacity,  hdsize, dict.n_slots);
-        }
     }
 
     void verbosity()
@@ -307,97 +316,152 @@ public:
         double delta = wtime() - start;
         human_format(done / delta, hfrate);
         human_format(bytes_sent / delta, hnrate);
-        println("\rDone: {:.1f}%. {} f/s. net: {}B/s ({} active send, {} ready recv, {} outgoing, {} incoming). {} / {} free buffers", 
-            progress, hfrate, hnrate, sendbuf.size(), recvbuf.size(), outgoing.size(), 
-            incoming.size(), send_freelist.size(), recv_freelist.size());
+        println("\rDone: {:.1f}%. {} f/s. net: {}B/s ({} active send, {} ready recv, {} incoming). {} / {} free buffers", 
+            progress, hfrate, hnrate, n_active_sends, recvbuf.size(),  
+            incoming.size(), intra_freelist.size(), inter_freelist.size());
         std::fflush(stdout);
     }
 
     void coordinator()
     {
-        // prepare the reception buffers
-        for (size_t i = 0; i < recvbuf.capacity(); i++)
-            initiate_reception();
-            
+        vector<Buffer> sendbuf;                            // send buffers (one per node)
+        vector<Buffer *> recvbuf;                          // recv buffers (one per node, via the freelist)
+        vector<MPI_Request> sendreq, recvreq;              // requests for the active send buffers
+        vector<vector<Buffer *>> pending;                  // intra-buffers waiting for concatenation
+        vector<bool> sendbusy;
+        std::queue<int> empty_recv;
+
+        bool signaled_termination = 0;                     // did I tell the other hosts that we are done?
+ 
+        // prepare the buffers
+        sendbuf.resize(params.mpi_size);
+        recvbuf.resize(params.mpi_size);
+        sendreq.resize(params.mpi_size);
+        recvreq.resize(params.mpi_size);
+        pending.resize(params.mpi_size);
+        sendbusy.resize(params.mpi_size);
+        for (int i = 0; i < params.mpi_size; i++) {
+            sendbuf[i].reserve(params.inter_buffer_capacity);
+            recvreq[i] = MPI_REQUEST_NULL;
+            sendreq[i] = MPI_REQUEST_NULL;
+            sendbusy[i] = 0;
+            if (i != params.mpi_rank)
+                empty_recv.push(i);                // this will make the main loop allocate and initiate all the recv on the first iteration
+        }
+
+        // prepare a buffer for the MPI_Bsends;
         u64 mpi_buffer_size = params.mpi_size * (8 + MPI_BSEND_OVERHEAD);
         u8 mpi_buffer[mpi_buffer_size];
         MPI_Buffer_attach(mpi_buffer, mpi_buffer_size);
 
-        #pragma omp barrier            // needed otherwise the workers may steal all the buffers...
-
         int backoff = params.min_backoff;
         double last_verbose = start;
 
-        while (n_active_hosts > 0) {                   // loop until the action has died down
+        while (not finished()) {                   // loop until the action has died down
             bool action = 0;
 
-            // start sending pending outgoing buffers
-            while (sendbuf.size() < params.max_concurrent_send) {
-                Buffer *bufptr = outgoing.try_pop();
-                if (bufptr == nullptr)
-                    break;
-                action = 1;
-                sendbuf.push_back(bufptr);
-                Buffer &buf = *bufptr;
-                // println("coordinator, retrieving outgoing buffer of size {} for rank {}. Currently sending={}, outgoing= {}", buf.size(), rank, sendbuf.size(), outgoing.size());
-                assert(not signaled_termination);
-                MPI_Request &req = sendreq.emplace_back();
-                MPI_Isend(buf.data(), buf.size(), MPI_UINT64_T, buf.rank, TAG_POINTS, comm, &req);
-                bytes_sent += buf.size() * sizeof(u64);
-            }
-    
+            assert(sendreq[params.mpi_rank] == MPI_REQUEST_NULL);
+            assert(recvreq[params.mpi_rank] == MPI_REQUEST_NULL);
+            assert(n_active_sends >= 0);
+
             // recycle completely sent buffers
-            while (sendbuf.size() != 0) {
-                int flag, index;
-                MPI_Testany(sendreq.size(), sendreq.data(), &index, &flag, MPI_STATUS_IGNORE);
-                if (flag == 0)
+            for (;;) {
+                int flag, i;
+                MPI_Testany(sendreq.size(), sendreq.data(), &i, &flag, MPI_STATUS_IGNORE);
+                if (i == MPI_UNDEFINED)
                     break;
-                // spdlog::debug("coordinator, sent complete. Currently sending={}, outgoing= {}", sendbuf.size(), outgoing.size());
+                assert(flag != 0);
                 action = 1;
-                Buffer *bufptr = sendbuf[index];
-                assert(sendreq[index] == MPI_REQUEST_NULL);
-                std::swap(sendbuf[index], sendbuf.back());
-                std::swap(sendreq[index], sendreq.back());
-                sendbuf.pop_back();
-                sendreq.pop_back();
-                send_freelist.release(bufptr);
-                // if (params.verbose)
-                //     println("buffer {} released by coordinator (sent)", (void *) bufptr);
+                assert(not signaled_termination);
+                assert(sendreq[i] == MPI_REQUEST_NULL);
+                assert(sendbusy[i]);
+                sendbuf[i].clear();
+                sendbusy[i] = 0;
+                n_active_sends -= 1;
+                // println("Send to {} completed [active={}]", i, n_active_sends);
+            }
+
+            // bring intra-buffer from the workers into the pending queues
+            while (Buffer *bufptr = outgoing.try_pop()) {
+                assert(bufptr->rank >= 0);
+                assert(bufptr->rank != params.mpi_rank);
+                pending[bufptr->rank].push_back(bufptr);
+                action = 1;
+            }
+
+            // process the pending queues
+            bool flushing = all_workers_done();
+            for (int i = 0; i < params.mpi_size; i++) {
+                // println("to rank {}, sendbusy = {}, |pending| = {}", i, (int) sendbusy[i], pending[i].size());
+                if (sendbusy[i] || pending[i].empty())
+                    continue;
+                if ((not flushing) and (pending[i].size() < bufratio))     // send only when large enough
+                    continue;
+                assert(not signaled_termination);
+                action = 1;
+                n_active_sends += 1;
+                assert(not sendbusy[i]);
+                sendbusy[i] = 1;
+                for (size_t j = 0; j < bufratio; j++) {
+                    if (pending[i].empty())
+                        break;
+                    Buffer *bufptr = pending[i].back();
+                    sendbuf[i].insert(sendbuf[i].end(), bufptr->begin(), bufptr->end());
+                    // for (auto x : *bufptr)
+                    //     sendbuf[i].push_back(x);
+                    pending[i].pop_back();
+                    intra_freelist.release(bufptr);
+                }
+                MPI_Isend(sendbuf[i].data(), sendbuf[i].size(), MPI_UINT64_T, i, TAG_POINTS, comm, &sendreq[i]);
+                // println("Send to {} started ({} items) [flushing={} / active={}]", i, sendbuf[i].size(), flushing, n_active_sends);
+                bytes_sent += sendbuf[i].size() * sizeof(u64);
             }
     
             // process completely received buffers
-            while (recvbuf.size() != 0) {
-                int flag, index, count;
+            for (;;) {
+                int flag, i, count;
                 MPI_Status status;
-                MPI_Testany(recvreq.size(), recvreq.data(), &index, &flag, &status);
-                if (flag == 0)
+                MPI_Testany(recvreq.size(), recvreq.data(), &i, &flag, &status);
+                if (i == MPI_UNDEFINED)
                     break;
+                assert(flag != 0);
                 action = 1;
                 MPI_Get_count(&status, MPI_UINT64_T, &count);
-                Buffer *bufptr = recvbuf[index];
-                Buffer &buf = *bufptr;
-                buf.resize(count); 
-                assert(recvreq[index] == MPI_REQUEST_NULL);
-                std::swap(recvbuf[index], recvbuf.back());
-                std::swap(recvreq[index], recvreq.back());
-                recvbuf.pop_back();
-                recvreq.pop_back();
-                // spdlog::debug("coordinator, received a buffer.");
+                // println("completed recv from rank {} ({} items)", i, count);
+                Buffer *bufptr = recvbuf[i];
+                assert(bufptr != nullptr);
+                assert(recvreq[i] == MPI_REQUEST_NULL);
+                recvbuf[i] = nullptr;
+                empty_recv.push(i);
+                bufptr->resize(count); 
                 if (status.MPI_TAG == TAG_MANAGEMENT) {
                     process_service_message(status.MPI_SOURCE, bufptr);
+                    inter_freelist.release(bufptr);
                 } else {
-                    incoming.push(bufptr);
-                    // println("coordinator, pushed buffer to the incoming queue (size={}).", incoming.size());
+                    incoming.push(bufptr);             // leave it to the workers
                 }
             }
     
             // potentially allocate new reception buffers
-            for (size_t i = recvbuf.size(); i < recvbuf.capacity(); i++)
-                initiate_reception();
+            while (not empty_recv.empty()) {
+                int i = empty_recv.front();
+                assert(recvbuf[i] == nullptr);
+                assert(recvreq[i] == MPI_REQUEST_NULL);
+                Buffer *bufptr = inter_freelist.try_acquire();
+                if (bufptr == nullptr)
+                    break;
+                action = 1;
+                empty_recv.pop();
+                bufptr->resize(params.inter_buffer_capacity);
+                recvbuf[i] = bufptr;
+                // println("starting recv from rank {}", i);
+                MPI_Irecv(bufptr->data(), bufptr->size(), MPI_UINT64_T, i, MPI_ANY_TAG, comm, &recvreq[i]);
+            }
 
             // detect local sender termination and notify other MPI processes
             if (this_host_done() and not signaled_termination) {
                 u64 msg = DONE;
+                // println("Signaling termination");
                 for (int i = 0; i < params.mpi_size; i++)
                     if (i != params.mpi_rank)
                         MPI_Bsend(&msg, 1, MPI_UINT64_T, i, TAG_MANAGEMENT, params.comm);
@@ -418,21 +482,25 @@ public:
             }
         }
 
-        // println("rank {}, coordinator exiting the loop with {} free buffers", params.mpi_rank, freelist.size());
+        assert(n_active_sends == 0);
+        assert(outgoing.empty());
+        for (int i = 0; i < params.mpi_size; i++) {
+            assert(not sendbusy[i]);
+            assert(pending[i].empty());
+            assert(sendreq[i] == MPI_REQUEST_NULL);
+        }
 
         // cancel the pending receives
         for (size_t i = 0; i < recvreq.size(); i++)
-            MPI_Cancel(&recvreq[i]);
+            if (recvreq[i] != MPI_REQUEST_NULL)
+                MPI_Cancel(&recvreq[i]);
         MPI_Waitall(recvreq.size(), recvreq.data(), MPI_STATUSES_IGNORE);
-        for (size_t i = 0; i < recvbuf.size(); i++) {
-            recv_freelist.release(recvbuf[i]);
-            // if (params.verbose)
-            //         println("buffer {} released by coordinator (after waitall)", (void *) &recvbuf[i]);
-        }
+        for (size_t i = 0; i < recvbuf.size(); i++)
+            if (recvbuf[i] != nullptr)
+                inter_freelist.release(recvbuf[i]);
         recvreq.clear();
         recvbuf.clear();
-
-        // println("rank {}, coordinator reaching the MPI barrier {} free buffers", params.mpi_rank, freelist.size());
+        
         MPI_Barrier(params.comm);
 
         void *foo;
@@ -475,17 +543,15 @@ public:
             }
             }
         }
-        // recv_freelist.release(bufptr);
-        // if (params.verbose)
-        //     println("buffer {} released by process_incoming_buffer", (void *) bufptr);
     }
 
     bool poll_incoming()
     {
         bool action = 0;
         while (Buffer *bufptr = incoming.try_pop()) {
+            // potentially: take a bit of the work from the buffer and re-push it
             process_incoming_buffer(bufptr);
-            recv_freelist.release(bufptr);
+            inter_freelist.release(bufptr);
             action = 1;
         }
         return action;
@@ -496,9 +562,9 @@ public:
         double start = -1;
         for (;;) {
             bool action = poll_incoming();
-            Buffer *bufptr = send_freelist.try_acquire();
+            Buffer *bufptr = intra_freelist.try_acquire();
             if (bufptr != nullptr) {
-                bufptr->resize(0);
+                bufptr->clear();
                 // if (start >= 0)
                 //     println("worker got buffer after waiting {}s", wtime() - start);
                 // if (params.verbose)
@@ -528,7 +594,7 @@ public:
         if (rank == params.mpi_rank) {
             // fast-track: the current thread deals with it right now
             process_incoming_buffer(bufptr);
-            send_freelist.release(bufptr);
+            intra_freelist.release(bufptr);
         } else {
             // slow track: the coordinator deals with it
             bufptr->rank = rank;
@@ -542,19 +608,16 @@ public:
         vector<Buffer *> buffers;
         for (int i = 0; i < params.mpi_size; i++) {
             Buffer *bufptr = get_worker_buffer();
-            Buffer &buf = *bufptr;
-            buf.resize(0);
             buffers.push_back(bufptr);
         }
 
-        #pragma omp barrier            // needed otherwise the workers may steal all the buffers...
-
         worker_start();
+
         for (;;) {
             poll_incoming();
             auto [chunk_lo, chunk_hi] = grab_chunk();
             if (chunk_lo >= chunk_hi)
-                break;
+                break;                                // no more work
             for (u64 x = chunk_lo; x < chunk_hi; x++) {
                     u64 z = (phase == 0) ? pb.f(x) : pb.g(x);
                     u64 hash = (z * 0xdeadbeef) % 0x7fffffff;
@@ -570,7 +633,9 @@ public:
         // flush output buffers
         for (size_t i = 0; i < buffers.size(); i++)
             send_buffer(buffers[i], i);
+        
         worker_done();
+        
         // process incoming buffers while the whole computation is not finished
         while (not finished())
             poll_incoming();
@@ -618,8 +683,6 @@ vector<pair<u64, u64>> mpi_direct_claw_search(const Problem &pb, MpiParameters &
             else
                 proc.worker();
         }
-        proc.send_freelist.clear();
-        proc.recv_freelist.clear();
 
         #if 0
         if (params.verbose) {
