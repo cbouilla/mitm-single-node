@@ -33,10 +33,22 @@ public:
     u64 lo = 0;
 };
 
+template <class T>
+bool CAS(std::atomic<T> &target, const T expected, const T desired)
+{
+    return target.compare_exchange_strong(expected, desired);
+    // bool ok = false;
+    // #pragma omp atomic compare capture
+    // { 
+    //     ok = target == expected; if (ok) { target = desired; }
+    // }
+    // return ok;
+}
+
 class LockfreeStack {
 private:
-    Buffer *head = nullptr;
-    size_t n = 0;
+    std::atomic<Buffer *> head = nullptr;
+    std::atomic<size_t> n = 0;
 public:
     void push(Buffer *bufptr)
     {
@@ -44,10 +56,8 @@ public:
         assert(bufptr->stack == nullptr);
         bufptr->stack = this;
         for (;;) {
-            #pragma omp atomic read
-            bufptr->stack_next = head;
+            bufptr->stack_next = head.load();
             if (CAS(head, bufptr->stack_next, bufptr)) {
-                #pragma omp atomic update
                 n += 1;
                 return;
             }
@@ -58,8 +68,7 @@ public:
     {
         Buffer *bufptr;
         for (;;) {
-            #pragma omp atomic read
-            bufptr = head;
+            bufptr = head.load();
             if (bufptr == nullptr)
                 return nullptr;
             if (CAS(head, bufptr, bufptr->stack_next))
@@ -67,25 +76,18 @@ public:
         }
         assert(bufptr->stack == this);
         bufptr->stack = nullptr;
-        #pragma omp atomic update
         n -= 1;
         return bufptr;
     }
 
     bool empty()
     {
-        Buffer *maybe;
-        #pragma omp atomic read
-        maybe = head;
-        return (maybe == nullptr);
+        return (head.load() == nullptr);
     }
 
     size_t size()
     {
-        size_t tmp;
-        #pragma omp atomic read
-        tmp = n;
-        return tmp;
+        return n.load();
     }
 };
 
@@ -616,7 +618,7 @@ public:
     pair<u64, u64> grab_chunk()
     {
         u64 local;
-        #pragma omp atomic update capture
+        #pragma omp atomic capture
         { local = lo; lo += chunksize; }
         return pair(local, std::min(local + chunksize, hi));
     }

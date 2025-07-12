@@ -7,6 +7,7 @@
 #include <string>
 #include <vector>
 #include <optional>
+#include <atomic>
 #include <time.h>
 
 #include <fmt/base.h>
@@ -189,18 +190,6 @@ u64 human_parse(const std::string &_h)
         return 1000ll * (u64) std::stoi(h);
     }
     return std::stoull(h);
-}
-
-
-template <class T>
-bool CAS(T &target, const T expected, const T desired)
-{
-    bool ok = false;
-    #pragma omp atomic compare capture
-    { 
-        ok = target == expected; if (ok) { target = desired; }
-    }
-    return ok;
 }
 
 }

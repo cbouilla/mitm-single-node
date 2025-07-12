@@ -5,7 +5,7 @@
 #include <mpi.h>
 
 #include "double_speck64_problem.hpp"
-#include "mpi/direct.hpp"
+#include "mpi/direct_alltoall.hpp"
 #include "mpi/benchmark.hpp"
 
 int n = 20;         // default problem size (easy)

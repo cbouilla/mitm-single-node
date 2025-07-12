@@ -11,6 +11,18 @@
 
 namespace mitm {
 
+
+template <class T>
+bool CAS(T *target, const T expected, const T desired)
+{
+    bool ok = false;
+    #pragma omp atomic compare capture
+    { 
+        ok = *target == expected; if (ok) { *target = desired; }
+    }
+    return ok;
+}
+
 /*
  * this is a "classic" hash table for 64-bit key-value pairs, with linear probing.  
  * No false negatives, some false positives.  12 bytes per entry. 
@@ -48,10 +60,10 @@ public:
         	    if (h == n_slots)
         	        h = 0;
         	}
-        	#pragma GCC diagnostic push
-			#pragma GCC diagnostic ignored "-Waddress-of-packed-member"
-        	bool ok = CAS((u32 &) A[h].k, 0xffffffff, keymod);
-			#pragma GCC diagnostic pop
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Waddress-of-packed-member"
+        	bool ok = CAS(&A[h].k, 0xffffffff, keymod);
+#pragma GCC diagnostic pop
         	if (not ok)
         		continue;
         	A[h].v = value;
@@ -67,9 +79,12 @@ public:
         u64 h = murmur64(key)	 % n_slots;
         int nkeys = 0;
         for (;;) {
-            if (A[h].k == 0xffffffff)
+        	u32 probe;
+        	#pragma omp atomic read
+        	probe = A[h].k;
+            if (probe == 0xffffffff)
                 return nkeys;
-            if (A[h].k == key) {
+            if (probe == key) {
                 if (nkeys == maxkeys)
                 	return maxkeys + 1;      // overflow
                 keys[nkeys] = A[h].v;
