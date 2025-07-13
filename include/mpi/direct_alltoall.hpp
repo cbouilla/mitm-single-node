@@ -249,10 +249,8 @@ private:
             total_bsent += bytes_sent[i];
         human_format(total_bsent / delta, hnrate);
         int in_flight = freelist.capacity() - freelist.size() - (params.n_threads - 1 - n_workers_done) * params.mpi_size;
-        println("\rDone: {:.1f}%. {} f/s. net: {}B/s. {} in-flight intra buffers. Sendsate={}, recvstate=({}; {}) [{}:{}:{}] [{}:{}:{}]",
-            progress, hfrate, hnrate, in_flight, sendstate, recvbuf[0].state.load(), recvbuf[1].state.load(),
-            recvbuf[0].lo.load(), recvbuf[0].hi.load(), recvbuf[0].done.load(), 
-            recvbuf[1].lo.load(), recvbuf[1].hi.load(), recvbuf[1].done.load());
+        println("\rDone: {:.1f}%. {} f/s. net: {}B/s. {} in-flight intra buffers. Sendsate={}, recvstate=({}; {})",
+            progress, hfrate, hnrate, in_flight, sendstate, recvbuf[0].state.load(), recvbuf[1].state.load());
         std::fflush(stdout);
     }
 
