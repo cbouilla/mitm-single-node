@@ -519,10 +519,13 @@ public:
             if (i < 0)
                 return;
             process_incoming_buffer(recvbuf[i].payload.data(), lo, hi);
-            recvbuf[i].done += hi - lo;
-            if (recvbuf[i].done.load() == recvbuf[i].hi) {
-                assert(recvbuf[i].state == GRACE);
-                recvbuf[i].state = PASSIVE;
+            #pragma omp critical(recvbuf)
+            {
+                recvbuf[i].done += hi - lo;
+                if (recvbuf[i].done.load() == recvbuf[i].hi) {      // the atomic<> on done is not necessary
+                    assert(recvbuf[i].state == GRACE);
+                    recvbuf[i].state = PASSIVE;
+                }
             }
         }
     }
@@ -705,3 +708,12 @@ vector<pair<u64, u64>> mpi_direct_claw_search(const Problem &pb, MpiParameters &
 }
 
 #endif
+
+
+// 4xgrvingt
+
+// OMP_NUM_THREADS=32 mpirun --map-by ppr:1:node --mca pml ^ucx examples/mpi_double_speck64_direct --n 28
+// ---> 332.6s
+
+// mpirun --map-by ppr:1:socket --mca pml ^ucx examples/mpi_double_speck64_direct --n 28   (2x16 threads)
+// ---> 490s
