@@ -424,7 +424,7 @@ public:
                         if (ndone > 0)
                             println("ndone = {}", ndone);
 
-                        if (ndone == parals.mpi_size and recvbuf[0].state.load() == PASSIVE and recvbuf[1].state.load() == PASSIVE) {
+                        if (ndone == params.mpi_size and recvbuf[0].state.load() == PASSIVE and recvbuf[1].state.load() == PASSIVE) {
                             coordinator_done = 1;
                             continue;                              // exit the coordinator main loop
                         }
