@@ -412,17 +412,19 @@ public:
                         assert(passive_recvbuf >= 0);
                         assert(recvbuf[passive_recvbuf].state.load() == PASSIVE);
                         // detect potential termination
-                        bool finished_sending = 1;
+                        int ndone  = 0;
                         for (int i = 0; i < params.mpi_size; i++) {
                             if (sendcounts[i] < 0)
                                 sendcounts[i] = 0;
-                            if (recvcounts[i] < 0)
+                            if (recvcounts[i] < 0) {
                                 recvcounts[i] = 0;
-                            else
-                                finished_sending = 0;
+                                ndone += 1;
+                            }
                         }
+                        if (ndone > 0)
+                            println("ndone = {}", ndone);
 
-                        if (finished_sending and recvbuf[0].state.load() == PASSIVE and recvbuf[1].state.load() == PASSIVE) {
+                        if (ndone == parals.mpi_size and recvbuf[0].state.load() == PASSIVE and recvbuf[1].state.load() == PASSIVE) {
                             coordinator_done = 1;
                             continue;                              // exit the coordinator main loop
                         }
@@ -717,3 +719,12 @@ vector<pair<u64, u64>> mpi_direct_claw_search(const Problem &pb, MpiParameters &
 
 // mpirun --map-by ppr:1:socket --mca pml ^ucx examples/mpi_double_speck64_direct --n 28   (2x16 threads)
 // ---> 490s
+
+// OMP_NUM_THREADS=32 mpirun --map-by ppr:1:node --hostfile $OAR_NODEFILE --mca pml ^ucx examples/mpi_double_speck64_direct --n 28
+// 163.5
+
+// OMP_NUM_THREADS=16 mpirun --map-by ppr:1:socket --hostfile $OAR_NODEFILE --mca pml ^ucx examples/mpi_double_speck64_direct --n 28
+// 50.0s
+
+// pb detection terminaison (stuck in)
+// Done: 100.2%. 133.7K f/s. net: 2.0MB/s. 0 in-flight intra buffers. Sendsate=1, recvstate=(0; 0)
