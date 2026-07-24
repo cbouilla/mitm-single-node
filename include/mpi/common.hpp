@@ -26,7 +26,9 @@ public:
 	int rank, size;                         // for the global communicator
 	int local_rank, local_size;             /* rank among the local group of the inter-communicator */
 	int n_send;
-	int n_nodes;
+	// No need to redeclare n_nodes here: it would hide Parameters::n_nodes,
+	// leaving the value used by finalize() at 1 instead of the MPI node count.
+	// int n_nodes;
 
 	void setup(MPI_Comm comm)
 	{
