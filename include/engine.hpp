@@ -11,7 +11,6 @@
 
 #include "counters.hpp"
 #include "parameters.hpp"
-#include "trail.hpp"
 #include "spsc.hpp"
 #include "comm.hpp"
 #include "walker.hpp"
