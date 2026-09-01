@@ -3,6 +3,7 @@
 
 #include <mpi.h>
 #include <omp.h>
+#include <pthread.h>
 #include <err.h>
 #include <memory>
 #include <vector>
@@ -19,6 +20,24 @@
 
 namespace mitm {
 
+/******************************* CPU affinity ********************************/
+
+/* pin the calling thread to `cpu`.  Returns cpu, or -1 on failure (or if cpu < 0). */
+static inline int pin_to_cpu(int cpu)
+{
+	if (cpu < 0)
+		return -1;
+	cpu_set_t set;
+	CPU_ZERO(&set);
+	CPU_SET(cpu, &set);
+	if (pthread_setaffinity_np(pthread_self(), sizeof(set), &set) != 0)
+		return -1;
+	return cpu;
+}
+
+
+/********************************** the node *********************************/
+
 /*
  * One MPI rank per node, MPI_THREAD_FUNNELED.  Thread 0 is the only one that ever
  * touches MPI: it drains the walker threads' queues, routes points to output buffers
@@ -28,9 +47,9 @@ namespace mitm {
 template <class ProblemWrapper>
 class PcsNode {
 public:
-	Parameters &params;
+	const Parameters &params;
 	PRNG &prng;
-	ProblemWrapper &wrapper;                               /* the master copy; walkers copy it */
+	const ProblemWrapper &wrapper;                         /* stateless: every walker shares it */
 
 	std::vector<std::unique_ptr<ThreadContext>> ctx;       /* n_threads, indexed by tid */
 	std::vector<std::unique_ptr<SPSCQueue>> walker_q;    /* one per walker thread */
@@ -46,13 +65,12 @@ public:
 
 	u64 n_drop_inserterq = 0;          /* comm thread could not hand a DP to a inserter */
 	bool golden_sent = false;
-	u64 w_shard;
 
 	/* control-loop state, shared between comm_round() and drain() */
 	bool awaiting_assignment = false;
 	bool got_new_version = false;
 
-	PcsNode(ProblemWrapper &wrapper, Parameters &params, PRNG &prng)
+	PcsNode(const ProblemWrapper &wrapper, const Parameters &params, PRNG &prng)
 		: params(params), prng(prng), wrapper(wrapper),
 		  coll_q(params.coll_queue_capacity),
 		  outbuf(params.world_comm, params.n_nodes, params.buffer_capacity),
@@ -60,14 +78,14 @@ public:
 		  ctrl(params),
 		  controller(params)
 	{
-		int jbits = std::log2(10 * params.w) + 8;
-		w_shard = params.w / params.n_inserters;
+		if (params.verbose)
+			controller.banner(prng.seed);      /* before anything big is allocated */
 
 		for (int t = 0; t < params.n_threads; t++)
 			ctx.push_back(std::make_unique<ThreadContext>());
 
 		for (int r = 0; r < params.inserters_per_node; r++) {
-			dict.push_back(std::make_unique<PcsDict>(jbits, w_shard));
+			dict.push_back(std::make_unique<PcsDict>(params.jbits, params.w_shard));
 			inserter_q.push_back(std::make_unique<SPSCQueue>(params.inserter_queue_capacity));
 			ctx[1 + r]->role = INSERTER;
 		}
@@ -358,15 +376,12 @@ public:
 	void epilogue()
 	{
 		Counters total;
-		u64 n_eval = 0;
-		for (int t = 0; t < params.n_threads; t++) {
+		for (int t = 0; t < params.n_threads; t++)
 			total.merge(ctx[t]->ctr);
-			n_eval += ctx[t]->n_eval.load(std::memory_order_relaxed);
-		}
 
 		/* everything in here is scoped to the round: reset() clears it below */
 		u64 st[ST_NWORDS];
-		st[ST_NEVAL] = n_eval;
+		st[ST_NEVAL] = total.n_eval;
 		st[ST_NPOINTS_TRAILS] = total.n_points_trails;
 		st[ST_NCOLL] = total.n_collisions;
 		st[ST_LEN_MIN] = total.colliding_len_min;
@@ -394,7 +409,6 @@ public:
 		/* reset every thread's per-round state (single-threaded here, by design) */
 		for (int t = 0; t < params.n_threads; t++) {
 			ctx[t]->ctr.reset();
-			ctx[t]->n_eval.store(0, std::memory_order_relaxed);
 			ctx[t]->n_dp.store(0, std::memory_order_relaxed);
 			ctx[t]->n_probe.store(0, std::memory_order_relaxed);
 			ctx[t]->n_drop_walkerq.store(0, std::memory_order_relaxed);
@@ -409,14 +423,11 @@ public:
 
 	optional<tuple<u64,u64,u64>> run(u64 out_mask)
 	{
-		if (params.rank == 0)
-			controller.banner(prng, w_shard);
-
 		#pragma omp parallel num_threads(params.n_threads)
 		{
 			int tid = omp_get_thread_num();
 			ThreadContext &me = *ctx[tid];
-			me.cpu = pin_to_cpu(params.cpu_of_thread(tid));
+			me.cpu = pin_to_cpu(params.thread_cpu[tid]);
 
 			#pragma omp barrier
 			#pragma omp master
@@ -501,16 +512,22 @@ public:
 /*
  * The one entry point of the engine.  Returns (i, x0, x1) -- the mixing function
  * index and the two colliding points, in wrapper coordinates -- or nothing if the
- * search gave up after params.max_versions rounds.
+ * search gave up after opts.max_versions rounds.
+ *
+ * This is where the Options, the RAM budget and the wrapped problem's dimensions
+ * meet, so this is where the Parameters are derived (once, and for everything below).
  */
 template<class ProblemWrapper>
-optional<tuple<u64,u64,u64>> run_engine(ProblemWrapper& wrapper, Parameters &params, PRNG &prng)
+optional<tuple<u64,u64,u64>> run_engine(const ProblemWrapper &wrapper, u64 nbytes_memory,
+                                        const Options &opts, PRNG &prng)
 {
 	/* MPI must be initialised with at least FUNNELED support */
 	int provided;
 	MPI_Query_thread(&provided);
 	if (provided < MPI_THREAD_FUNNELED)
 		errx(1, "MPI: MPI_THREAD_FUNNELED is required (got %d).  Use MPI_Init_thread.", provided);
+
+	Parameters params(opts, nbytes_memory, wrapper.n, wrapper.m);
 
 	/* safety check: all ranks evaluate the same function */
 	u64 test[3];
@@ -520,10 +537,6 @@ optional<tuple<u64,u64,u64>> run_engine(ProblemWrapper& wrapper, Parameters &par
 	test[2] = wrapper.mixf(test[0], test[1]);
 	MPI_Bcast(test, 3, MPI_UINT64_T, 0, params.world_comm);
 	assert(test[2] == wrapper.mixf(test[0], test[1]));
-	wrapper.n_eval = 0;
-
-	/* safety check: w is a multiple of the number of shards */
-	assert((params.w % params.n_inserters) == 0);
 
 	PcsNode<ProblemWrapper> node(wrapper, params, prng);
 	return node.run(wrapper.out_mask);

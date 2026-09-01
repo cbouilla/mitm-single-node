@@ -29,10 +29,7 @@ public:
 	u64 f(u64 x) const;
 
 	/* assuming that f(x0) == f(x1) and x0 != x1, is (x0, x1) an acceptable outcome? */
-	bool is_good_pair(u64 x0, u64 x1) const
-	{
-		return true;    // by default, yes.
-	}
+	bool is_good_pair(u64 x0, u64 x1) const;
 
 	/*
 	 * ONLY if a vectorized implementation is available: set vlen to its width and
@@ -59,10 +56,7 @@ public:
 	u64 g(u64 y) const;
 
 	/* assuming that f(x0) == g(x1), is (x0, x1) an acceptable outcome? */
-	bool is_good_pair(u64 x0, u64 x1) const
-	{
-		return true;    // by default, yes.
-	}
+	bool is_good_pair(u64 x0, u64 x1) const;
 
 	/*
 	 * ONLY if a vectorized implementation is available: set vlen to its width and

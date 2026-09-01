@@ -65,18 +65,19 @@ include/
   dict.hpp        PcsDict: the direct-mapped dictionary of distinguished points
   problem.hpp     the interface a cipher implements: f, g, is_good_pair, vfg
   counters.hpp    per-round diagnostic tallies + HyperLogLog
-  parameters.hpp  Parameters: topology, tuning, and what finalize() derives from it
+  parameters.hpp  Options (user knobs, all defaulted) and Parameters (derived once from them + RAM budget + problem size; data only)
   trail.hpp       walking trails; turning a dictionary hit into a collision
   spsc.hpp        wait-free single-producer/single-consumer queue
   comm.hpp        queues, bulk DP buffers, control channel, per-thread state
   walker.hpp      the walker thread
   inserter.hpp    the inserter thread (owns one dictionary shard)
-  controller.hpp  rank 0's view: rounds, pacing, statistics, when to stop
+  controller.hpp  rank 0's view: startup banner, rounds, pacing, statistics, when to stop
   engine.hpp      the node: the comm thread, the round loop, run_engine()
-  driver.hpp      command line + MPI startup, shared by every example
   mitm.hpp        umbrella: problem wrappers, claw_search(), collision_search()
+  benchmark.hpp   f/g throughput per rank and across ranks, for the *_bench drivers
   naive/          the naive all-to-all MITM.  NOT PORTED, not built (see below)
 examples/
+  driver.hpp             command line + MPI startup, shared by every example
   <cipher>_problem.hpp   f, g, and a planted golden pair
   <cipher>_demo.cpp      run the attack
   <cipher>_bench.cpp     measure f evaluations per second

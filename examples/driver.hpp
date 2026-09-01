@@ -10,8 +10,12 @@
 #include "parameters.hpp"
 
 /*
- * Boilerplate shared by every driver in examples/: the command line is the same for
- * all of them (only the problem changes), and so is the MPI startup sequence.
+ * Boilerplate shared by every driver here: the command line is the same for all of
+ * them (only the problem changes), and so is the MPI startup sequence.
+ *
+ * This is part of the examples, NOT of the library in ../include.  Nothing in the
+ * library depends on it, and nothing the library requires is checked here: a driver
+ * of your own can skip all of this and call claw_search() directly.
  */
 
 namespace mitm {
@@ -42,10 +46,11 @@ static void usage(const char *argv0)
 }
 
 /*
- * `n` and `seed` come in holding the driver's own defaults and are overwritten if the
- * command line says so.
+ * `nbytes_memory`, `n` and `seed` come in holding the driver's own defaults and are
+ * overwritten if the command line says so.  Everything else goes into `opts`.
  */
-static void process_command_line_options(int argc, char **argv, Parameters &params, int &n, u64 &seed)
+static void process_command_line_options(int argc, char **argv, Options &opts,
+                                         u64 &nbytes_memory, int &n, u64 &seed)
 {
 	enum {OPT_WALKER_QUEUE = 1000, OPT_INSERTER_QUEUE, OPT_COLL_QUEUE, OPT_COLL_PER_CHUNK,
 	      OPT_BUFFER, OPT_IN_BUFFERS, OPT_CHUNK, OPT_NO_BIND, OPT_HELP};
@@ -76,24 +81,24 @@ static void process_command_line_options(int argc, char **argv, Parameters &para
 		int ch = getopt_long(argc, argv, "", longopts, NULL);
 		switch (ch) {
 		case -1:                   return;
-		case 'r': params.nbytes_memory = human_parse(optarg);            break;
+		case 'r': nbytes_memory = human_parse(optarg);                   break;
 		case 'n': n = std::stoi(optarg);                                 break;
 		case 's': seed = std::stoull(optarg, 0, 0);                      break;
-		case 'd': params.theta = std::stof(optarg);                      break;
-		case 'a': params.alpha = std::stof(optarg);                      break;
-		case 'b': params.beta = std::stof(optarg);                       break;
-		case 'o': params.max_versions = std::stoull(optarg, 0, 0);       break;
-		case 'W': params.walkers_per_node = std::stoi(optarg);           break;
-		case 'I': params.inserters_per_node = std::stoi(optarg);         break;
-		case OPT_WALKER_QUEUE:   params.walker_queue_capacity = std::stoull(optarg);   break;
-		case OPT_INSERTER_QUEUE: params.inserter_queue_capacity = std::stoull(optarg); break;
-		case OPT_COLL_QUEUE:     params.coll_queue_capacity = std::stoull(optarg);     break;
-		case OPT_COLL_PER_CHUNK: params.coll_per_chunk = std::stoull(optarg);          break;
-		case OPT_BUFFER:         params.buffer_capacity = std::stoull(optarg);         break;
-		case OPT_IN_BUFFERS:     params.n_in_buffers = std::stoi(optarg);              break;
-		case OPT_CHUNK:          params.chunk_size = std::stoull(optarg);              break;
-		case OPT_NO_BIND:        params.bind_threads = false;                          break;
-		case OPT_HELP:           usage(argv[0]);                                       break;
+		case 'd': opts.theta = std::stof(optarg);                        break;
+		case 'a': opts.alpha = std::stof(optarg);                        break;
+		case 'b': opts.beta = std::stof(optarg);                         break;
+		case 'o': opts.max_versions = std::stoull(optarg, 0, 0);         break;
+		case 'W': opts.walkers_per_node = std::stoi(optarg);             break;
+		case 'I': opts.inserters_per_node = std::stoi(optarg);           break;
+		case OPT_WALKER_QUEUE:   opts.walker_queue_capacity = std::stoull(optarg);   break;
+		case OPT_INSERTER_QUEUE: opts.inserter_queue_capacity = std::stoull(optarg); break;
+		case OPT_COLL_QUEUE:     opts.coll_queue_capacity = std::stoull(optarg);     break;
+		case OPT_COLL_PER_CHUNK: opts.coll_per_chunk = std::stoull(optarg);          break;
+		case OPT_BUFFER:         opts.buffer_capacity = std::stoull(optarg);         break;
+		case OPT_IN_BUFFERS:     opts.n_in_buffers = std::stoi(optarg);              break;
+		case OPT_CHUNK:          opts.chunk_size = std::stoull(optarg);              break;
+		case OPT_NO_BIND:        opts.bind_threads = false;                          break;
+		case OPT_HELP:           usage(argv[0]);                                     break;
 		default:
 			errx(1, "Unknown option");
 		}
@@ -102,19 +107,23 @@ static void process_command_line_options(int argc, char **argv, Parameters &para
 
 /*
  * Everything a driver does before it can build its problem: start MPI with the
- * threading level the engine requires, read the command line, discover the topology,
- * and make sure every rank uses the same seed -- otherwise the ranks would not even
- * be iterating the same function.
+ * threading level the engine requires, read the command line, decide who prints, and
+ * make sure every rank uses the same seed -- otherwise the ranks would not even be
+ * iterating the same function.
  */
-static void init(int argc, char **argv, Parameters &params, int &n, u64 &seed)
+static void init(int argc, char **argv, Options &opts, u64 &nbytes_memory, int &n, u64 &seed)
 {
 	int provided;
 	MPI_Init_thread(NULL, NULL, MPI_THREAD_FUNNELED, &provided);
 	if (provided < MPI_THREAD_FUNNELED)
 		errx(1, "MPI: this MPI does not provide MPI_THREAD_FUNNELED");
 
-	process_command_line_options(argc, argv, params, n, seed);
-	params.setup(MPI_COMM_WORLD);
+	process_command_line_options(argc, argv, opts, nbytes_memory, n, seed);
+
+	/* the drivers themselves print from rank 0 only */
+	int rank;
+	MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+	opts.verbose = opts.verbose && (rank == 0);
 
 	if (seed == 0) {
 		seed = PRNG::read_urandom();

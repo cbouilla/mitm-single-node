@@ -9,60 +9,7 @@
 
 #include "tools.hpp"
 
-// various dictionnaries
-
 namespace mitm {
-
-/*
- * this is a "classic" hash table for 64-bit key-value pairs, with linear probing.  
- * No false negatives, some false positives.  12 bytes per entry. 
- */
-class CompactDict {
-public:
-    const u64 n_slots;     /* How many slots a dictionary have */
-    struct __attribute__ ((packed)) entry { u32 k; u64 v; };
-
-    vector<struct entry> A;
-
-    CompactDict(u64 n_slots) : n_slots(n_slots)
-    {
-        A.resize(n_slots, {0xffffffff, 0});
-    }
-
-    void insert(u64 key, u64 value)
-    {
-        u64 h = (key ^ (key >> 32)) % n_slots;
-        for (;;) {
-            if (A[h].k == 0xffffffff)
-                break;
-            h += 1;
-            if (h == n_slots)
-                h = 0;
-        }
-        A[h].k = key % 0xfffffffb;
-        A[h].v = value;
-    }
-
-    // return possible values matching this key
-    // TODO: replace this by a custom iterator
-    int probe(u64 bigkey, u64 keys[])
-    {
-        u32 key = bigkey % 0xfffffffb;
-        u64 h = (bigkey ^ (bigkey >> 32)) % n_slots;
-        int nkeys = 0;
-        for (;;) {
-            if (A[h].k == 0xffffffff)
-                return nkeys;
-            if (A[h].k == key) {
-                keys[nkeys] = A[h].v;
-                nkeys += 1;
-            }
-            h += 1;
-            if (h == n_slots)
-                h = 0;
-        }
-    }
-};
 
 /*
  * This dictionnary, when probed with the distinguished point at the end of a trail,
@@ -93,33 +40,32 @@ public:
 		lbits = jbits + 8;
 		key_mask = (lbits == 64) ? 0 : 0xffffffffffffffff << lbits;
 		A.resize(n_slots);
-		flush();
 	}
 
-	/*
-	 * Reset keys, and counters.
-	 */
 	void flush()
 	{
 		for (u64 i = 0; i < n_slots; i++)
 			A[i] = 0;
 	}
   
-
-
-  	// return (start', len'), maybe. Return len' == 0 if unknown
+  	// return (start', len'), maybe. Return len' == 0 if len' is unknown (has been truncated)
 	optional<pair<u64, u64>> pop_insert(u64 end, u64 start, u64 len0)
 	{
 		u64 idx = end % n_slots;
 		u64 key = (end / n_slots) << lbits;
 
+		// first save the previous point
 		u64 e = A[idx];
 		u64 ekey = e & key_mask;
 		u64 elen = (e >> jbits) & lmask;
 
+		/*
+		 * heuristic modification from the original algorithm:
+         * we only overwrite an existing point if we have a longer tail.
+         * the alternative is to always insert and forget about it. 
+         */
 		if (e == 0 || len0 >= elen) {
-			// actual insertion
-			if (len0 > lmask)
+			if (len0 > lmask)      // saturate the length because be don't use many bits for it.
 				len0 = lmask;
 			A[idx] = start ^ (len0 << jbits) ^ key;
 		}

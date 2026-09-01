@@ -161,12 +161,11 @@ struct alignas(64) ThreadContext {
 	/* published by the thread, read by the comm thread for its periodic report */
 	std::atomic<u64> n_dp;             /* walker:   distinguished points found */
 	std::atomic<u64> n_probe;          /* inserter: dictionary probes retired */
-	std::atomic<u64> n_eval;           /* walker:   f evaluations, published at round end */
 	std::atomic<u64> n_drop_walkerq;   /* walker:   its queue to the comm thread was full */
 	std::atomic<u64> n_drop_coll;      /* inserter: the collision queue was full */
 
 	ThreadContext()
-		: state(RUNNING), n_dp(0), n_probe(0), n_eval(0), n_drop_walkerq(0), n_drop_coll(0)
+		: state(RUNNING), n_dp(0), n_probe(0), n_drop_walkerq(0), n_drop_coll(0)
 	{}
 };
 

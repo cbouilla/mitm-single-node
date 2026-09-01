@@ -4,8 +4,9 @@
 #include <mpi.h>
 #include <err.h>
 #include <sched.h>
-#include <pthread.h>
+#include <cassert>
 #include <cmath>
+#include <algorithm>
 #include <vector>
 
 #include "tools.hpp"
@@ -23,80 +24,41 @@ namespace mitm {
  * A single rank with one walker and one inserter is the degenerate "sequential" case.
  */
 
-enum tags {
-	TAG_POINTS,        /* bulk distinguished points, node -> node                 */
-	TAG_CONTROL,       /* the control channel, both directions (see comm.hpp)     */
-};
-
+enum tags {TAG_POINTS, TAG_CONTROL};
 enum assignment {KEEP_GOING, NEW_VERSION};
-
 enum thread_role {COMM, INSERTER, WALKER};
 
-/* how many u64 per distinguished point on the wire */
-static const int DP_WORDS = 3;
+static constexpr int DP_WORDS = 3;     /* how many u64 per distinguished point on the wire */
 
-/* One distinguished point.  Identical layout on the SPSC queues and on the wire;
-   the routing helpers that pick it apart live in comm.hpp. */
-struct DP {
+struct DP {        /* One distinguished point*/
 	u64 seed;      /* the chain index j it was started from */
 	u64 x;         /* the FULL endpoint */
 	u64 len;       /* trail length */
 };
 
 
-/******************************* CPU affinity ********************************/
+/********************************** options **********************************/
 
-/* the k-th usable CPU of `mask` (k is 0-based); -1 if there are not that many */
-static inline int nth_cpu(const cpu_set_t *mask, int k)
-{
-	for (int cpu = 0; cpu < CPU_SETSIZE; cpu++)
-		if (CPU_ISSET(cpu, mask) && (k-- == 0))
-			return cpu;
-	return -1;
-}
+struct Options {
+	/* the most important option */
+	int inserters_per_node = 1;               /* dictionary shards per node. Users SHOULD set this themselves */
 
-/* pin the calling thread to `cpu`.  Returns cpu, or -1 on failure. */
-static inline int pin_to_cpu(int cpu)
-{
-	if (cpu < 0)
-		return -1;
-	cpu_set_t set;
-	CPU_ZERO(&set);
-	CPU_SET(cpu, &set);
-	if (pthread_setaffinity_np(pthread_self(), sizeof(set), &set) != 0)
-		return -1;
-	return cpu;
-}
+	/* other important options */
+	double theta = -1;                        /* proportion of distinguished points. -1 == auto */
+	bool verbose = true;                      /* print progress information (from rank 0 only) */
 
+	/* --- below this line, the defaults should be just fine */
 
-/********************************* parameters ********************************/
+	/* nodes */
+	MPI_Comm world_comm = MPI_COMM_WORLD;
 
-class Parameters {
-public:
-	/* MPI topology.  One rank per node, so `rank` IS the node index. */
-	MPI_Comm world_comm;
-	int rank;
-	int n_nodes = 1;                       /* == the number of MPI ranks */
-
-	/* thread layout inside a node (CLI-settable) */
+	/* thread layout inside a node */
 	int walkers_per_node = 0;              /* 0 == fill the inherited affinity mask */
-	int inserters_per_node = 1;
-	int n_threads;                         /* derived: 1 + walkers_per_node + inserters_per_node */
-	int n_walkers;                         /* derived: total walker threads, all nodes */
-	int n_inserters;                       /* derived: total dictionary shards, all nodes */
+	bool bind_threads = true;              /* pin each thread to a CPU of the mask */
 
-	/* thread pinning */
-	bool bind_threads = true;
-	cpu_set_t inherited_mask;              /* whatever the launcher gave this rank */
-	int n_avail_cpu;
-
-	/* hardware-dependent */
-	u64 nbytes_memory = 0;                 /* how much RAM to use on each node */
-
-	/* algorithm parameters */
-	double alpha = 2.5;                    /* auto-chosen theta == alpha * sqrt(w/n) */
-	double beta = 8;                       /* use each function variant for beta*w DPs */
-	double theta = -1;                     /* proportion of distinguished points. -1 == auto */
+	/* algorithm */
+	double alpha = 2.5;                       /* auto-chosen theta == alpha * sqrt(w/n) */
+	double beta = 8;                          /* use each function variant for beta*w DPs */
 	u64 multiplier = 0x2545f4914f6cdd1dull;   /* to generate starting points */
 	u64 max_versions = 0xffffffffffffffffull; /* how many functions to try before giving up */
 
@@ -121,32 +83,61 @@ public:
 	                                          so a short round cannot overshoot beta*w */
 	size_t chunk_size = 64;                /* vmixf iterations between queue / phase checks */
 
-	/* other relevant quantities, deduced by finalize() */
-	u64 threshold;                         /* any integer less than this is a DP */
+};
+
+
+/********************************* parameters ********************************/
+
+/*
+ * Everything the engine needs to know, derived ONCE from the options, the RAM budget
+ * and the size of the (wrapped) problem: MPI topology, thread layout and placement,
+ * dictionary size and difficulty.  Built by run_engine() and never modified
+ * afterwards.  Data only: nothing here runs outside the constructor.
+ *
+ * The user's Options are copied in, so the *resolved* values of walkers_per_node,
+ * theta and verbose live here and the caller's object is left alone.
+ */
+struct Parameters : Options {
+	/* MPI topology.  One rank per node, so `rank` IS the node index. */
+	int rank;
+	int n_nodes;                           /* == the number of MPI ranks */
+
+	/* thread layout */
+	int n_threads;                         /* 1 + walkers_per_node + inserters_per_node */
+	int n_walkers;                         /* total walker threads, all nodes */
+	int n_inserters;                       /* total dictionary shards, all nodes */
+	std::vector<int> thread_cpu;           /* CPU for each thread, in tid order; -1 == do not pin */
+
+	/* dictionary */
+	u64 nbytes_memory;                     /* RAM budget per node */
 	u64 w;                                 /* # slots in the (whole, distributed) dict */
+	u64 w_shard;                           /* # slots per inserter thread */
+	int jbits;                             /* bits of chain index stored with each DP */
+
+	/* difficulty */
+	bool theta_auto;                       /* theta was chosen from alpha */
+	double auto_theta;                     /* what alpha chooses, whether or not it was used */
+	u64 threshold;                         /* any integer less than this is a DP */
 	u64 dp_max_it;                         /* how many iterations to find a DP */
 	u64 points_per_version;                /* #DP per version of the function */
 
-	/* utilities */
-	bool verbose = 1;                      /* print progress information */
-
-	/*
-	 * Discover the topology.  Call this once, right after MPI_Init_thread and before
-	 * anything is printed: it is what decides which rank is allowed to talk.
-	 */
-	void setup(MPI_Comm comm)
+	/* n, m are the wrapped problem's: the engine iterates {0,1}^n --> {0,1}^m */
+	Parameters(const Options &o, u64 nbytes_memory, int n, int m)
+		: Options(o), nbytes_memory(nbytes_memory)
 	{
-		world_comm = comm;
+		/* topology */
 		MPI_Comm_rank(world_comm, &rank);
 		MPI_Comm_size(world_comm, &n_nodes);
-		verbose = (rank == 0);
+		verbose = verbose && (rank == 0);
 
 		/* what did the launcher actually give us? */
-		CPU_ZERO(&inherited_mask);
-		if (sched_getaffinity(0, sizeof(inherited_mask), &inherited_mask) != 0)
+		cpu_set_t mask;
+		CPU_ZERO(&mask);
+		if (sched_getaffinity(0, sizeof(mask), &mask) != 0)
 			err(1, "sched_getaffinity");
-		n_avail_cpu = CPU_COUNT(&inherited_mask);
+		int n_avail_cpu = CPU_COUNT(&mask);
 
+		/* thread layout */
 		if (inserters_per_node < 1)
 			errx(1, "MPI: at least one inserter thread per node is required");
 		if (walkers_per_node == 0)
@@ -155,139 +146,43 @@ public:
 			errx(1, "MPI: at least one walker thread per node is required "
 			        "(%d CPUs in mask, %d reserved for inserters + comm)",
 			        n_avail_cpu, inserters_per_node + 1);
-
 		n_threads = 1 + walkers_per_node + inserters_per_node;
-		n_inserters = n_nodes * inserters_per_node;      /* total dictionary shards */
-		n_walkers = n_nodes * walkers_per_node;          /* total walker threads */
-
+		n_inserters = n_nodes * inserters_per_node;
+		n_walkers = n_nodes * walkers_per_node;
 		if (bind_threads && n_avail_cpu < n_threads)
 			warnx("MPI: rank %d has only %d CPUs in its affinity mask for %d threads."
 			      "  Did you forget --bind-to none?", rank, n_avail_cpu, n_threads);
 
-		if (verbose) {
-			printf("MPI: %d node(s) x (1 comm + %d ins + %d walk) = %d threads/node\n",
-				n_nodes, inserters_per_node, walkers_per_node, n_threads);
-			printf("MPI: %d dictionary shards, %d walker threads in total\n", n_inserters, n_walkers);
+		/* thread placement: the k-th thread goes to the k-th CPU of the mask */
+		thread_cpu.assign(n_threads, -1);
+		if (bind_threads) {
+			int k = 0;
+			for (int cpu = 0; cpu < CPU_SETSIZE && k < n_threads; cpu++)
+				if (CPU_ISSET(cpu, &mask))
+					thread_cpu[k++] = cpu;
 		}
-	}
 
-	/* CPU that thread `tid` should run on, or -1 if we cannot place it */
-	int cpu_of_thread(int tid) const
-	{
-		if (!bind_threads || tid >= n_avail_cpu)
-			return -1;
-		return nth_cpu(&inherited_mask, tid);
-	}
-
-	/*
-	 * Size the dictionary and choose the difficulty.  Needs the problem dimensions, so
-	 * it happens after setup(), once the problem is known.
-	 */
-	void finalize(int n, int m)
-	{
+		/* dictionary */
 		if (nbytes_memory == 0)
-			errx(1, "the amount of RAM to use (per node) must be specified");
-
+			errx(1, "the RAM budget per node must be given (and nonzero)");
 		w = PcsDict::get_nslots(nbytes_memory * n_nodes, n_inserters);
-		/* auto-choose the difficulty if not set */
-		double auto_theta = alpha * std::sqrt((double) w / (1ll << n));
-		if (theta < 0) {
-			theta = auto_theta;
-			if (theta > 1)
-				theta = 1;
-			if (verbose)
-				printf("AUTO-TUNING: setting 1/theta == %.2f\n", 1 / theta);
-		} else {
-			if (verbose)
-				printf("NOTICE: using 1/theta == %.2f vs ``optimal'' 1/theta == %.2f\n", 1/theta, auto_theta);
-		}
+		if (w == 0)
+			errx(1, "RAM budget too small: %" PRIu64 " bytes/node cannot hold one slot per shard",
+			     nbytes_memory);
+		assert(w % n_inserters == 0);
+		w_shard = w / n_inserters;
+		jbits = std::log2(10 * w) + 8;
+
+		/* difficulty */
+		auto_theta = alpha * std::sqrt(std::ldexp((double) w, -n));
+		theta_auto = (theta < 0);
+		if (theta_auto)
+			theta = std::min(auto_theta, 1.0);
 		threshold = pow(2, m) * theta;
 		dp_max_it = 20 / theta;
 		points_per_version = beta * w;
-
-		/* display warnings if problematic choices were made */
-		if (verbose && theta == 1) {
-			printf("***** WARNING *****\n***** WARNING *****\n***** WARNING *****\n");
-			printf("---> zero difficulty (use the naive technique!)\n");
-			printf("***** WARNING *****\n***** WARNING *****\n***** WARNING *****\n");
-		}
 	}
 };
-
-
-/******************************* benchmarking ********************************/
-
-static void display_stats(u64 N, double start, int vlen, const Parameters &params)
-{
-	double rate = vlen * N / (wtime() - start);
-	double rate_min = rate;
-	double rate_max = rate;
-	double rate_avg = rate;
-	MPI_Allreduce(MPI_IN_PLACE, &rate_min, 1, MPI_DOUBLE, MPI_MIN, params.world_comm);
-	MPI_Allreduce(MPI_IN_PLACE, &rate_max, 1, MPI_DOUBLE, MPI_MAX, params.world_comm);
-	MPI_Allreduce(MPI_IN_PLACE, &rate_avg, 1, MPI_DOUBLE, MPI_SUM, params.world_comm);
-	rate_avg /= params.n_nodes;
-	double rate_std = (rate - rate_avg) * (rate - rate_avg);
-	MPI_Allreduce(MPI_IN_PLACE, &rate_std, 1, MPI_DOUBLE, MPI_SUM, params.world_comm);
-	rate_std /= params.n_nodes;
-	rate_std = std::sqrt(rate_std);
-	if (params.rank == 0) {
-		char hmin[8], hmax[8], havg[8], hstd[8];
-		human_format(rate_min, hmin);
-		human_format(rate_max, hmax);
-		human_format(rate_avg, havg);
-		human_format(rate_std, hstd);
-		printf("Benchmark. f/s: min %s max %s avg %s std %s\n", hmin, hmax, havg, hstd);
-	}
-}
-
-/* try to iterate for 1s. Return #it/s */
-template<typename Problem>
-void benchmark(const Problem& pb, const Parameters &params)
-{
-	if (params.rank == 0)
-		printf("Benchmarking scalar implementation (using %d processes)\n", params.n_nodes);
-
-	MPI_Barrier(params.world_comm);
-
-	u64 N = 1ull << 26;
-	double start = wtime();
-	u64 count = 0;
-	for (u64 x = 0; x < N; x++) {
-		u64 z = (x & 1) ? pb.f(x) : pb.g(x);
-		u64 hash = (z * 0xdeadbeef) % 0x7fffffff;
-		int target = ((int) hash) % params.n_inserters;
-		if (target == 0)
-			count += 1;
-	}
-	display_stats(N, start, 1, params);
-
-	constexpr int vlen = Problem::vlen;
-	if constexpr (vlen > 1) {
-		if (params.rank == 0)
-			printf("Benchmarking vector implementation (vlen=%d)\n", vlen);
-
-		u64 x[vlen] __attribute__ ((aligned(sizeof(u64) * vlen)));
-		u64 z[vlen] __attribute__ ((aligned(sizeof(u64) * vlen)));
-		bool choice[vlen];
-		for (int i = 0; i < vlen; i++) {
-			choice[i] = i & 1;
-			x[i] = i;
-		}
-
-		MPI_Barrier(params.world_comm);
-
-		double start = wtime();
-		u64 mask = make_mask(pb.n);
-		u64 N = 1ull << 20;
-		for (u64 i = 0; i < N; i++) {
-			pb.vfg(x, choice, z);
-			for (int j = 0; j < vlen; j++)
-				x[j] = z[j] & mask;
-		}
-		display_stats(N, start, vlen, params);
-	}
-}
 
 }
 #endif

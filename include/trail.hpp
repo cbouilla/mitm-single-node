@@ -28,7 +28,7 @@ inline bool is_distinguished_point(u64 x, u64 threshold)
  * are correct, but it does not assume that the two trails end at the same DP.
  */
 template<class ProblemWrapper>
-optional<tuple<u64,u64,u64>> walk(ProblemWrapper& wrapper, Counters &ctr, const Parameters &params,
+optional<tuple<u64,u64,u64>> walk(const ProblemWrapper &wrapper, Counters &ctr, const Parameters &params,
     u64 i, u64 x0, u64 len0, u64 x1, u64 len1__)
 {
     /****************************************************************************+
@@ -49,6 +49,7 @@ optional<tuple<u64,u64,u64>> walk(ProblemWrapper& wrapper, Counters &ctr, const 
     /* move the longest sequence until the remaining number of steps is equal */
     /* to the shortest sequence. */
     u64 len1 = len1__;
+    ctr.n_eval += (len0 > len1) ? len0 - len1 : len1 - len0;   /* the two loops below */
     for (; len0 > len1; len0--)
         x0 = wrapper.mixf(i, x0);
     for (; len0 < len1; len1--)
@@ -65,6 +66,7 @@ optional<tuple<u64,u64,u64>> walk(ProblemWrapper& wrapper, Counters &ctr, const 
         /* return as soon equality is found. */
         u64 y0 = wrapper.mixf(i, x0);
         u64 y1 = wrapper.mixf(i, x1);
+        ctr.n_eval += 2;
 
         /* First, do the outputs collide? If yes, return true and exit. */
         if (y0 == y1) {
@@ -88,7 +90,7 @@ optional<tuple<u64,u64,u64>> walk(ProblemWrapper& wrapper, Counters &ctr, const 
  * `end` is [end of trail] / params.n_inserters
  */
 template<class ProblemWrapper>
-optional<tuple<u64,u64,u64>> walk_nolen1(ProblemWrapper& wrapper, Counters &ctr, const Parameters &params,
+optional<tuple<u64,u64,u64>> walk_nolen1(const ProblemWrapper &wrapper, Counters &ctr, const Parameters &params,
     u64 i, u64 x0, u64 len0, u64 end0, u64 x1)
 {
     /****************************************************************************+
@@ -120,6 +122,7 @@ optional<tuple<u64,u64,u64>> walk_nolen1(ProblemWrapper& wrapper, Counters &ctr,
         if (is_distinguished_point(x1, params.threshold))
             break;
     }
+    ctr.n_eval += len1;                                        /* one per turn of the loop */
 
     if (x1 / params.n_inserters != end0) {
         ctr.bad_walk_noncolliding += 1;
@@ -128,6 +131,8 @@ optional<tuple<u64,u64,u64>> walk_nolen1(ProblemWrapper& wrapper, Counters &ctr,
 
     /* move the longest sequence until the remaining number of steps is equal */
     /* to the shortest sequence. */
+    if (len0 > len1)
+        ctr.n_eval += len0 - len1;                             /* the loop below */
     for (; len0 > len1; len0--)
         x0 = wrapper.mixf(i, x0);
 
@@ -143,6 +148,7 @@ optional<tuple<u64,u64,u64>> walk_nolen1(ProblemWrapper& wrapper, Counters &ctr,
         /* walk them together */
         u64 y0 = wrapper.mixf(i, x0);
         u64 y1 = trail1[j+1];
+        ctr.n_eval += 1;
         /* do the outputs collide? If yes, return true and exit. */
         if (y0 == y1) {
             /* careful: x0 & x1 contain inputs before mixing */
@@ -161,7 +167,7 @@ optional<tuple<u64,u64,u64>> walk_nolen1(ProblemWrapper& wrapper, Counters &ctr,
  * why it does not run on the inserter thread that found the hit.
  */
 template<class ProblemWrapper>
-optional<tuple<u64,u64,u64>> resolve_collision(ProblemWrapper &wrapper, Counters &ctr, const Parameters &params,
+optional<tuple<u64,u64,u64>> resolve_collision(const ProblemWrapper &wrapper, Counters &ctr, const Parameters &params,
                                                u64 i, u64 root_seed, u64 seed0, u64 end, u64 len0,
                                                u64 seed1, u64 len1_maybe)
 {

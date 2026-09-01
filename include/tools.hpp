@@ -155,7 +155,6 @@ void human_format(u64 n, char *target)
     }
 }
 
-/* represent n in 4 bytes */
 u64 human_parse(const std::string &_h)
 {
     std::string h(_h);

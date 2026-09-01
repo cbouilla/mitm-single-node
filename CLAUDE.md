@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 A parallel meet-in-the-middle (MITM) attack framework for symmetric ciphers: given `f` and `g`, find **claws** (`f(x0) == g(x1)`) or **collisions**. The core is a header-only C++17 library in `include/`; `examples/` holds runnable drivers per cipher (double-Speck64 — the current focus, double-DES, double-AES, SHA256).
 
-**There is exactly one engine, and it is MPI + OpenMP** (van Oorschot–Wiener parallel collision search over a distributed dictionary). The sequential and "vector sequential" engines were deleted; a single rank with one walker and one inserter is the degenerate sequential case. Do not reintroduce an engine-selection template parameter — `claw_search(pb, params, prng)` and `collision_search(...)` take no engine.
+**There is exactly one engine, and it is MPI + OpenMP** (van Oorschot–Wiener parallel collision search over a distributed dictionary). The sequential and "vector sequential" engines were deleted; a single rank with one walker and one inserter is the degenerate sequential case. Do not reintroduce an engine-selection template parameter — `claw_search(pb, nbytes_memory, opts, prng)` and `collision_search(...)` take no engine.
 
 ## Build
 
@@ -22,19 +22,19 @@ cmake -S . -B build && make -C build
 
 ## Run
 
-All drivers share one option parser (`include/driver.hpp`, `--help` lists everything). **`--ram` is mandatory** (human units, e.g. `--ram 4G`; omitting it aborts).
+All drivers share one option parser (`examples/driver.hpp`, `--help` lists everything). **`--ram` is mandatory** (human units, e.g. `--ram 4G`): the search entry points take the byte budget per node as an explicit argument, and the *library* aborts on 0 — `driver.hpp` only parses the flag, it checks nothing. The bench drivers need no `--ram`.
 
 ```bash
 mpirun -np 4 --bind-to none build/examples/double_speck64_demo \
     --n 32 --ram 4G --inserters-per-node 2 --alpha 2.45 --beta 8
 ```
 
-Topology (`Parameters::setup()` in `include/parameters.hpp`): **one MPI rank per node**, `MPI_THREAD_FUNNELED`. Inside a rank, thread 0 is the comm thread (and, on rank 0, the controller), threads `1..inserters_per_node` own a dictionary shard each, the rest walk trails. Walkers default to filling the inherited affinity mask, hence `--bind-to none`. `--nrounds` bounds `max_versions` so a search can report "not found" instead of running forever. On a CEA/TGCC-style cluster the launcher is `ccc_mprun` under an `MSUB` batch script (`tgcc.sh`).
+Topology (the `Parameters` constructor in `include/parameters.hpp`): **one MPI rank per node**, `MPI_THREAD_FUNNELED`. Inside a rank, thread 0 is the comm thread (and, on rank 0, the controller), threads `1..inserters_per_node` own a dictionary shard each, the rest walk trails. Walkers default to filling the inherited affinity mask, hence `--bind-to none`. `--nrounds` bounds `max_versions` so a search can report "not found" instead of running forever. On a CEA/TGCC-style cluster the launcher is `ccc_mprun` under an `MSUB` batch script (`tgcc.sh`).
 
 Quick smoke test (a few seconds):
 
 ```bash
-mpirun -np 1 build/examples/double_speck64_demo --n 20 --ram 256K --difficulty 0.5 --walkers-per-node 2
+mpirun -np 1 -bind-to none build/examples/double_speck64_demo --n 20 --ram 256K --difficulty 0.1 --walkers-per-node 6
 ```
 
 ## Layout & conventions
@@ -43,10 +43,11 @@ mpirun -np 1 build/examples/double_speck64_demo --n 20 --ram 256K --difficulty 0
 
 - `types.h`, `tools.hpp`, `dict.hpp`, `problem.hpp` — SIMD types, PRNG/timing, `PcsDict`, the abstract problem interface.
 - `counters.hpp` — per-round diagnostic tallies + HyperLogLog. **Round-scoped only**: threads accumulate, the comm thread merges and reduces them, and all-time totals plus every `printf` live in the controller.
-- `parameters.hpp` — the single `Parameters` class (topology + tuning + what `finalize()` derives), plus `DP`, the MPI tags, CPU affinity helpers and `benchmark()`.
+- `parameters.hpp` — data only. `Options` is every user knob, all with a working default, no methods, no MPI. `Parameters : Options` is what the engine needs (topology, thread layout and placement as the `thread_cpu` table, dictionary size, difficulty), derived **once** by its constructor from `(opts, nbytes_memory, n, m)` inside `run_engine()` and const from then on. No method but the constructor. There is no `setup()`/`finalize()` protocol and no ordering to respect: `claw_search` takes `const Options &` and builds its own `Parameters`. Also `DP` and the MPI tags. The startup report is `Controller::banner()`; `benchmark()` (needs only `Options`, no RAM) lives in `benchmark.hpp`.
 - `trail.hpp` — `walk`, `walk_nolen1`, `resolve_collision`. `walker.hpp` / `inserter.hpp` — the two worker threads. `comm.hpp` / `spsc.hpp` — queues, bulk DP buffers, control channel, per-thread state. `controller.hpp` — rank 0's rounds and statistics. `engine.hpp` — `PcsNode` and `run_engine()`.
-- `driver.hpp` — shared CLI + MPI startup for the examples (`mitm::init`).
 - `mitm.hpp` — umbrella: the problem wrappers and `claw_search` / `collision_search`.
+
+`examples/driver.hpp` is *not* part of the library: it is the shared CLI + MPI startup for the drivers (`mitm::init`), and lives next to them.
 - `naive/` — the naive all-to-all MITM. A **different** engine, **not ported and not built**: it still refers to `params.role`, `n_send`, `n_recv`, `recv_per_node`, `BCast_result`. Kept deliberately as the starting point for that work, along with `examples/naive_double_speck64_demo.cpp`. Don't try to "fix" it in passing.
 
 Other conventions:
@@ -61,7 +62,7 @@ Other conventions:
 
 - **`collision_search` is incomplete and always was.** `CollisionWrapper` in `mitm.hpp` (formerly `ConcreteCollisionProblem`, which carried a commented-out `assert(0); // not ready yet`) plateaus for some seeds and never retires the golden pair. Verified to fail identically on the deleted sequential engine, so it is the wrapper, not the engine — see the comment on the class. `claw_search` is the path that works.
 - No CTest/unit-test suite. The demos self-check with `assert()` against a planted golden pair; running `double_speck64_demo` on a small `--n` is the smoke test.
-- `theta == 1` ("zero difficulty") makes `start_chain` spin forever, because every point is distinguished and it refuses to start from one. `finalize()` prints a loud warning; heed it.
+- `theta == 1` ("zero difficulty") makes `start_chain` spin forever, because every point is distinguished and it refuses to start from one. `Controller::banner()` prints a loud warning; heed it.
 - Percentages in the round report (`% probe failure` etc.) divide reduction totals by the DP count assembled from periodic reports. The two are collected differently, so a figure slightly over 100% is normal, not a bug.
 
 ## Workflow

@@ -40,20 +40,6 @@ public:
 		start_time = wtime();
 	}
 
-	void banner(const PRNG &prng, u64 w_shard)
-	{
-		char hbuf[8], hdict[8];
-		u64 bufbytes = (u64) 2 * params.n_nodes * DP_WORDS * sizeof(u64) * params.buffer_capacity;
-		human_format(bufbytes, hbuf);
-		human_format(params.n_nodes * w_shard * sizeof(u64), hdict);
-		printf("Starting MPI+OpenMP collision search with seed=%016" PRIx64 "\n", prng.seed);
-		printf("RAM per node == %sB buffers + dict.  Total dict == %sB (2^%.2f slots)\n",
-			hbuf, hdict, std::log2((double) params.w));
-		printf("Generating %.1f*w = %" PRId64 " = 2^%0.2f distinguished points / version\n",
-			params.beta, params.points_per_version, std::log2(params.points_per_version));
-		fflush(stdout);
-	}
-
 	void begin_round()
 	{
 		ndp = 0;
@@ -172,6 +158,38 @@ public:
 		/* give up after max_versions rounds; the engine then reports "not found" */
 		if (nround >= params.max_versions)
 			stop = 1;
+	}
+
+	/*
+	 * The startup report, all of it, in one place.  Printed before the dictionary is
+	 * allocated, so that the plan is on record even if the allocation fails.
+	 */
+	void banner(u64 seed)
+	{
+		char hbuf[8], hdict[8];
+		u64 bufbytes = (u64) 2 * params.n_nodes * DP_WORDS * sizeof(u64) * params.buffer_capacity;
+		human_format(bufbytes, hbuf);
+		human_format(params.w * sizeof(u64), hdict);
+		printf("Starting MPI+OpenMP collision search with seed=%016" PRIx64 "\n", seed);
+		printf("MPI: %d node(s) x (1 comm + %d ins + %d walk) = %d threads/node\n",
+			params.n_nodes, params.inserters_per_node, params.walkers_per_node, params.n_threads);
+		printf("MPI: %d dictionary shards, %d walker threads in total\n",
+			params.n_inserters, params.n_walkers);
+		printf("RAM per node == %sB buffers + dict.  Total dict == %sB (2^%.2f slots)\n",
+			hbuf, hdict, std::log2((double) params.w));
+		printf("Generating %.1f*w = %" PRIu64 " = 2^%0.2f distinguished points / version\n",
+			params.beta, params.points_per_version, std::log2((double) params.points_per_version));
+		if (params.theta_auto)
+			printf("AUTO-TUNING: setting 1/theta == %.2f\n", 1 / params.theta);
+		else
+			printf("NOTICE: using 1/theta == %.2f vs ``optimal'' 1/theta == %.2f\n",
+				1 / params.theta, 1 / params.auto_theta);
+		if (params.theta == 1) {
+			printf("***** WARNING *****\n***** WARNING *****\n***** WARNING *****\n");
+			printf("---> zero difficulty (use the naive technique!)\n");
+			printf("***** WARNING *****\n***** WARNING *****\n***** WARNING *****\n");
+		}
+		fflush(stdout);
 	}
 
 	void done()

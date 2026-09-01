@@ -21,6 +21,7 @@ namespace mitm {
  */
 class Counters {
 public:
+	u64 n_eval = 0;                 // evaluations of the mixing function, by walking or by resolving
 	u64 n_points_trails = 0;        // sum of the lengths of the trails that reached a DP
 	u64 n_collisions = 0;
 	u64 colliding_len_min = 0;      // sum of the shorter length of each colliding pair
@@ -63,6 +64,7 @@ public:
 	 */
 	void merge(const Counters &o)
 	{
+		n_eval += o.n_eval;
 		n_points_trails += o.n_points_trails;
 		n_collisions += o.n_collisions;
 		colliding_len_min += o.colliding_len_min;
@@ -80,7 +82,7 @@ public:
 
 	void reset()
 	{
-		n_points_trails = n_collisions = colliding_len_min = colliding_len_max = 0;
+		n_eval = n_points_trails = n_collisions = colliding_len_min = colliding_len_max = 0;
 		bad_dp = bad_probe = bad_collision = bad_walk_robinhood = bad_walk_noncolliding = 0;
 		hll.assign(0x10000, 0);
 	}

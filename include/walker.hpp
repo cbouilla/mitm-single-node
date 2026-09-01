@@ -28,20 +28,16 @@ static void start_chain(const Parameters &params, u64 out_mask, u64 root_seed, u
 
 /*
  * Resolve one queued collision candidate.  Returns false if the queue was empty.
- * A named function rather than a lambda inside walker_thread(), so everything it
- * touches shows up in the signature.
  */
 template <class ProblemWrapper>
-bool service_collision(ThreadContext &ctx, ProblemWrapper &wrapper, const Parameters &params,
-                       RoundState &round, CollisionQueue &coll_q, u64 i, u64 root_seed)
+bool service_collision(ThreadContext &ctx, const ProblemWrapper &wrapper, const Parameters &params,
+                       RoundState &round, CollisionQueue &coll_q, u64 root_seed)
 {
 	CollisionCandidate c;
 	if (not coll_q.pop(c))
 		return false;
-	/* same invariant: the queue starts every round empty, so a candidate can only
-	   ever belong to the round we are in */
-	assert(c.i == i);
-	auto sol = resolve_collision(wrapper, ctx.ctr, params, i, root_seed,
+	assert(c.i == round.i);
+	auto sol = resolve_collision(wrapper, ctx.ctr, params, round.i, root_seed,
 	                             c.seed0, c.end, c.len0, c.seed1, c.len1_maybe);
 	if (sol) {
 		auto [gi, x0, x1] = *sol;
@@ -57,27 +53,24 @@ bool service_collision(ThreadContext &ctx, ProblemWrapper &wrapper, const Parame
  * also picks up collision candidates that inserter threads have queued, and pays for
  * the expensive part -- walking both trails and testing the pair.
  *
- * The chains, the problem wrapper and the outgoing queue are private to this thread,
- * so they are locals and arguments; only the tallies the comm thread reads live in
- * ctx.  `walker_index` is 0-based within this rank -- combined with the rank it gives
- * the global walker index, which seeds the chain counter exactly as `local_rank` did.
+ * The chains and the outgoing queue are private to this thread, so they are locals and
+ * arguments; only the tallies the comm thread reads live in ctx.  The wrapper is
+ * stateless and shared read-only by every walker.  `walker_index` is 0-based within
+ * this rank -- combined with the rank it gives the global walker index, which seeds
+ * the chain counter exactly as `local_rank` did.
  *
  * Winding down is driven by ctx.state (see thread_state in comm.hpp).
  */
 template <class ProblemWrapper>
-void walker_thread(ThreadContext &ctx, const ProblemWrapper &master, const Parameters &params,
+void walker_thread(ThreadContext &ctx, const ProblemWrapper &wrapper, const Parameters &params,
                    RoundState &round, SPSCQueue &out, CollisionQueue &coll_q, int walker_index)
 {
 	constexpr int vlen = ProblemWrapper::vlen;
 
-	/* our own copy: wrapper.n_eval is a per-thread tally */
-	ProblemWrapper wrapper = master;
-	wrapper.n_eval = 0;
-
 	const u64 i = round.i;
 	const u64 root_seed = round.root_seed;
 
-	int jbits = std::log2(10 * params.w) + 8;
+	int jbits = params.jbits;
 	u64 jmask = make_mask(jbits);
 	(void) jmask;
 
@@ -109,25 +102,17 @@ void walker_thread(ThreadContext &ctx, const ProblemWrapper &master, const Param
 			/* every inserter has gone quiet, so no new candidate can appear: finish
 			   the queue and this round is over for us */
 			while (coll_q.count.load(std::memory_order_relaxed) > 0)
-				service_collision(ctx, wrapper, params, round, coll_q, i, root_seed);
+				service_collision(ctx, wrapper, params, round, coll_q, root_seed);
 			ctx.n_dp.store(n_dp_local, std::memory_order_relaxed);
-			ctx.n_eval.store(wrapper.n_eval, std::memory_order_relaxed);
 			ctx.state.store(QUIESCENT, std::memory_order_release);
 			return;
 		}
 
-		/*
-		 * Retire queued collisions before walking the next chunk.  Draining rather
-		 * than taking a single one is what keeps up: a chunk produces chunk_size*vlen
-		 * points, hence far more than one dictionary hit, so retiring one at a time
-		 * loses almost every collision to the queue.  Draining is also self-balancing
-		 * -- if the inserters are finding hits faster than we retire them, we spend
-		 * more time here and produce fewer points.
-		 */
+		/* Retire queued collisions before walking the next chunk. */
 		for (size_t c = 0; coll_q.count.load(std::memory_order_relaxed) > 0; c++) {
 			if (params.coll_per_chunk && c >= params.coll_per_chunk)
 				break;
-			service_collision(ctx, wrapper, params, round, coll_q, i, root_seed);
+			service_collision(ctx, wrapper, params, round, coll_q, root_seed);
 		}
 
 		if (st == HELD) {
@@ -160,10 +145,11 @@ void walker_thread(ThreadContext &ctx, const ProblemWrapper &master, const Param
 				}
 			}
 		}
+		/* the chunk always runs to completion: exactly one vmixf per turn */
+		ctx.ctr.n_eval += params.chunk_size * vlen;
 
 		/* publish progress for the comm thread's periodic report */
 		ctx.n_dp.store(n_dp_local, std::memory_order_relaxed);
-		ctx.n_eval.store(wrapper.n_eval, std::memory_order_relaxed);
 	}
 }
 
