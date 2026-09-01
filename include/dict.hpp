@@ -103,6 +103,8 @@ public:
 			A[i] = 0;
 	}
   
+
+
   	// return (start', len'), maybe. Return len' == 0 if unknown
 	optional<pair<u64, u64>> pop_insert(u64 end, u64 start, u64 len0)
 	{

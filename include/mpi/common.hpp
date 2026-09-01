@@ -3,439 +3,229 @@
 
 #include <mpi.h>
 #include <err.h>
+#include <sched.h>
+#include <pthread.h>
+#include <vector>
 
 #include "../common.hpp"
 
 namespace mitm {
 
-enum tags {TAG_INTERCOMM, TAG_POINTS, TAG_SENDER_CALLHOME, TAG_RECEIVER_CALLHOME, TAG_ASSIGNMENT, TAG_SOLUTION};
-enum role {CONTROLLER, SENDER, RECEIVER, UNDECIDED};
+/*
+ * MPI+OpenMP topology: ONE rank per node, MPI_THREAD_FUNNELED.
+ * Inside a rank:  thread 0 == comm (and, on rank 0, the controller),
+ *                 threads 1..R == inserters (one dictionary shard each),
+ *                 the rest     == walkers (walk trails).
+ */
+
+enum tags {
+	TAG_POINTS,        /* bulk distinguished points, node -> node                */
+	TAG_CONTROL,       /* the control channel, both directions (see pcs_comm.hpp) */
+};
+
 enum assignment {KEEP_GOING, NEW_VERSION};
 
+enum thread_role {COMM, INSERTER, WALKER};
+
+/* how many u64 per distinguished point on the wire */
+static const int DP_WORDS = 3;
+
+/* One distinguished point.  Identical layout on the SPSC queues and on the wire;
+   the routing helpers that pick it apart live in pcs_comm.hpp. */
+struct DP {
+	u64 seed;      /* the chain index j it was started from */
+	u64 x;         /* the FULL endpoint */
+	u64 len;       /* trail length */
+};
+
+
+/******************************* CPU affinity ********************************/
+
+/* the k-th usable CPU of `mask` (k is 0-based); -1 if there are not that many */
+static inline int nth_cpu(const cpu_set_t *mask, int k)
+{
+	for (int cpu = 0; cpu < CPU_SETSIZE; cpu++)
+		if (CPU_ISSET(cpu, mask) && (k-- == 0))
+			return cpu;
+	return -1;
+}
+
+/* pin the calling thread to `cpu`.  Returns cpu, or -1 on failure. */
+static inline int pin_to_cpu(int cpu)
+{
+	if (cpu < 0)
+		return -1;
+	cpu_set_t set;
+	CPU_ZERO(&set);
+	CPU_SET(cpu, &set);
+	if (pthread_setaffinity_np(pthread_self(), sizeof(set), &set) != 0)
+		return -1;
+	return cpu;
+}
+
+
+/********************************* parameters ********************************/
 
 class MpiParameters : public Parameters {
 public:
-	int recv_per_node = 1;
-	int buffer_capacity = 1500;            // somewhat arbitrary
-	double ping_delay = 0.1;
-
+	/* MPI topology.  One rank per node, so `rank` IS the node index. */
 	MPI_Comm world_comm;
-	MPI_Comm inter_comm;
-	MPI_Comm local_comm;                    /* just our side of the intercomm */
-	int role = UNDECIDED;                   /* enum role */
-	int rank, size;                         // for the global communicator
-	int local_rank, local_size;             /* rank among the local group of the inter-communicator */
-	int n_send;
-	int n_nodes;
+	int rank;
+	/* n_nodes and n_inserters are inherited from Parameters */
+	int n_walkers;                            /* total walker threads, all nodes */
+
+	/* thread layout inside a node (CLI-settable) */
+	int walkers_per_node = 0;                 /* 0 == fill the inherited affinity mask */
+	int inserters_per_node = 1;
+	int n_threads;                         /* derived: 1 + walkers_per_node + inserters_per_node */
+
+	/* thread pinning */
+	bool bind_threads = true;
+	cpu_set_t inherited_mask;              /* whatever the launcher gave this rank */
+	int n_avail_cpu;
+
+	/* SPSC queue capacities, in DPs (rounded up to a power of two internally) */
+	size_t walker_queue_capacity = 1024;     /* walker -> comm */
+	size_t inserter_queue_capacity = 4096;     /* comm -> inserter */
+
+
+	/* control channel */
+	int bsend_slack = 8;                   /* MPI_Bsend slots beyond the n_nodes worst case */
+
+	/* bulk DP buffering */
+	size_t buffer_capacity = 1500;         /* DPs per message (double-buffered per node) */
+	int n_in_buffers = 8;                /* posted MPI_Irecv slots (ANY_SOURCE) */
+
+	/* collision queue */
+	size_t coll_queue_capacity = 8192;
+	size_t coll_per_chunk = 0;             /* candidates a walker retires per chunk; 0 == drain */
+
+	/* pacing */
+	double ping_delay = 0.1;               /* max seconds between reports to the controller */
+	int reports_per_round = 4;             /* also report every points_per_version/this DPs,
+	                                          so a short round cannot overshoot beta*w */
+	size_t chunk_size = 64;                /* vmixf iterations between queue / phase checks */
 
 	void setup(MPI_Comm comm)
 	{
-		setup(comm, 1);
-	}
-
-	void setup(MPI_Comm comm, bool controller)
-	{
 		world_comm = comm;
-		MPI_Comm_size(world_comm, &size);
 		MPI_Comm_rank(world_comm, &rank);
+		MPI_Comm_size(world_comm, &n_nodes);
 		verbose = (rank == 0);
-		if (controller && rank == 0)
-			role = CONTROLLER;
-	
-		/* create a subcommunicator inside each node */
-		MPI_Comm node_comm;
-		MPI_Comm_split_type(world_comm, MPI_COMM_TYPE_SHARED, 0, MPI_INFO_NULL, &node_comm);
-	
-		/* determine the number of nodes (== #processes of node-rank 0) */
-		int node_rank;
-		int node_size;
-		MPI_Comm_rank(node_comm, &node_rank);
-		MPI_Comm_size(node_comm, &node_size);
-		int is_rank0 = (node_rank == 0) ? 1 : 0;
-		MPI_Allreduce(&is_rank0, &n_nodes, 1, MPI_INT, MPI_SUM, world_comm);
+
+		/* what did the launcher actually give us? */
+		CPU_ZERO(&inherited_mask);
+		if (sched_getaffinity(0, sizeof(inherited_mask), &inherited_mask) != 0)
+			err(1, "sched_getaffinity");
+		n_avail_cpu = CPU_COUNT(&inherited_mask);
+
+		if (inserters_per_node < 1)
+			errx(1, "MPI: at least one inserter thread per node is required");
+		if (walkers_per_node == 0)
+			walkers_per_node = n_avail_cpu - 1 - inserters_per_node;
+		if (walkers_per_node < 1)
+			errx(1, "MPI: at least one walker thread per node is required "
+			        "(%d CPUs in mask, %d reserved for inserters + comm)",
+			        n_avail_cpu, inserters_per_node + 1);
+
+		n_threads = 1 + walkers_per_node + inserters_per_node;
+		n_inserters = n_nodes * inserters_per_node;      /* total dictionary shards */
+		n_walkers = n_nodes * walkers_per_node;      /* total walker threads */
+
+		if (bind_threads && n_avail_cpu < n_threads)
+			warnx("MPI: rank %d has only %d CPUs in its affinity mask for %d threads."
+			      "  Did you forget --bind-to none?", rank, n_avail_cpu, n_threads);
+
 		if (verbose) {
-			printf("MPI: detected %d nodes\n", n_nodes);
-			/* verification */
-			if ((size % n_nodes) != 0)
-				errx(1, "MPI: ERROR! The number of processes (%d) is not a multiple of the number of hosts (%d)", size, n_nodes);
+			printf("MPI: %d node(s) x (1 comm + %d ins + %d walk) = %d threads/node\n",
+				n_nodes, inserters_per_node, walkers_per_node, n_threads);
+			printf("MPI: %d dictionary shards, %d walker threads in total\n", n_inserters, n_walkers);
 		}
-	
-		/* check that there is always the same number of processes per node */
-		int check_hi, check_lo;
-		MPI_Allreduce(&node_size, &check_lo, 1, MPI_INT, MPI_MIN, world_comm);
-		MPI_Allreduce(&node_size, &check_hi, 1, MPI_INT, MPI_MAX, world_comm);
-		if (role == CONTROLLER) {
-			if (check_lo != check_hi)
-				printf("MPI: WARNING!!! process / node varies from %d to %d\n", check_lo, check_hi);
-			else
-				printf("MPI: each node runs %d processes\n", check_lo);
-		}
-		MPI_Comm_free(&node_comm);
+	}
 
-#if 0 
-		// NUMA stuff. Let's keep this for later
-		/* split each node comm into a NUMA comm */
-		MPI_Comm numa_comm;
-		// this is according to the spec
-		// MPI_Info info;
-		// MPI_Info_create(&info);
-		// MPI_Info_set(info, "mpi_hw_resource_type", "NUMANode");
-		// MPI_Comm_split_type(node_comm, MPI_COMM_TYPE_HW_GUIDED, 0, info, &numa_comm);
-	
-		// this works for OpenMPI
-		MPI_Comm_split_type(node_comm, OMPI_COMM_TYPE_NUMA, 0, MPI_INFO_NULL, &numa_comm);
-	
-		/* how many of us in the NUMA comm? */
-		int numa_rank;
-		int numa_size;
-		MPI_Comm_size(numa_comm, &numa_size);
-		MPI_Comm_rank(numa_comm, &numa_rank);
-	
-		/* count NUMA comms */
-		int n_numa;
-		int is_numarank0 = (numa_rank == 0) ? 1 : 0;
-		MPI_Allreduce(&is_numarank0, &n_numa, 1, MPI_INT, MPI_SUM, world_comm);
-	
-		/* check size of NUMA comms */
-		MPI_Allreduce(&numa_size, &check_lo, 1, MPI_INT, MPI_MIN, world_comm);
-		MPI_Allreduce(&numa_size, &check_hi, 1, MPI_INT, MPI_MAX, world_comm);
-	
-		if (master) {
-			if (check_lo != check_hi)
-				printf("MPI: WARNING! #process / #NUMA zones varies from %d to %d\n", check_lo, check_hi);
-			else
-				printf("MPI: detected %d NUMA zones per node\n", size / check_lo / n_nodes);
-		}
-#endif	
-		
-		/* decide sender / receiver */
-		if (node_rank >= node_size - recv_per_node)
-			role = RECEIVER;
-		else if (role == UNDECIDED)
-			role = SENDER;
-		/* safety check */
-		assert(role != UNDECIDED);
-		/* count them */
-		n_recv = (role == RECEIVER) ? 1 : 0;
-		MPI_Allreduce(MPI_IN_PLACE, &n_recv, 1, MPI_INT, MPI_SUM, world_comm);
-		n_send = (role == SENDER) ? 1 : 0;
-		MPI_Allreduce(MPI_IN_PLACE, &n_send, 1, MPI_INT, MPI_SUM, world_comm);
-		if (verbose) {
-			printf("MPI: # sender   processes = %d\n", n_send);
-			printf("MPI: # receiver processes = %d\n", n_recv);
-			if (n_send == 0 || n_recv == 0)
-				errx(1, "MPI: ERROR! At least one sender/receiver is required");
-		}
-	
-		/* locate last receiver / sender */
-		int last_rank[2];
-		last_rank[0] = (role == SENDER) ? rank : 0;
-		last_rank[1] = (role == RECEIVER) ? rank : 0;
-		MPI_Allreduce(MPI_IN_PLACE, last_rank, 2, MPI_INT, MPI_MAX, world_comm);
-
-		/* Create an intra-comm that separates senders and receivers */
-		MPI_Comm_split(world_comm, role, 0, &local_comm);
-		MPI_Comm_rank(local_comm, &local_rank);
-		MPI_Comm_size(local_comm, &local_size);
-		if (role != CONTROLLER) {
-			/* creation of an inter-communicator between senders and receivers */
-			int local_leader;     // in tribe_comm
-			int remote_leader;    // in world_comm
-			if (role == RECEIVER) {
-				local_leader = n_recv - 1;
-				remote_leader = last_rank[0];
-			} else {
-				local_leader = n_send - 1;
-				remote_leader = last_rank[1];
-			}
-			MPI_Intercomm_create(local_comm, local_leader, world_comm, remote_leader, TAG_INTERCOMM, &inter_comm);
-		}
+	/* CPU that thread `tid` should run on, or -1 if we cannot place it */
+	int cpu_of_thread(int tid) const
+	{
+		if (!bind_threads || tid >= n_avail_cpu)
+			return -1;
+		return nth_cpu(&inherited_mask, tid);
 	}
 };
 
 
-/* Manages send buffers for a collection of receiver processes, with double-buffering */
-class SendBuffers {
-public:
-	using Buffer = vector<u64>;
-	double waiting_time = 0;
-	u64 bytes_sent = 0;
-
-private:
-	MPI_Comm inter_comm;
-	size_t capacity;
-	int tag;
-	int n;
-	
-	vector<Buffer> ready;
-	vector<Buffer> outgoing;
-	vector<MPI_Request> request;   /* for the OUTGOING buffers */
-
-	/* initiate transmission of the i-th OUTGOING buffer */
-	void start_send(int i)
-	{
-		if (outgoing[i].size() == 0)  // do NOT send empty buffers. These are interpreted as "I am done"
-			return;
-		MPI_Isend(outgoing[i].data(), outgoing[i].size(), MPI_UINT64_T, i, tag, inter_comm, &request[i]);
-		bytes_sent += outgoing[i].size() * sizeof(u64);
-	}
-
-	void switch_when_full(int rank)
-	{
-		if (ready[rank].size() == capacity) {
-			// ready buffer is full: finish sending the outgoing buffer
-			double start = wtime();
-			MPI_Wait(&request[rank], MPI_STATUS_IGNORE);
-			waiting_time += wtime() - start;
-			outgoing[rank].clear();
-			// swap and start sending
-			std::swap(ready[rank], outgoing[rank]);
-			start_send(rank);
-		}
-	}
-
-public:
-	SendBuffers(MPI_Comm inter_comm, int tag, size_t capacity) : inter_comm(inter_comm), capacity(capacity), tag(tag)
-	{
-		MPI_Comm_remote_size(inter_comm, &n);
-		ready.resize(n);
-		outgoing.resize(n);
-		request.resize(n, MPI_REQUEST_NULL);
-		for (int i = 0; i < n; i++) {
-			ready[i].reserve(capacity);
-			outgoing[i].reserve(capacity);
-		}
-	}
-
-	/* add a new item to the send buffer. Send if necessary */
-	void push(u64 x, int rank)
-	{
-		switch_when_full(rank);
-		ready[rank].push_back(x);
-	}
-
-	void push2(u64 x, u64 y, int rank)
-	{
-		switch_when_full(rank);
-		ready[rank].push_back(x);
-		ready[rank].push_back(y);
-	}
-
-	void push3(u64 x, u64 y, u64 z, int rank)
-	{
-		switch_when_full(rank);
-		ready[rank].push_back(x);
-		ready[rank].push_back(y);
-		ready[rank].push_back(z);
-	}
-
-	/* send and empty all buffers, even if they are incomplete */
-	void flush()
-	{
-		// finish sending all the outgoing buffers
-		double start = wtime();
-		MPI_Waitall(n, request.data(), MPI_STATUSES_IGNORE);
-
-		// send all the (incomplete) ready buffers
-		for (int i = 0; i < n; i++) {
-			std::swap(ready[i], outgoing[i]);
-			start_send(i);
-		}
-		MPI_Waitall(n, request.data(), MPI_STATUSES_IGNORE);
-
-		// finally tell all receivers that we are done
-		for (int i = 0; i < n; i++)
-			MPI_Send(NULL, 0, MPI_UINT64_T, i, tag, inter_comm);
-		waiting_time += wtime() - start;
-	}
-};
-
-
-/* Manage reception buffers for a collection of sender processes, with double-buffering */
-class RecvBuffers {
-public:
-	using Buffer = vector<u64>;
-	double waiting_time = 0;
-	u64 bytes_sent = 0;
-
-private:
-	MPI_Comm inter_comm;
-	const size_t capacity;
-	int n;
-	int tag;
-
-	vector<Buffer> ready;                 // buffers containing points ready to be processed 
-	vector<Buffer> incoming;              // buffers waiting for incoming data
-	vector<MPI_Request> request;
-
-	/* initiate reception for a specific sender */
-	void listen_sender(int i)
-	{
-		incoming[i].resize(capacity);
-		MPI_Irecv(incoming[i].data(), capacity, MPI_UINT64_T, i, tag, inter_comm, &request[i]);
-	}
-
-public:
-	int n_active_senders;                      // # active senders
-	RecvBuffers(MPI_Comm inter_comm, int tag, size_t capacity) : inter_comm(inter_comm), capacity(capacity), tag(tag)
-	{
-		MPI_Comm_remote_size(inter_comm, &n);
-		ready.resize(n);
-		incoming.resize(n);
-		request.resize(n, MPI_REQUEST_NULL);
-		for (int i = 0; i < n; i++) {
-			ready[i].reserve(capacity);
-			incoming[i].reserve(capacity);
-			listen_sender(i);
-		}
-		n_active_senders = n;
-	}
-
-	~RecvBuffers()
-	{
-		assert (n_active_senders == 0);
-	}
-
-	/* return true when all senders are done */
-	bool complete()
-	{
-		return (n_active_senders == 0);
-	}
-
-	/* 
-	 * Wait until some data arrives. Returns the buffers that have arrived.
-	 * Only call this when complete() returned false (otherwise, this will wait forever)
-	 * This may destroy the content of all "ready" buffers, so that they have to be processed first
-	 */
-	vector<Buffer *> wait()
-	{
-		assert(n_active_senders > 0);
-		vector<Buffer *> result;
-		int n_done;
-		vector<int> rank_done(n);
-		vector<MPI_Status> statuses(n);
-		double start = wtime();
-		MPI_Waitsome(n, request.data(), &n_done, rank_done.data(), statuses.data());
-		waiting_time += wtime() - start;
-		assert(n_done != MPI_UNDEFINED);
-
-		for (int i = 0; i < n_done; i++) {
-			int j = rank_done[i];
-			std::swap(incoming[j], ready[j]);
-			int count;
-			MPI_Get_count(&statuses[i], MPI_UINT64_T, &count);
-			if (count == 0) {
-				n_active_senders -= 1;
-			} else {
-				ready[j].resize(count);         // matching message size
-				result.push_back(&ready[j]);
-				listen_sender(j);
-			}
-		}
-		return result;
-	}
-};
-
-void BCast_result(MpiParameters &params, vector<pair<u64,u64>> &result)
-{
-	// deal with the results
-    vector<int> recvcounts(params.size);
-    recvcounts[params.rank] = 2 * result.size();
-    MPI_Allgather(MPI_IN_PLACE, 1, MPI_INT, recvcounts.data(), 1, MPI_INT, params.world_comm);
-
-    vector<int> displs(params.size);
-    int acc = 0;
-    for (int i = 0; i < params.size; i++) {
-        displs[i] = acc;
-        acc += recvcounts[i];
-    }
-
-    vector<u64> tmp(acc);
-    for (size_t i = 0; i < result.size(); i++) {
-        int offset = displs[params.rank] + 2*i;
-        auto [x0, x1] = result[i];
-        tmp[offset] = x0;
-        tmp[offset + 1] = x1;
-    }
-    MPI_Allgatherv(MPI_IN_PLACE, 0, MPI_INT, tmp.data(), recvcounts.data(), displs.data(), MPI_UINT64_T, params.world_comm);
-    result.clear();
-    for (int i = 0; i < acc; i += 2)
-        result.push_back(pair(tmp[i], tmp[i+1]));
-}
-
+/******************************* benchmarking ********************************/
 
 static void display_stats(u64 N, double start, int vlen, const MpiParameters &params)
 {
 	double rate = vlen * N / (wtime() - start);
-    double rate_min = rate;
-    double rate_max = rate;
-    double rate_avg = rate;
-    MPI_Allreduce(MPI_IN_PLACE, &rate_min, 1, MPI_DOUBLE, MPI_MIN, params.world_comm);
-    MPI_Allreduce(MPI_IN_PLACE, &rate_max, 1, MPI_DOUBLE, MPI_MAX, params.world_comm);
-    MPI_Allreduce(MPI_IN_PLACE, &rate_avg, 1, MPI_DOUBLE, MPI_SUM, params.world_comm);
-    rate_avg /= params.size;
-    double rate_std = (rate - rate_avg) * (rate - rate_avg);
-    MPI_Allreduce(MPI_IN_PLACE, &rate_std, 1, MPI_DOUBLE, MPI_SUM, params.local_comm);
-    rate_std /= params.size;
-    rate_std = std::sqrt(rate_std);
-    if (params.rank == 0) {
-        char hmin[8], hmax[8], havg[8], hstd[8];
-        human_format(rate_min, hmin);
-        human_format(rate_max, hmax);
-        human_format(rate_avg, havg);
-        human_format(rate_std, hstd);
-        printf("Benchmark. f/s: min %s max %s avg %s std %s\n", hmin, hmax, havg, hstd);
-    }
+	double rate_min = rate;
+	double rate_max = rate;
+	double rate_avg = rate;
+	MPI_Allreduce(MPI_IN_PLACE, &rate_min, 1, MPI_DOUBLE, MPI_MIN, params.world_comm);
+	MPI_Allreduce(MPI_IN_PLACE, &rate_max, 1, MPI_DOUBLE, MPI_MAX, params.world_comm);
+	MPI_Allreduce(MPI_IN_PLACE, &rate_avg, 1, MPI_DOUBLE, MPI_SUM, params.world_comm);
+	rate_avg /= params.n_nodes;
+	double rate_std = (rate - rate_avg) * (rate - rate_avg);
+	MPI_Allreduce(MPI_IN_PLACE, &rate_std, 1, MPI_DOUBLE, MPI_SUM, params.world_comm);
+	rate_std /= params.n_nodes;
+	rate_std = std::sqrt(rate_std);
+	if (params.rank == 0) {
+		char hmin[8], hmax[8], havg[8], hstd[8];
+		human_format(rate_min, hmin);
+		human_format(rate_max, hmax);
+		human_format(rate_avg, havg);
+		human_format(rate_std, hstd);
+		printf("Benchmark. f/s: min %s max %s avg %s std %s\n", hmin, hmax, havg, hstd);
+	}
 }
 
 /* try to iterate for 1s. Return #it/s */
 template<typename Problem>
 void benchmark(const Problem& pb, const MpiParameters &params)
 {
-    if (params.rank == 0)
-        printf("Benchmarking scalar implementation (using %d processes)\n", params.size);
+	if (params.rank == 0)
+		printf("Benchmarking scalar implementation (using %d processes)\n", params.n_nodes);
 
-    MPI_Barrier(params.world_comm);
+	MPI_Barrier(params.world_comm);
 
-    u64 N = 1ull << 26; 
-    double start = wtime();
-    u64 count = 0;
-    for (u64 x = 0; x < N; x++) {
-        u64 z = (x & 1) ? pb.f(x) : pb.g(x);
-        u64 hash = (z * 0xdeadbeef) % 0x7fffffff;
-        int target = ((int) hash) % params.n_recv;
-        if (target == 0)
-            count += 1;
-    }
-    display_stats(N, start, 1, params);
+	u64 N = 1ull << 26;
+	double start = wtime();
+	u64 count = 0;
+	for (u64 x = 0; x < N; x++) {
+		u64 z = (x & 1) ? pb.f(x) : pb.g(x);
+		u64 hash = (z * 0xdeadbeef) % 0x7fffffff;
+		int target = ((int) hash) % params.n_inserters;
+		if (target == 0)
+			count += 1;
+	}
+	display_stats(N, start, 1, params);
 
-    constexpr int vlen = Problem::vlen;
-    if (vlen > 1) {
-        if (params.rank == 0)
-            printf("Benchmarking vector implementation (vlen=%d)\n", vlen);
+	constexpr int vlen = Problem::vlen;
+	if (vlen > 1) {
+		if (params.rank == 0)
+			printf("Benchmarking vector implementation (vlen=%d)\n", vlen);
 
-        u64 x[vlen] __attribute__ ((aligned(sizeof(u64) * vlen))); 
-        u64 z[vlen] __attribute__ ((aligned(sizeof(u64) * vlen)));
-        bool choice[vlen];
-        for (int i = 0; i < vlen; i++) {
-        	choice[i] = i & 1;
-            x[i] = i;
-        }
+		u64 x[vlen] __attribute__ ((aligned(sizeof(u64) * vlen)));
+		u64 z[vlen] __attribute__ ((aligned(sizeof(u64) * vlen)));
+		bool choice[vlen];
+		for (int i = 0; i < vlen; i++) {
+			choice[i] = i & 1;
+			x[i] = i;
+		}
 
 		MPI_Barrier(params.world_comm);
 
-        double start = wtime();
-        u64 mask = make_mask(pb.n);
-        u64 N = 1ull << 20; 
-        for (u64 i = 0; i < N; i++) {
-            pb.vfg(x, choice, z);
-            for (int j = 0; j < vlen; j++)
-                x[j] = z[j] & mask;
-        }
-        display_stats(N, start, vlen, params);
-    }
+		double start = wtime();
+		u64 mask = make_mask(pb.n);
+		u64 N = 1ull << 20;
+		for (u64 i = 0; i < N; i++) {
+			pb.vfg(x, choice, z);
+			for (int j = 0; j < vlen; j++)
+				x[j] = z[j] & mask;
+		}
+		display_stats(N, start, vlen, params);
+	}
 }
-
 
 }
 #endif

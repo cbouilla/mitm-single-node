@@ -12,6 +12,8 @@ add_compile_options(-march=native -ggdb -Wall)
 # The little bird says clang has a nicer error report than gcc!
 
 find_package(MPI REQUIRED)
+find_package(OpenMP REQUIRED)
+find_package(Threads REQUIRED)
 find_package(OpenSSL REQUIRED)     # DES implementation
 
 

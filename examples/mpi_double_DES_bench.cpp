@@ -14,7 +14,7 @@ int main(int argc, char* argv[])
     MPI_Init(NULL, NULL);
     
     mitm::MpiParameters params;
-    params.setup(MPI_COMM_WORLD, 0);  // no controller process
+    params.setup(MPI_COMM_WORLD);
     
     mitm::PRNG prng(seed);
     mitm::DoubleDES_Problem pb(56, prng);

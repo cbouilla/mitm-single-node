@@ -19,11 +19,8 @@ add_executable(mpi_double_speck64_demo
     mpi_double_speck64_demo.cpp)
 target_include_directories(mpi_double_speck64_demo PRIVATE ../include)
 target_link_libraries(mpi_double_speck64_demo PUBLIC MPI::MPI_CXX)
-
-add_executable(mpi_naive_double_speck64_demo
-    mpi_naive_double_speck64_demo.cpp)
-target_include_directories(mpi_naive_double_speck64_demo PRIVATE ../include)
-target_link_libraries(mpi_naive_double_speck64_demo PUBLIC MPI::MPI_CXX)
+target_link_libraries(mpi_double_speck64_demo PUBLIC OpenMP::OpenMP_CXX)
+target_link_libraries(mpi_double_speck64_demo PUBLIC Threads::Threads)
 
 add_executable(mpi_double_speck64_bench
     mpi_double_speck64_bench.cpp)

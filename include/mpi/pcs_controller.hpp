@@ -4,157 +4,174 @@
 #include <cmath>
 #include <mpi.h>
 
+#include "../common.hpp"
+#include "../engine_common.hpp"
 #include "common.hpp"
-#include "engine_common.hpp"
-#include "mpi/common.hpp"
+#include "pcs_comm.hpp"
 
 namespace mitm {
 
-/* there is ONE controller process (of global rank 0) */
+/*
+ * The controller lives on the comm thread of rank 0, which also has a full node to
+ * run.  It is therefore a state object driven by that thread's poll loop rather than
+ * a loop of its own: nothing here blocks, and nothing probes.
+ */
+class Controller {
+public:
+	const MpiParameters &params;
 
-template<typename ProblemWrapper>
-tuple<u64,u64,u64> controller(const ProblemWrapper& wrapper, const MpiParameters &params, PRNG &prng)
-{
-    printf("Starting MPI collision search with seed=%016" PRIx64 " (MPI engine)\n", prng.seed);
-    
-	char hbsize[8], hdsize[8], htdsize[8];
-	u64 bsize_node = 4 * 3 * sizeof(u64) * params.buffer_capacity * params.n_send * params.n_recv / params.n_nodes;
-	human_format(bsize_node, hbsize);
-	human_format(params.nbytes_memory, hdsize);
-	human_format(params.n_nodes * params.nbytes_memory, htdsize);
-	double log2_w = std::log2(params.w);
-	printf("RAM per node == %sB buffer + %sB dict.  Total dict size == %s (2^%.2f slots)\n", hbsize, hdsize, htdsize, log2_w);
-    printf("Generating %.1f*w = %" PRId64 " = 2^%0.2f distinguished point / version\n", 
-        	params.beta, params.points_per_version, std::log2(params.points_per_version));
-
-    optional<tuple<u64,u64,u64>> solution;    /* (i, x0, x1)  */
-	u64 stop = 0;
 	u64 nround = 0;
-	u64 ndp_total = 0;
-	u64 ncoll_total = 0;
-	u64 nf_total = 0;
-	u64 mask = make_mask(wrapper.m);
-	double start = wtime();
+	u64 stop = 0;
+	optional<tuple<u64,u64,u64>> solution;         /* (i, x0, x1) */
 
-	vector<u8> hll(0x10000);   // HyperLogLog for all collisions since the beginning
+	/* this round */
+	u64 ndp = 0;                                   /* DPs reported by all nodes */
+	int n_active_nodes = 0;
+	double round_start = 0, last_display = 0;
+	u64 drop_walkerq = 0, drop_out = 0, drop_inserterq = 0, drop_coll = 0;
+	u64 nprobe = 0;                                /* dictionary probes retired */
 
-	for (;;) {
-        u64 i = prng.rand() & mask;             /* index of families of mixing functions */
-       	u64 root_seed = prng.rand();
+	/* totals */
+	u64 ndp_total = 0, ncoll_total = 0, nf_total = 0;
+	double start_time;
+	vector<u8> hll;                                /* all collisions since the start */
 
-		/* send job order to everybody */
-		u64 msg[3] = {i, root_seed, stop};
-		MPI_Bcast(msg, 3, MPI_UINT64_T, 0, params.world_comm);
-		
-		if (stop)
-			break;
+	Controller(const MpiParameters &p) : params(p), n_active_nodes(p.n_nodes), hll(0x10000)
+	{
+		start_time = wtime();
+	}
 
-		vector<u8> hll_i(0x10000);      // HyperLogLog for all collisions for this round
-		int n_active_senders = params.n_send;
-		u64 ndp = 0;                      // #DP found for this i by all senders
-		double round_start = wtime();
-		double last_display = round_start;
+	void banner(const PRNG &prng, u64 w_slots)
+	{
+		char hbuf[8], hdict[8];
+		u64 bufbytes = (u64) 2 * params.n_nodes * DP_WORDS * sizeof(u64) * params.buffer_capacity;
+		human_format(bufbytes, hbuf);
+		human_format(params.n_nodes * w_slots * sizeof(u64), hdict);
+		printf("Starting MPI+OpenMP collision search with seed=%016" PRIx64 "\n", prng.seed);
+		printf("RAM per node == %sB buffers + dict.  Total dict == %sB (2^%.2f slots)\n",
+			hbuf, hdict, std::log2((double) params.w));
+		printf("Generating %.1f*w = %" PRId64 " = 2^%0.2f distinguished points / version\n",
+			params.beta, params.points_per_version, std::log2(params.points_per_version));
+		fflush(stdout);
+	}
 
-		while (n_active_senders > 0) {
-			u64 buffer[10];
-			MPI_Status status;
-			MPI_Recv(buffer, 10, MPI_UINT64_T, MPI_ANY_SOURCE, MPI_ANY_TAG, params.world_comm, &status);
-			switch (status.MPI_TAG) {
-				case TAG_SENDER_CALLHOME: {
-					ndp += buffer[0];
-					int assignment = KEEP_GOING;
-					if (stop || ndp >= params.points_per_version) {
-						assignment = NEW_VERSION;
-						n_active_senders -= 1;
-					}
-					MPI_Send(&assignment, 1, MPI_INT, status.MPI_SOURCE, TAG_ASSIGNMENT, params.world_comm);
+	void begin_round()
+	{
+		ndp = 0;
+		n_active_nodes = params.n_nodes;
+		drop_walkerq = drop_out = drop_inserterq = drop_coll = nprobe = 0;
+		round_start = wtime();
+		last_display = round_start;
+	}
 
-					// verbosity
-					double now = wtime();
-					if (now - last_display > 0.5) {
-						last_display = now;
-						double delta = now - round_start;
-						double dp_rate = ndp / delta;
-						double nf_send_rate = dp_rate / params.theta;
-						char hsrate[8], hnrate[8];
-						human_format(nf_send_rate / params.n_send, hsrate);
-						u64 data_round = ndp * 3 * sizeof(u64) / params.n_nodes;
-						human_format(data_round / delta, hnrate);
-						double completion = (double) ndp / params.w / params.beta;
-						printf("\rRound %" PRId64 ":  %.1fs (%.1f%%, ETA: %.1fs).  %.2f*w #DP.  senders: %s #f/s.  Node-->%sB/s        ",
-							nround, delta, 100. * completion, delta / completion, (double) ndp / params.w, hsrate, hnrate);
-						fflush(stdout);
-					}
-					break;
-				}
 
-				case TAG_SOLUTION:
-					solution = optional(tuple(buffer[0], buffer[1], buffer[2]));
-					stop = 1;
-			}
+	/*
+	 * Digest one node report.  Returns the assignment to send back, or -1 when no
+	 * reply is due (solution reports are one-way).
+	 */
+	int handle_report(const u64 r[REP_NWORDS])
+	{
+		if (r[REP_GOLDEN]) {
+			if (not solution)
+				solution = optional(tuple(r[REP_I], r[REP_X0], r[REP_X1]));
+			stop = 1;
+			return -1;
 		}
 
-		// now is a good time to collect and display stats */
+		ndp += r[REP_NDP];
+		drop_walkerq += r[REP_DROP_WALKERQ];
+		drop_out   += r[REP_DROP_OUT];
+		drop_inserterq += r[REP_DROP_INSERTERQ];
+		drop_coll  += r[REP_DROP_COLL];
+		nprobe     += r[REP_NPROBE];
 
-		//             #f send, #f recv, collisions, probe_failures, robinhoods, non-colliding, bad_collisions
-		u64 iavg[7] = {0, 0, 0, 0, 0, 0, 0};
-		MPI_Reduce(MPI_IN_PLACE, iavg, 7, MPI_UINT64_T, MPI_SUM, 0, params.world_comm);
-		u64 ncoll = iavg[2];
-		ndp_total += ndp;
-		ncoll_total += ncoll;
-		u64 nf_send = iavg[0];
-		u64 nf_recv = iavg[1];
-		u64 nf_round = nf_send + nf_recv;
-		nf_total += nf_round;
+		int assignment = KEEP_GOING;
+		if (stop || ndp >= params.points_per_version) {
+			assignment = NEW_VERSION;
+			n_active_nodes -= 1;
+		}
+		display();
+		return assignment;
+	}
 
-		//                # send wait  #recv wait
-		double dmin[2] = {HUGE_VAL,    HUGE_VAL};
-		double dmax[2] = {0, 0};
-		double davg[2] = {0, 0};
-		MPI_Reduce(MPI_IN_PLACE, dmin, 2, MPI_DOUBLE, MPI_MIN, 0, params.world_comm);
-		MPI_Reduce(MPI_IN_PLACE, dmax, 2, MPI_DOUBLE, MPI_MAX, 0, params.world_comm);
-		MPI_Reduce(MPI_IN_PLACE, davg, 2, MPI_DOUBLE, MPI_SUM, 0, params.world_comm);
-		davg[0] /= params.n_send;
-		davg[1] /= params.n_recv;
+	void display()
+	{
+		double now = wtime();
+		if (now - last_display <= 0.5)
+			return;
+		last_display = now;
+		double delta = now - round_start;
+		double dp_rate = ndp / delta;
+		double completion = (double) ndp / params.points_per_version;
+		char hrate[8], hnrate[8], hprobe[8];
+		human_format(dp_rate / params.theta / params.n_walkers, hrate);
+		human_format(ndp * DP_WORDS * sizeof(u64) / params.n_nodes / delta, hnrate);
+		human_format((double) nprobe / params.n_inserters / delta, hprobe);
+		printf("\rRound %" PRId64 ":  %.1fs (%.1f%%, ETA %.1fs).  %.2f*w #DP.  %s #f/s per walker.  %s probe/s per inserter.  node-->%sB/s   ",
+			nround, delta, 100. * completion,
+			(completion > 0) ? delta * (1 - completion) / completion : 0.,
+			(double) ndp / params.w, hrate, hprobe, hnrate);
+		fflush(stdout);
+	}
 
+	/*
+	 * `red` is the 7-way SUM reduction gathered at the end of the round:
+	 *   0: f evaluations   1: collisions   2: probe failures   3: walk robin-hood
+	 *   4: walk non-colliding   5: same-value collisions   6: DP failures
+	 */
+	void end_round(const u64 red[7], const vector<u8> &hll_i)
+	{
 		double delta = wtime() - round_start;
+		u64 N = 1ull << 30;                       /* placeholder, replaced below */
+		(void) N;
 
-		u64 N = 1ull << wrapper.n;
-		char hsrate[8], hrrate[8], hnrate[8];
-		human_format(nf_send / params.n_send / delta, hsrate);
-		human_format(nf_recv / params.n_recv / delta, hrrate);
-		u64 data_round = ndp * 3 * sizeof(u64) / params.n_nodes;
-		human_format(data_round / delta, hnrate);
+		ndp_total += ndp;
+		ncoll_total += red[1];
+		nf_total += red[0];
 
-		// HyperLogLog
-		MPI_Reduce(MPI_IN_PLACE, hll_i.data(), 0x10000, MPI_UINT8_T, MPI_MAX, 0, params.world_comm);
-		for (int j = 0; j < 0x10000; j++)
-			if (hll_i[j] > hll[j])
-				hll[j] = hll_i[j];
+		for (int k = 0; k < 0x10000; k++)
+			if (hll_i[k] > hll[k])
+				hll[k] = hll_i[k];
+
+		char hrate[8], hnrate[8];
+		human_format((double) red[0] / params.n_walkers / delta, hrate);
+		human_format((double) ndp * DP_WORDS * sizeof(u64) / params.n_nodes / delta, hnrate);
 
 		printf("\n");
-		printf("Round %" PRId64 " (%.2f*n/w).  %.1fs.  #DP (round / total) %.2f*w / %.2f*n.  #coll (round / total) %.2f*w / %.2f*n.  Total #f=2^%.3f.  node-->%sB/s \n",
-			nround, (double) nround * params.w / N, delta, (double) ndp / params.w, (double) ndp_total / N, (double) ncoll / params.w, (double) ncoll_total / N, std::log2(nf_total), hnrate);
-		printf("Senders.    Wait == %.2fs / %.2fs (%.1f%%) / %.2fs.  #f == 2^%.2f (%.0f%%).  f/s == %s\n",
-                dmin[0], davg[0], 100. * davg[0] / delta, dmax[0], std::log2(nf_send), 100. * nf_send / nf_round, hsrate);
-		printf("Receivers.  Wait == %.2fs / %.2fs (%.1f%%) / %.2fs.  #f == 2^%.2f (%.0f%%).  f/s == %s\n",
-                dmin[1], davg[1], 100. * davg[1] / delta, dmax[1], std::log2(nf_recv), 100. * nf_recv / nf_round, hrrate);
-		printf("            %.2f%% probe failure.  %.2f%% walk-robinhhod.  %.2f%% walk-noncolliding.  %.2f%% same-value\n",
-                100. * iavg[3] / ndp, 100. * iavg[4] / ndp, 100. * iavg[5] / ndp, 100. * iavg[6] / ndp);
-		
+		printf("Round %" PRId64 ".  %.1fs.  #DP %.2f*w (total 2^%.2f).  #coll %.2f*w (total 2^%.2f).  "
+		       "Total #f=2^%.3f.  %s #f/s per walker.  node-->%sB/s\n",
+			nround, delta,
+			(double) ndp / params.w, std::log2((double) ndp_total ? (double) ndp_total : 1.),
+			(double) red[1] / params.w, std::log2((double) ncoll_total ? (double) ncoll_total : 1.),
+			std::log2((double) nf_total ? (double) nf_total : 1.), hrate, hnrate);
+
+		if (ndp > 0)
+			printf("            %.2f%% probe failure.  %.2f%% walk-robinhood.  %.2f%% walk-noncolliding.  "
+			       "%.2f%% same-value.  %.2f%% DP failure\n",
+				100. * red[2] / ndp, 100. * red[3] / ndp, 100. * red[4] / ndp,
+				100. * red[5] / ndp, 100. * red[6] / ndp);
+
+		if (drop_walkerq | drop_out | drop_inserterq | drop_coll)
+			printf("            DROPPED  %" PRId64 " walker-queue / %" PRId64 " output-buffer / "
+			       "%" PRId64 " inserter-queue / %" PRId64 " collision-queue\n",
+				drop_walkerq, drop_out, drop_inserterq, drop_coll);
+
 		u64 E_i = Counters::distinct_collisions_estimation(hll_i);
 		u64 E = Counters::distinct_collisions_estimation(hll);
-		printf("            #distinct coll (this i / total) %.02f*w / %.02f*n\n", (double) E_i / params.w, (double) E / N);
+		printf("            #distinct coll (this i / total) %.02f*w / 2^%.2f\n",
+			(double) E_i / params.w, std::log2((double) E ? (double) E : 1.));
 		printf("\n");
 		fflush(stdout);
 
 		nround += 1;
 	}
-	printf("Completed in %.2fs\n", wtime() - start);
 
-	assert(solution);
-	return *solution;
-}
+	void done()
+	{
+		printf("Completed in %.2fs\n", wtime() - start_time);
+		fflush(stdout);
+	}
+};
 
 }
 #endif

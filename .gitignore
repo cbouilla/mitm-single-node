@@ -68,3 +68,4 @@ obj/*
 .idea/*
 
 venv
+logs

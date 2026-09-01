@@ -18,7 +18,7 @@ public:
     /* hardware-dependent */
     u64 nbytes_memory = 0;        /* how much RAM to use on each machine */
     int n_nodes = 1;              /* #hosts (with shared RAM) */
-    int n_recv = 1;               /* #instances of the dictionary */
+    int n_inserters = 1;               /* #instances of the dictionary */
 
     /* algorithm parameters */
     double alpha = 2.5;           /* auto-chosen theta == alpha * sqrt(w/n) */
@@ -48,7 +48,7 @@ public:
         if (nbytes_memory == 0)
             errx(1, "the amount of RAM to use (per node) must be specified");
 
-        w = PcsDict::get_nslots(nbytes_memory * n_nodes, n_recv);
+        w = PcsDict::get_nslots(nbytes_memory * n_nodes, n_inserters);
         /* auto-choose the difficulty if not set */
         double auto_theta = optimal_theta(w, n);
         if (theta < 0) {
@@ -188,9 +188,9 @@ public:
 	}
 
 	/* uses the HyperLogLog algorithm */
-	static u64 distinct_collisions_estimation(const vector<u8> h)
+	static u64 distinct_collisions_estimation(const vector<u8> &h)
 	{
-		double acc;
+		double acc = 0;
 		double alpha = 0.7213 / (1 + 1.079 / 0x10000);
 		for (int i = 0; i < 0x10000; i++)
 			acc += 1.0 / (1 << h[i]);
@@ -206,6 +206,45 @@ public:
 			return E;
 		else
 			return 0x10000 * log(65536.0 / V);
+	}
+
+	/*
+	 * Fold another thread's counters into this one.  Sums the tallies and takes the
+	 * element-wise max of the HyperLogLog registers (which is exactly the HLL merge
+	 * rule, and the same operation as the MPI_MAX reduction used across ranks).
+	 */
+	void merge(const Counters &o)
+	{
+		n_dp += o.n_dp;
+		n_points_trails += o.n_points_trails;
+		n_collisions += o.n_collisions;
+		colliding_len_min += o.colliding_len_min;
+		colliding_len_max += o.colliding_len_max;
+		bad_dp += o.bad_dp;
+		bad_probe += o.bad_probe;
+		bad_collision += o.bad_collision;
+		bad_walk_robinhood += o.bad_walk_robinhood;
+		bad_walk_noncolliding += o.bad_walk_noncolliding;
+
+		n_dp_i += o.n_dp_i;
+		n_collisions_i += o.n_collisions_i;
+		colliding_len_min_i += o.colliding_len_min_i;
+		colliding_len_max_i += o.colliding_len_max_i;
+
+		for (int k = 0; k < 0x10000; k++) {
+			if (hll[k] < o.hll[k])
+				hll[k] = o.hll[k];
+			if (hll_i[k] < o.hll_i[k])
+				hll_i[k] = o.hll_i[k];
+		}
+	}
+
+	/* zero everything that is scoped to one version of the mixing function */
+	void reset_round()
+	{
+		n_dp_i = n_collisions_i = colliding_len_min_i = colliding_len_max_i = 0;
+		bad_dp = bad_probe = bad_walk_robinhood = bad_walk_noncolliding = bad_collision = 0;
+		hll_i.assign(0x10000, 0);
 	}
 
 	// call this when the dictionnary is flushed / a new mixing function tried

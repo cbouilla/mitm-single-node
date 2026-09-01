@@ -142,7 +142,7 @@ optional<tuple<u64,u64,u64>> walk_nolen1(ProblemWrapper& wrapper, Counters &ctr,
             break;
     }
 
-    if (x1 / params.n_recv != end0) {
+    if (x1 / params.n_inserters != end0) {
         ctr.walk_noncolliding();
         return nullopt; 
     }
@@ -174,29 +174,41 @@ optional<tuple<u64,u64,u64>> walk_nolen1(ProblemWrapper& wrapper, Counters &ctr,
     }
 }
 
-// returns (i, x0, x1)
+/*
+ * Receiver side of the MPI+OpenMP engine: the dictionary probe, and nothing else.
+ * This is one random read-modify-write into a multi-GB array, so it is deliberately
+ * kept free of any function evaluation -- the expensive walk is handed to a sender
+ * thread through the collision queue.
+ * Returns (seed1, len1_maybe), with len1_maybe == 0 meaning "length unknown".
+ */
+inline optional<pair<u64,u64>> probe_distinguished_point(Counters &ctr, PcsDict &dict,
+                                                         u64 end, u64 seed0, u64 len0)
+{
+    auto probe = dict.pop_insert(end, seed0, len0);
+    if (not probe)
+        ctr.probe_failure();
+    return probe;
+}
+
+/*
+ * Sender side: given a dictionary hit, walk both trails to locate the collision and
+ * test whether it is the golden pair.  Returns (i, x0, x1) if it is.
+ */
 template<class ProblemWrapper>
-optional<tuple<u64,u64,u64>> process_distinguished_point(ProblemWrapper &wrapper, Counters &ctr, const Parameters &params, PcsDict &dict, 
-                                                        u64 i, u64 root_seed, u64 seed0, u64 end, u64 len0)
+optional<tuple<u64,u64,u64>> resolve_collision(ProblemWrapper &wrapper, Counters &ctr, const Parameters &params,
+                                               u64 i, u64 root_seed, u64 seed0, u64 end, u64 len0,
+                                               u64 seed1, u64 len1_maybe)
 {
     u64 start0 = (root_seed + params.multiplier * seed0) & wrapper.out_mask;
-
-    // auto probe = dict.pop_insert(end, start0, len0);
-    auto probe = dict.pop_insert(end, seed0, len0);
-    if (not probe) {
-        ctr.probe_failure();
-        return nullopt;
-    }
-
-    auto [seed1, len1_maybe] = *probe;
     u64 start1 = (root_seed + params.multiplier * seed1) & wrapper.out_mask;
+
     optional<tuple<u64,u64,u64>> collision;
     if (len1_maybe == 0)
-        collision = walk_nolen1(wrapper, ctr, params, i, start0, len0, end, start1);  
+        collision = walk_nolen1(wrapper, ctr, params, i, start0, len0, end, start1);
     else
         collision = walk(wrapper, ctr, params, i, start0, len0, start1, len1_maybe);
 
-    if (not collision) 
+    if (not collision)
         return nullopt;         /* robin-hood, or dict false positive */
 
     auto [x0, x1, len1] = *collision;
@@ -210,13 +222,25 @@ optional<tuple<u64,u64,u64>> process_distinguished_point(ProblemWrapper &wrapper
     u64 y1 = wrapper.mix(i, x1);
     assert(wrapper.mixf(i, x0) == wrapper.mixf(i, x1));
     ctr.found_collision(std::min(y0, y1), len0, std::max(y0, y1), len1);
-    
+
     if (wrapper.mix_good_pair(i, x0, x1)) {
-        printf("\nFound golden collision! i=%" PRIx64 " root_seed=%" PRIx64 " seed0=%" PRIx64 ". Dict --> seed1=%" PRIx64 "\n", 
+        printf("\nFound golden collision! i=%" PRIx64 " root_seed=%" PRIx64 " seed0=%" PRIx64 ". Dict --> seed1=%" PRIx64 "\n",
             i, root_seed, seed0, seed1);
         return optional(tuple(i, x0, x1));
     }
     return nullopt;
+}
+
+// returns (i, x0, x1).  Sequential engines: probe and resolve back to back.
+template<class ProblemWrapper>
+optional<tuple<u64,u64,u64>> process_distinguished_point(ProblemWrapper &wrapper, Counters &ctr, const Parameters &params, PcsDict &dict,
+                                                        u64 i, u64 root_seed, u64 seed0, u64 end, u64 len0)
+{
+    auto probe = probe_distinguished_point(ctr, dict, end, seed0, len0);
+    if (not probe)
+        return nullopt;
+    auto [seed1, len1_maybe] = *probe;
+    return resolve_collision(wrapper, ctr, params, i, root_seed, seed0, end, len0, seed1, len1_maybe);
 }
 
 

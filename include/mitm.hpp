@@ -312,8 +312,8 @@ optional<pair<u64, u64>> claw_search(const Problem& pb, Parameters &params, PRNG
 
     if (claw) {
         /* quality control */
-        assert((x0 & ((1 << pb.n) - 1)) == x0);
-        assert((x1 & ((1 << pb.n) - 1)) == x1);    
+        assert((x0 & make_mask(pb.n)) == x0);
+        assert((x1 & make_mask(pb.n)) == x1);    
         assert(pb.f(x0) == pb.g(x1));
         assert(pb.is_good_pair(x0, x1));
         return pair(x0, x1);
