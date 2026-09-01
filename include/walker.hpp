@@ -1,16 +1,15 @@
-#ifndef MITM_MPI_WALKER
-#define MITM_MPI_WALKER
+#ifndef MITM_WALKER
+#define MITM_WALKER
 
 #include <cmath>
 #include <vector>
 
-#include "../engine_common.hpp"
-#include "common.hpp"
-#include "pcs_comm.hpp"
+#include "trail.hpp"
+#include "parameters.hpp"
+#include "comm.hpp"
 
 namespace mitm {
 
-/* unchanged from the MPI-only engine */
 static void start_chain(const Parameters &params, u64 out_mask, u64 root_seed, u64 &j,
                         u64 x[], u64 len[], u64 seed[], u64 jinc, int k)
 {
@@ -33,7 +32,7 @@ static void start_chain(const Parameters &params, u64 out_mask, u64 root_seed, u
  * touches shows up in the signature.
  */
 template <class ProblemWrapper>
-bool service_collision(ThreadContext &ctx, ProblemWrapper &wrapper, const MpiParameters &params,
+bool service_collision(ThreadContext &ctx, ProblemWrapper &wrapper, const Parameters &params,
                        RoundState &round, CollisionQueue &coll_q, u64 i, u64 root_seed)
 {
 	CollisionCandidate c;
@@ -63,10 +62,10 @@ bool service_collision(ThreadContext &ctx, ProblemWrapper &wrapper, const MpiPar
  * ctx.  `walker_index` is 0-based within this rank -- combined with the rank it gives
  * the global walker index, which seeds the chain counter exactly as `local_rank` did.
  *
- * Winding down is driven by ctx.state (see thread_state in pcs_comm.hpp).
+ * Winding down is driven by ctx.state (see thread_state in comm.hpp).
  */
 template <class ProblemWrapper>
-void walker_thread(ThreadContext &ctx, const ProblemWrapper &master, const MpiParameters &params,
+void walker_thread(ThreadContext &ctx, const ProblemWrapper &master, const Parameters &params,
                    RoundState &round, SPSCQueue &out, CollisionQueue &coll_q, int walker_index)
 {
 	constexpr int vlen = ProblemWrapper::vlen;
@@ -147,13 +146,14 @@ void walker_thread(ThreadContext &ctx, const ProblemWrapper &master, const MpiPa
 
 				if (dp) {
 					n_dp_local += 1;
+					ctx.ctr.n_points_trails += len[k];
 					DP p = {seed[k], x[k], len[k]};
 					if (not out.push(p))
 						ctx.n_drop_walkerq.fetch_add(1, std::memory_order_relaxed);
 				}
 				if (dp || failure) {
 					if (failure && not dp)
-						ctx.ctr.dp_failure();
+						ctx.ctr.bad_dp += 1;
 					start_chain(params, wrapper.out_mask, root_seed, j,
 					            x, len, seed, params.n_walkers, k);
 					assert((j & jmask) == j);

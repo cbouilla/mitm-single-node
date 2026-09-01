@@ -1,13 +1,13 @@
-#ifndef MITM_NAIVE_MPI_ISEND
-#define MITM_NAIVE_MPI_ISEND
+#ifndef MITM_NAIVE_ISEND
+#define MITM_NAIVE_ISEND
 
 #include <vector>
 #include <cassert>
 #include <cmath>
 
-#include "problem.hpp"
-#include "mpi/common.hpp"
-#include "dict.hpp"
+#include "../problem.hpp"
+#include "../parameters.hpp"
+#include "../dict.hpp"
 
 #include <mpi.h>
 
@@ -15,10 +15,22 @@
  * naive MITM w/ distributed dictionnary.  round-based Alltoallv version.
  */
 
+/*
+ * NOT PORTED, DOES NOT COMPILE.
+ *
+ * The naive all-to-all MITM: a second engine, kept as the starting point for future
+ * work rather than as working code.  It still assumes the old MPI topology (several
+ * ranks per node, split into senders and receivers) and refers to members that
+ * Parameters no longer has: role, n_send, n_recv, recv_per_node, and the free
+ * function BCast_result().  Porting it to the one-rank-per-node topology of
+ * engine.hpp is what it would take to build it again; examples/naive_double_speck64_demo.cpp
+ * is its driver, likewise not built.
+ */
+
 namespace mitm {
 
 template <bool EXPENSIVE_F, class Problem>
-vector<pair<u64, u64>> naive_mpi_claw_search_isend(const Problem &pb, MpiParameters &params)
+vector<pair<u64, u64>> naive_mpi_claw_search_isend(const Problem &pb, Parameters &params)
 {
     static_assert(std::is_base_of<AbstractClawProblem, Problem>::value,
         "problem not derived from mitm::AbstractClawProblem");

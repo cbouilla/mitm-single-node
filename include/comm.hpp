@@ -1,5 +1,5 @@
-#ifndef MITM_MPI_PCS_COMM
-#define MITM_MPI_PCS_COMM
+#ifndef MITM_COMM
+#define MITM_COMM
 
 #include <mpi.h>
 #include <atomic>
@@ -8,9 +8,9 @@
 #include <array>
 #include <memory>
 
-#include "../common.hpp"
-#include "../dict.hpp"
-#include "common.hpp"
+#include "counters.hpp"
+#include "dict.hpp"
+#include "parameters.hpp"
 #include "spsc.hpp"
 
 namespace mitm {
@@ -145,7 +145,7 @@ struct RoundState {
 /*
  * Per-thread state that the comm thread also touches -- and nothing else.  Whatever a
  * walker or inserter keeps to itself (its problem wrapper, its chain state, its
- * prefetch ring, its queue, its dictionary shard) is a local of the thread function
+ * queue, its dictionary shard) is a local of the thread function
  * or an argument to it, so what is left here is exactly the shared surface.
  */
 struct alignas(64) ThreadContext {
@@ -165,12 +165,9 @@ struct alignas(64) ThreadContext {
 	std::atomic<u64> n_drop_walkerq;   /* walker:   its queue to the comm thread was full */
 	std::atomic<u64> n_drop_coll;      /* inserter: the collision queue was full */
 
-	ThreadContext(int pb_n, u64 w_slots)
-		: state(RUNNING), ctr(pb_n, w_slots),
-		  n_dp(0), n_probe(0), n_eval(0), n_drop_walkerq(0), n_drop_coll(0)
-	{
-		ctr.display_active = 0;      /* only the controller prints */
-	}
+	ThreadContext()
+		: state(RUNNING), n_dp(0), n_probe(0), n_eval(0), n_drop_walkerq(0), n_drop_coll(0)
+	{}
 };
 
 
@@ -350,6 +347,18 @@ enum report_field {
 };
 
 /*
+ * Layout of the end-of-round statistics.  Every thread's Counters are merged into one
+ * per node, packed in this order and MPI_SUM-reduced onto rank 0 (the HyperLogLog
+ * registers travel separately, under MPI_MAX).  Same trick as above: the enum closes
+ * with its own length.
+ */
+enum round_stat {
+	ST_NEVAL = 0, ST_NPOINTS_TRAILS, ST_NCOLL, ST_LEN_MIN, ST_LEN_MAX,
+	ST_BAD_PROBE, ST_BAD_ROBINHOOD, ST_BAD_NONCOLLIDING, ST_BAD_COLLISION, ST_BAD_DP,
+	ST_NWORDS
+};
+
+/*
  * ONE always-posted receive carries the whole control channel, in both directions
  * and on every rank: assignments from the controller to a node, and reports from a
  * node to the controller.  They are told apart by length -- an assignment is a
@@ -366,7 +375,7 @@ class ControlChannel {
 	std::vector<char> bsend_buf;
 
 public:
-	ControlChannel(const MpiParameters &params) : comm(params.world_comm)
+	ControlChannel(const Parameters &params) : comm(params.world_comm)
 	{
 		static_assert(REP_NWORDS > 1, "a report must be distinguishable from an assignment by length");
 

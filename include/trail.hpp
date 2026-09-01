@@ -1,46 +1,25 @@
-#ifndef MITM_ENGINE_COMMON
-#define MITM_ENGINE_COMMON
+#ifndef MITM_TRAIL
+#define MITM_TRAIL
 
 #include <cmath>
 #include <cassert>
 #include <cstdio>
 
-#include "common.hpp"
+#include "counters.hpp"
+#include "parameters.hpp"
 #include "problem.hpp"
-#include "dict.hpp"
+
+/*
+ * Walking trails: iterate the mixing function to a distinguished point, and turn a
+ * dictionary hit into the collision that caused it.
+ */
 
 namespace mitm {
-
-/******************************************************************************/
-
-class Engine {};
 
 inline bool is_distinguished_point(u64 x, u64 threshold)
 {
     return x <= threshold;
 }
-
-/*
- * Given an element of the RANGE of f, iterate the function until a distinguished point is found.
- */
-template<typename ProblemWrapper>
-optional<pair<u64,u64>> generate_dist_point(ProblemWrapper& wrapper, u64 i, const Parameters &params, u64 x)
-{
-    /* The probability, p, of NOT finding a distinguished point after the loop is
-     * Let: theta := 2^-d
-     * difficulty, N = k*2^difficulty then,
-     * p = (1 - theta)^N =>  let ln(p) <= -k
-     */
-    for (u64 j = 0; j < params.dp_max_it; j++) {
-        u64 y = wrapper.mixf(i, x);
-        if (is_distinguished_point(y, params.threshold))
-            return optional(pair(y, j + 1));
-        x = y;
-    }
-    return nullopt; /* no distinguished point was found after too many iterations */
-}
-
-
 
 /*
  * Given two inputs that (maybe) lead to the same distinguished point,
@@ -49,7 +28,7 @@ optional<pair<u64,u64>> generate_dist_point(ProblemWrapper& wrapper, u64 i, cons
  * are correct, but it does not assume that the two trails end at the same DP.
  */
 template<class ProblemWrapper>
-optional<tuple<u64,u64,u64>> walk(ProblemWrapper& wrapper, Counters &ctr, const Parameters &params, 
+optional<tuple<u64,u64,u64>> walk(ProblemWrapper& wrapper, Counters &ctr, const Parameters &params,
     u64 i, u64 x0, u64 len0, u64 x1, u64 len1__)
 {
     /****************************************************************************+
@@ -74,9 +53,9 @@ optional<tuple<u64,u64,u64>> walk(ProblemWrapper& wrapper, Counters &ctr, const 
         x0 = wrapper.mixf(i, x0);
     for (; len0 < len1; len1--)
         x1 = wrapper.mixf(i, x1);
-  
+
     if (x0 == x1) { /* robin-hood */
-        ctr.walk_robinhood();
+        ctr.bad_walk_robinhood += 1;
         return nullopt;
     }
 
@@ -97,8 +76,8 @@ optional<tuple<u64,u64,u64>> walk(ProblemWrapper& wrapper, Counters &ctr, const 
     }
 
     if (x0 != x1)    /* false positive from the dictionnary */
-        ctr.walk_noncolliding();
-    return nullopt; 
+        ctr.bad_walk_noncolliding += 1;
+    return nullopt;
 }
 
 /*
@@ -106,10 +85,10 @@ optional<tuple<u64,u64,u64>> walk(ProblemWrapper& wrapper, Counters &ctr, const 
  * find the earliest collision in the sequence before the distinguished point
  * This function assumes that len0 (= distance to the distinguished point)
  * is correct, but it does not assume that the two trails end at the same DP.
- * `end` is [end of trail] / params.w
+ * `end` is [end of trail] / params.n_inserters
  */
 template<class ProblemWrapper>
-optional<tuple<u64,u64,u64>> walk_nolen1(ProblemWrapper& wrapper, Counters &ctr, const Parameters &params, 
+optional<tuple<u64,u64,u64>> walk_nolen1(ProblemWrapper& wrapper, Counters &ctr, const Parameters &params,
     u64 i, u64 x0, u64 len0, u64 end0, u64 x1)
 {
     /****************************************************************************+
@@ -124,8 +103,8 @@ optional<tuple<u64,u64,u64>> walk_nolen1(ProblemWrapper& wrapper, Counters &ctr,
      * o: is a distinguished point                                               |
      * x: the collision we're looking for                                        |
      ****************************************************************************/
-    
-    /* the distance from x1 to a distinguished point is unknown. 
+
+    /* the distance from x1 to a distinguished point is unknown.
      * We need to walk the trail again, but we save all intermediate points.
      */
     u64 maxit = params.dp_max_it;
@@ -143,19 +122,19 @@ optional<tuple<u64,u64,u64>> walk_nolen1(ProblemWrapper& wrapper, Counters &ctr,
     }
 
     if (x1 / params.n_inserters != end0) {
-        ctr.walk_noncolliding();
-        return nullopt; 
+        ctr.bad_walk_noncolliding += 1;
+        return nullopt;
     }
 
     /* move the longest sequence until the remaining number of steps is equal */
     /* to the shortest sequence. */
     for (; len0 > len1; len0--)
-        x0 = wrapper.mixf(i, x0);    
+        x0 = wrapper.mixf(i, x0);
 
     /* at this stage, len0 <= len1 */
     x1 = trail1[len1 - len0];
     if (x0 == x1) { /* robin-hood */
-        ctr.walk_robinhood();
+        ctr.bad_walk_robinhood += 1;
         return nullopt;
     }
 
@@ -175,24 +154,11 @@ optional<tuple<u64,u64,u64>> walk_nolen1(ProblemWrapper& wrapper, Counters &ctr,
 }
 
 /*
- * Receiver side of the MPI+OpenMP engine: the dictionary probe, and nothing else.
- * This is one random read-modify-write into a multi-GB array, so it is deliberately
- * kept free of any function evaluation -- the expensive walk is handed to a sender
- * thread through the collision queue.
- * Returns (seed1, len1_maybe), with len1_maybe == 0 meaning "length unknown".
- */
-inline optional<pair<u64,u64>> probe_distinguished_point(Counters &ctr, PcsDict &dict,
-                                                         u64 end, u64 seed0, u64 len0)
-{
-    auto probe = dict.pop_insert(end, seed0, len0);
-    if (not probe)
-        ctr.probe_failure();
-    return probe;
-}
-
-/*
- * Sender side: given a dictionary hit, walk both trails to locate the collision and
- * test whether it is the golden pair.  Returns (i, x0, x1) if it is.
+ * Walker side of the engine: given a dictionary hit, walk both trails to locate the
+ * collision and test whether it is the golden pair.  Returns (i, x0, x1) if it is.
+ *
+ * This is the expensive half of processing a distinguished point, which is exactly
+ * why it does not run on the inserter thread that found the hit.
  */
 template<class ProblemWrapper>
 optional<tuple<u64,u64,u64>> resolve_collision(ProblemWrapper &wrapper, Counters &ctr, const Parameters &params,
@@ -214,7 +180,7 @@ optional<tuple<u64,u64,u64>> resolve_collision(ProblemWrapper &wrapper, Counters
     auto [x0, x1, len1] = *collision;
     assert(len1_maybe == 0 || len1_maybe == len1);
     if (x0 == x1) {
-        ctr.collision_failure();
+        ctr.bad_collision += 1;
         return nullopt;    /* duh */
     }
 
@@ -230,19 +196,6 @@ optional<tuple<u64,u64,u64>> resolve_collision(ProblemWrapper &wrapper, Counters
     }
     return nullopt;
 }
-
-// returns (i, x0, x1).  Sequential engines: probe and resolve back to back.
-template<class ProblemWrapper>
-optional<tuple<u64,u64,u64>> process_distinguished_point(ProblemWrapper &wrapper, Counters &ctr, const Parameters &params, PcsDict &dict,
-                                                        u64 i, u64 root_seed, u64 seed0, u64 end, u64 len0)
-{
-    auto probe = probe_distinguished_point(ctr, dict, end, seed0, len0);
-    if (not probe)
-        return nullopt;
-    auto [seed1, len1_maybe] = *probe;
-    return resolve_collision(wrapper, ctr, params, i, root_seed, seed0, end, len0, seed1, len1_maybe);
-}
-
 
 }
 #endif

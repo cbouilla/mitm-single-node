@@ -1,5 +1,5 @@
-#ifndef MITM_MPI
-#define MITM_MPI
+#ifndef MITM_ENGINE
+#define MITM_ENGINE
 
 #include <mpi.h>
 #include <omp.h>
@@ -8,15 +8,14 @@
 #include <vector>
 #include <array>
 
-#include "../common.hpp"
-#include "../engine_common.hpp"
-
-#include "common.hpp"
+#include "counters.hpp"
+#include "parameters.hpp"
+#include "trail.hpp"
 #include "spsc.hpp"
-#include "pcs_comm.hpp"
-#include "pcs_walker.hpp"
-#include "pcs_inserter.hpp"
-#include "pcs_controller.hpp"
+#include "comm.hpp"
+#include "walker.hpp"
+#include "inserter.hpp"
+#include "controller.hpp"
 
 namespace mitm {
 
@@ -29,7 +28,7 @@ namespace mitm {
 template <class ProblemWrapper>
 class PcsNode {
 public:
-	MpiParameters &params;
+	Parameters &params;
 	PRNG &prng;
 	ProblemWrapper &wrapper;                               /* the master copy; walkers copy it */
 
@@ -53,7 +52,7 @@ public:
 	bool awaiting_assignment = false;
 	bool got_new_version = false;
 
-	PcsNode(ProblemWrapper &wrapper, MpiParameters &params, PRNG &prng)
+	PcsNode(ProblemWrapper &wrapper, Parameters &params, PRNG &prng)
 		: params(params), prng(prng), wrapper(wrapper),
 		  coll_q(params.coll_queue_capacity),
 		  outbuf(params.world_comm, params.n_nodes, params.buffer_capacity),
@@ -65,7 +64,7 @@ public:
 		w_shard = params.w / params.n_inserters;
 
 		for (int t = 0; t < params.n_threads; t++)
-			ctx.push_back(std::make_unique<ThreadContext>(wrapper.n, params.w));
+			ctx.push_back(std::make_unique<ThreadContext>());
 
 		for (int r = 0; r < params.inserters_per_node; r++) {
 			dict.push_back(std::make_unique<PcsDict>(jbits, w_shard));
@@ -336,7 +335,7 @@ public:
 			}
 
 		/* 6. nothing further will ever be delivered: the inserters can finish their
-		      queues and prefetch rings, and announce themselves quiescent */
+		      queues and announce themselves quiescent */
 		set_state(INSERTER, DRAIN);
 		while (not all_in_state(INSERTER, QUIESCENT)) {
 			service_control();
@@ -358,35 +357,43 @@ public:
 
 	void epilogue()
 	{
-		Counters total(ctx[0]->ctr.pb_n, params.w);
-		total.display_active = 0;
+		Counters total;
 		u64 n_eval = 0;
 		for (int t = 0; t < params.n_threads; t++) {
 			total.merge(ctx[t]->ctr);
 			n_eval += ctx[t]->n_eval.load(std::memory_order_relaxed);
 		}
 
-		/* the _i fields are the ones reset_round() clears -- the plain ones are
-		   all-time per thread and would accumulate across rounds */
-		u64 red[7] = {n_eval, total.n_collisions_i, total.bad_probe, total.bad_walk_robinhood,
-		              total.bad_walk_noncolliding, total.bad_collision, total.bad_dp};
-		if (params.rank == 0)
-			MPI_Reduce(MPI_IN_PLACE, red, 7, MPI_UINT64_T, MPI_SUM, 0, params.world_comm);
-		else
-			MPI_Reduce(red, NULL, 7, MPI_UINT64_T, MPI_SUM, 0, params.world_comm);
-
-		vector<u8> hll_i = total.hll_i;
-		if (params.rank == 0)
-			MPI_Reduce(MPI_IN_PLACE, hll_i.data(), 0x10000, MPI_UINT8_T, MPI_MAX, 0, params.world_comm);
-		else
-			MPI_Reduce(hll_i.data(), NULL, 0x10000, MPI_UINT8_T, MPI_MAX, 0, params.world_comm);
+		/* everything in here is scoped to the round: reset() clears it below */
+		u64 st[ST_NWORDS];
+		st[ST_NEVAL] = n_eval;
+		st[ST_NPOINTS_TRAILS] = total.n_points_trails;
+		st[ST_NCOLL] = total.n_collisions;
+		st[ST_LEN_MIN] = total.colliding_len_min;
+		st[ST_LEN_MAX] = total.colliding_len_max;
+		st[ST_BAD_PROBE] = total.bad_probe;
+		st[ST_BAD_ROBINHOOD] = total.bad_walk_robinhood;
+		st[ST_BAD_NONCOLLIDING] = total.bad_walk_noncolliding;
+		st[ST_BAD_COLLISION] = total.bad_collision;
+		st[ST_BAD_DP] = total.bad_dp;
 
 		if (params.rank == 0)
-			controller.end_round(red, hll_i);
+			MPI_Reduce(MPI_IN_PLACE, st, ST_NWORDS, MPI_UINT64_T, MPI_SUM, 0, params.world_comm);
+		else
+			MPI_Reduce(st, NULL, ST_NWORDS, MPI_UINT64_T, MPI_SUM, 0, params.world_comm);
+
+		vector<u8> hll = total.hll;
+		if (params.rank == 0)
+			MPI_Reduce(MPI_IN_PLACE, hll.data(), 0x10000, MPI_UINT8_T, MPI_MAX, 0, params.world_comm);
+		else
+			MPI_Reduce(hll.data(), NULL, 0x10000, MPI_UINT8_T, MPI_MAX, 0, params.world_comm);
+
+		if (params.rank == 0)
+			controller.end_round(st, hll);
 
 		/* reset every thread's per-round state (single-threaded here, by design) */
 		for (int t = 0; t < params.n_threads; t++) {
-			ctx[t]->ctr.reset_round();
+			ctx[t]->ctr.reset();
 			ctx[t]->n_eval.store(0, std::memory_order_relaxed);
 			ctx[t]->n_dp.store(0, std::memory_order_relaxed);
 			ctx[t]->n_probe.store(0, std::memory_order_relaxed);
@@ -400,7 +407,7 @@ public:
 
 	/******************* the whole computation *******************/
 
-	tuple<u64,u64,u64> run(u64 out_mask)
+	optional<tuple<u64,u64,u64>> run(u64 out_mask)
 	{
 		if (params.rank == 0)
 			controller.banner(prng, w_shard);
@@ -417,7 +424,7 @@ public:
 				printf("MPI: rank 0 thread->cpu map:");
 				for (int t = 0; t < params.n_threads; t++)
 					printf(" %d:%s%d", t,
-						(t == 0) ? "c" : (t <= params.inserters_per_node ? "r" : "s"),
+						(t == 0) ? "c" : (t <= params.inserters_per_node ? "i" : "w"),
 						ctx[t]->cpu);
 				printf("\n");
 				fflush(stdout);
@@ -471,26 +478,33 @@ public:
 			}
 		}
 
-		u64 answer[3] = {0, 0, 0};
-		if (params.rank == 0 && controller.solution) {
-			auto [i, x0, x1] = *controller.solution;
-			answer[0] = i; answer[1] = x0; answer[2] = x1;
+		/* answer[0] says whether the other three mean anything */
+		u64 answer[4] = {0, 0, 0, 0};
+		if (params.rank == 0) {
+			if (controller.solution) {
+				auto [i, x0, x1] = *controller.solution;
+				answer[0] = 1; answer[1] = i; answer[2] = x0; answer[3] = x1;
+			}
 			controller.done();
 		}
-		MPI_Bcast(answer, 3, MPI_UINT64_T, 0, params.world_comm);
+		MPI_Bcast(answer, 4, MPI_UINT64_T, 0, params.world_comm);
 
 		inbuf.shutdown();
 		ctrl.shutdown();
-		return tuple(answer[0], answer[1], answer[2]);
+		if (not answer[0])
+			return nullopt;
+		return optional(tuple(answer[1], answer[2], answer[3]));
 	}
 };
 
 
-class MpiEngine : Engine {
-public:
-
+/*
+ * The one entry point of the engine.  Returns (i, x0, x1) -- the mixing function
+ * index and the two colliding points, in wrapper coordinates -- or nothing if the
+ * search gave up after params.max_versions rounds.
+ */
 template<class ProblemWrapper>
-static tuple<u64,u64,u64> run(ProblemWrapper& wrapper, MpiParameters &params, PRNG &prng)
+optional<tuple<u64,u64,u64>> run_engine(ProblemWrapper& wrapper, Parameters &params, PRNG &prng)
 {
 	/* MPI must be initialised with at least FUNNELED support */
 	int provided;
@@ -514,7 +528,6 @@ static tuple<u64,u64,u64> run(ProblemWrapper& wrapper, MpiParameters &params, PR
 	PcsNode<ProblemWrapper> node(wrapper, params, prng);
 	return node.run(wrapper.out_mask);
 }
-};
 
 }
 #endif

@@ -1,3 +1,8 @@
+/*
+ * NOT BUILT: driver for the naive all-to-all MITM (include/naive/), which has not
+ * been ported to the one-rank-per-node topology.  See the note at the top of
+ * include/naive/alltoall.hpp.
+ */
 #include <cassert>
 #include <getopt.h>
 #include <err.h>
@@ -5,14 +10,14 @@
 #include <mpi.h>
 
 #include "double_speck64_problem.hpp"
-#include "mpi/naive_alltoall.hpp"
-#include "mpi/naive_isend.hpp"
+#include "naive/alltoall.hpp"
+#include "naive/isend.hpp"
 
 int n = 20;         // default problem size (easy)
 u64 seed = 0x1337;  // default fixed seed
 bool expensive;
 
-void process_command_line_options(int argc, char **argv, mitm::MpiParameters &params)
+void process_command_line_options(int argc, char **argv, mitm::Parameters &params)
 {
     struct option longopts[5] = {
         {"n", required_argument, NULL, 'n'},
@@ -51,7 +56,7 @@ int main(int argc, char* argv[])
     MPI_Init(NULL, NULL);
     int rank;
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-    mitm::MpiParameters params;
+    mitm::Parameters params;
     process_command_line_options(argc, argv, params);
     mitm::PRNG prng(seed);
     if (rank == 0) {
@@ -62,7 +67,6 @@ int main(int argc, char* argv[])
     params.setup(MPI_COMM_WORLD, 0);  // no controller process
     mitm::DoubleSpeck64_Problem Pb(n, prng);
     
-#if 0
     if (params.verbose) {
         printf("==============================================================\n");
         printf("All-to-all version\n");
@@ -80,7 +84,8 @@ int main(int argc, char* argv[])
             assert(Pb.f(x0) == Pb.g(x1));
             printf("f(%" PRIx64 ") = g(%" PRIx64 ")\n", x0, x1);
         }
-#endif
+
+#if 0
     if (params.verbose) {
         printf("==============================================================\n");
         printf("Isend version.\n");
@@ -99,6 +104,8 @@ int main(int argc, char* argv[])
             printf("f(%" PRIx64 ") = g(%" PRIx64 ")\n", x0, x1);
         }
     assert(claws_isend.size() == 1);
+#endif
+        
     MPI_Finalize();    
     return EXIT_SUCCESS;
 }

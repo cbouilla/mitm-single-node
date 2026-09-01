@@ -2,8 +2,10 @@
 // Created by ahmed on 23/10/23.
 //
 
-#ifndef MITM_SEQUENTIAL_DICT_HPP
-#define MITM_SEQUENTIAL_DICT_HPP
+#ifndef MITM_DICT
+#define MITM_DICT
+
+#include <cassert>
 
 #include "tools.hpp"
 
@@ -133,4 +135,4 @@ public:
 };
 
 }
-#endif //MITM_SEQUENTIAL_DICT_HPP
+#endif

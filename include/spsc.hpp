@@ -1,11 +1,11 @@
-#ifndef MITM_MPI_SPSC
-#define MITM_MPI_SPSC
+#ifndef MITM_SPSC
+#define MITM_SPSC
 
 #include <atomic>
 #include <vector>
 #include <cstddef>
 
-#include "common.hpp"
+#include "parameters.hpp"
 
 namespace mitm {
 
@@ -59,7 +59,8 @@ public:
 			cached_head = head.load(std::memory_order_acquire);
 			if (t - cached_head == capacity)
 				return false;                 /* really full */
-		}		buf[t & mask] = x;
+		}
+		buf[t & mask] = x;
 		tail.store(t + 1, std::memory_order_release);
 		return true;
 	}

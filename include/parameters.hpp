@@ -1,26 +1,31 @@
-#ifndef MITM_MPI_COMMON
-#define MITM_MPI_COMMON
+#ifndef MITM_PARAMETERS
+#define MITM_PARAMETERS
 
 #include <mpi.h>
 #include <err.h>
 #include <sched.h>
 #include <pthread.h>
+#include <cmath>
 #include <vector>
 
-#include "../common.hpp"
+#include "tools.hpp"
+#include "dict.hpp"
 
 namespace mitm {
 
 /*
- * MPI+OpenMP topology: ONE rank per node, MPI_THREAD_FUNNELED.
- * Inside a rank:  thread 0 == comm (and, on rank 0, the controller),
- *                 threads 1..R == inserters (one dictionary shard each),
- *                 the rest     == walkers (walk trails).
+ * There is exactly one engine, and it is MPI + OpenMP.
+ *
+ * Topology: ONE rank per node, MPI_THREAD_FUNNELED.  Inside a rank,
+ *     thread 0      == comm (and, on rank 0, the controller),
+ *     threads 1..R  == inserters, one dictionary shard each,
+ *     the rest      == walkers, which walk trails and resolve collisions.
+ * A single rank with one walker and one inserter is the degenerate "sequential" case.
  */
 
 enum tags {
-	TAG_POINTS,        /* bulk distinguished points, node -> node                */
-	TAG_CONTROL,       /* the control channel, both directions (see pcs_comm.hpp) */
+	TAG_POINTS,        /* bulk distinguished points, node -> node                 */
+	TAG_CONTROL,       /* the control channel, both directions (see comm.hpp)     */
 };
 
 enum assignment {KEEP_GOING, NEW_VERSION};
@@ -31,7 +36,7 @@ enum thread_role {COMM, INSERTER, WALKER};
 static const int DP_WORDS = 3;
 
 /* One distinguished point.  Identical layout on the SPSC queues and on the wire;
-   the routing helpers that pick it apart live in pcs_comm.hpp. */
+   the routing helpers that pick it apart live in comm.hpp. */
 struct DP {
 	u64 seed;      /* the chain index j it was started from */
 	u64 x;         /* the FULL endpoint */
@@ -66,35 +71,45 @@ static inline int pin_to_cpu(int cpu)
 
 /********************************* parameters ********************************/
 
-class MpiParameters : public Parameters {
+class Parameters {
 public:
 	/* MPI topology.  One rank per node, so `rank` IS the node index. */
 	MPI_Comm world_comm;
 	int rank;
-	/* n_nodes and n_inserters are inherited from Parameters */
-	int n_walkers;                            /* total walker threads, all nodes */
+	int n_nodes = 1;                       /* == the number of MPI ranks */
 
 	/* thread layout inside a node (CLI-settable) */
-	int walkers_per_node = 0;                 /* 0 == fill the inherited affinity mask */
+	int walkers_per_node = 0;              /* 0 == fill the inherited affinity mask */
 	int inserters_per_node = 1;
 	int n_threads;                         /* derived: 1 + walkers_per_node + inserters_per_node */
+	int n_walkers;                         /* derived: total walker threads, all nodes */
+	int n_inserters;                       /* derived: total dictionary shards, all nodes */
 
 	/* thread pinning */
 	bool bind_threads = true;
 	cpu_set_t inherited_mask;              /* whatever the launcher gave this rank */
 	int n_avail_cpu;
 
-	/* SPSC queue capacities, in DPs (rounded up to a power of two internally) */
-	size_t walker_queue_capacity = 1024;     /* walker -> comm */
-	size_t inserter_queue_capacity = 4096;     /* comm -> inserter */
+	/* hardware-dependent */
+	u64 nbytes_memory = 0;                 /* how much RAM to use on each node */
 
+	/* algorithm parameters */
+	double alpha = 2.5;                    /* auto-chosen theta == alpha * sqrt(w/n) */
+	double beta = 8;                       /* use each function variant for beta*w DPs */
+	double theta = -1;                     /* proportion of distinguished points. -1 == auto */
+	u64 multiplier = 0x2545f4914f6cdd1dull;   /* to generate starting points */
+	u64 max_versions = 0xffffffffffffffffull; /* how many functions to try before giving up */
+
+	/* SPSC queue capacities, in DPs (rounded up to a power of two internally) */
+	size_t walker_queue_capacity = 1024;   /* walker -> comm */
+	size_t inserter_queue_capacity = 4096; /* comm -> inserter */
 
 	/* control channel */
 	int bsend_slack = 8;                   /* MPI_Bsend slots beyond the n_nodes worst case */
 
 	/* bulk DP buffering */
 	size_t buffer_capacity = 1500;         /* DPs per message (double-buffered per node) */
-	int n_in_buffers = 8;                /* posted MPI_Irecv slots (ANY_SOURCE) */
+	int n_in_buffers = 8;                  /* posted MPI_Irecv slots (ANY_SOURCE) */
 
 	/* collision queue */
 	size_t coll_queue_capacity = 8192;
@@ -106,6 +121,19 @@ public:
 	                                          so a short round cannot overshoot beta*w */
 	size_t chunk_size = 64;                /* vmixf iterations between queue / phase checks */
 
+	/* other relevant quantities, deduced by finalize() */
+	u64 threshold;                         /* any integer less than this is a DP */
+	u64 w;                                 /* # slots in the (whole, distributed) dict */
+	u64 dp_max_it;                         /* how many iterations to find a DP */
+	u64 points_per_version;                /* #DP per version of the function */
+
+	/* utilities */
+	bool verbose = 1;                      /* print progress information */
+
+	/*
+	 * Discover the topology.  Call this once, right after MPI_Init_thread and before
+	 * anything is printed: it is what decides which rank is allowed to talk.
+	 */
 	void setup(MPI_Comm comm)
 	{
 		world_comm = comm;
@@ -130,7 +158,7 @@ public:
 
 		n_threads = 1 + walkers_per_node + inserters_per_node;
 		n_inserters = n_nodes * inserters_per_node;      /* total dictionary shards */
-		n_walkers = n_nodes * walkers_per_node;      /* total walker threads */
+		n_walkers = n_nodes * walkers_per_node;          /* total walker threads */
 
 		if (bind_threads && n_avail_cpu < n_threads)
 			warnx("MPI: rank %d has only %d CPUs in its affinity mask for %d threads."
@@ -150,12 +178,46 @@ public:
 			return -1;
 		return nth_cpu(&inherited_mask, tid);
 	}
+
+	/*
+	 * Size the dictionary and choose the difficulty.  Needs the problem dimensions, so
+	 * it happens after setup(), once the problem is known.
+	 */
+	void finalize(int n, int m)
+	{
+		if (nbytes_memory == 0)
+			errx(1, "the amount of RAM to use (per node) must be specified");
+
+		w = PcsDict::get_nslots(nbytes_memory * n_nodes, n_inserters);
+		/* auto-choose the difficulty if not set */
+		double auto_theta = alpha * std::sqrt((double) w / (1ll << n));
+		if (theta < 0) {
+			theta = auto_theta;
+			if (theta > 1)
+				theta = 1;
+			if (verbose)
+				printf("AUTO-TUNING: setting 1/theta == %.2f\n", 1 / theta);
+		} else {
+			if (verbose)
+				printf("NOTICE: using 1/theta == %.2f vs ``optimal'' 1/theta == %.2f\n", 1/theta, auto_theta);
+		}
+		threshold = pow(2, m) * theta;
+		dp_max_it = 20 / theta;
+		points_per_version = beta * w;
+
+		/* display warnings if problematic choices were made */
+		if (verbose && theta == 1) {
+			printf("***** WARNING *****\n***** WARNING *****\n***** WARNING *****\n");
+			printf("---> zero difficulty (use the naive technique!)\n");
+			printf("***** WARNING *****\n***** WARNING *****\n***** WARNING *****\n");
+		}
+	}
 };
 
 
 /******************************* benchmarking ********************************/
 
-static void display_stats(u64 N, double start, int vlen, const MpiParameters &params)
+static void display_stats(u64 N, double start, int vlen, const Parameters &params)
 {
 	double rate = vlen * N / (wtime() - start);
 	double rate_min = rate;
@@ -181,7 +243,7 @@ static void display_stats(u64 N, double start, int vlen, const MpiParameters &pa
 
 /* try to iterate for 1s. Return #it/s */
 template<typename Problem>
-void benchmark(const Problem& pb, const MpiParameters &params)
+void benchmark(const Problem& pb, const Parameters &params)
 {
 	if (params.rank == 0)
 		printf("Benchmarking scalar implementation (using %d processes)\n", params.n_nodes);
@@ -201,7 +263,7 @@ void benchmark(const Problem& pb, const MpiParameters &params)
 	display_stats(N, start, 1, params);
 
 	constexpr int vlen = Problem::vlen;
-	if (vlen > 1) {
+	if constexpr (vlen > 1) {
 		if (params.rank == 0)
 			printf("Benchmarking vector implementation (vlen=%d)\n", vlen);
 

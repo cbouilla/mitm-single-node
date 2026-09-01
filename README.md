@@ -1,120 +1,104 @@
+# Parallel meet-in-the-middle
 
+Given `f` and `g`, find a **claw** (`f(x0) == g(x1)`) or a **collision**
+(`f(x0) == f(x1)`, `x0 != x1`), using van Oorschot–Wiener parallel collision search
+(PCS) over a distributed dictionary of distinguished points.
 
-pcs = Parallel Collision Search (i.e. the van Oorshott-Wiener algorithm)
+The library is header-only C++17, in `include/`.  `examples/` holds one driver per
+cipher: double-Speck64 (the current focus), double-DES, double-AES and SHA256.
 
-**Note**: 
-To compile:
-```
-rm -rf CMakeCache.txt  CMakeFiles/ && cmake -S . -B . -D AES_IMPL=aesni && make && ./sha2_claw_demo
-```
+There is **one engine**, and it is MPI + OpenMP.  One MPI rank per node; inside a
+rank, thread 0 does all the MPI, some threads own a shard of the dictionary
+("inserters") and the rest walk trails ("walkers").  A single rank with one walker
+and one inserter is the degenerate sequential case — there is no separate sequential
+engine to fall back on.
 
-**Note**: Parallel Meet-in-The-Middle (mitm). For a single process mitm, please visit the branch `single-node`
-
-
-#  meet in the middle
-
-```
-                AbstractDomain.hpp
-                        ^
-                        |
-                        x
-                       / \
-                      /   \
-                     /     \
-                    /       \
-                   /         \
-AbstractClawProblem.hpp     AbstractCollisionProblem.hpp
-                   \         /
-                    \       /
-                     \     /
-                      \   /
-                       \ /
-                        ^
-                        |
-        prng.hpp  <- engine.hpp -> dict.hpp
-                        ^
-                        |
-                        x
-                       / \
-                      /   \
-                     |     |
-                  +---      --+
-                  |           |
-         claw_egine.hpp    collision_engine.hpp
-                  ^           ^
-                   \         /
-                    --+   +--
-                       \ /
-    		        |       common_mpi.hpp
-                        x        /
-                       / \      /
-                      /   \    /
-                     |     |  /
-                 +----     - / -+
-                 |          /   |
-                 |         /    |
-                 |        /     |
-          receiver.hpp-> + <-sender.hpp
-                  ^           ^
-                   \         /
-                    --+   +--
-                       \ /
-                        |
-                parallel_engine.hpp
-                        |
-                     mitm.hpp
-                        ^
-                        |
-                   your_code.cpp
-
-```
-
-
+## Build
 
 ```bash
-├── mitm.hpp
-├── docs (Follow this for your implementation)
-│   ├── AbstractClawProblem.hpp
-│   ├── AbstractCollisionProblem.hpp
-│   └── AbstractDomain.hpp
-├── include
-│   ├── claw_engine.hpp
-│   ├── collision_engine.hpp
-│   ├── common.hpp
-│   ├── counters.hpp
-│   ├── dict.hpp
-│   ├── engine.hpp
-│   ├── hash_table
-│   ├── mpi_common.hpp
-│   ├── naive_engine.hpp
-│   ├── parallel_engine.hpp
-│   ├── permutations (you can use examples here for mixing function)
-│   │   └── AES.hpp
-│   ├── receiver.hpp
-│   ├── sender.hpp
-│   └── util (independent code used in mitm)
-│       ├── folder_creator.hpp
-│       ├── memory.hpp
-│       ├── prng.hpp
-│       └── timing.hpp
-├── CMakeLists.txt
-├── examples (that uses claw and collision finding)
-│   ├── sha256.c
-│   ├── sha256_x86.c
-│   ├── sha2_claw_demo.cpp
-│   ├── sha2_claw_demo.cpp
-│   ├── sha2_collision_demo.cpp
-│   ├── bits_lib.hpp
-│   ├── scripts (ignore this)
-│   └── └── ...
-├── playground (ignore this)
-│   ├── cachelines.cpp
-│   ├── collisions_summary.csv
-│   ├── collision_summary.csv
-│   ├── process_collisions_summary.py
-│   ├── summary_collision.csv
-│   └── summary_collisions.ipynb
-├── data (ignore this)
-│   └── ...
-└── README.md
+cmake -S . -B build && make -C build
 ```
+
+Requires **MPI**, **OpenMP** and **OpenSSL** (headers; the DES example checks itself
+against it).  Binaries land in `build/examples/`.
+
+Two things to know before trusting any number that comes out:
+
+- No `CMAKE_BUILD_TYPE` is set, so there is no `-O` flag and `NDEBUG` is off: the
+  default build is unoptimized with live `assert()`s.  Add `-DCMAKE_BUILD_TYPE=Release`
+  to benchmark.
+- Everything compiles with `-march=native`, so binaries are **not portable across CPU
+  generations**.  On a cluster, build on the same architecture as the compute nodes.
+  The SIMD path (AVX-512 / AVX2 / scalar) is picked by `#ifdef` guards in
+  `include/types.h` that `-march=native` triggers; the probes in `config/*.cmake` set
+  `HAVE_*` variables that nothing currently reads.
+
+## Run
+
+Every driver takes the same options (`--help` lists them all).  `--ram` is
+**mandatory** and accepts human units:
+
+```bash
+mpirun -np 4 --bind-to none build/examples/double_speck64_demo \
+       --n 32 --ram 4G --inserters-per-node 2 --alpha 2.45 --beta 8
+```
+
+- `--n` problem size in bits (small == easy), `--seed` (0 == draw one and broadcast it)
+- `--ram` dictionary bytes **per node**; `--alpha`, `--beta`, `--difficulty` tune
+  the proportion of distinguished points and the length of a round
+- `--nrounds` gives up after that many versions of the mixing function
+- `--walkers-per-node` / `--inserters-per-node` set the thread layout; by default the
+  walkers fill whatever affinity mask the launcher handed the rank, which is why
+  `--bind-to none` matters
+- the queue and buffer sizes (`--walker-queue`, `--buffer`, `--chunk`, ...) are the
+  tuning knobs for the communication path
+
+On a CEA/TGCC-style cluster the launcher is `ccc_mprun` under an `MSUB` batch script;
+see `tgcc.sh`.
+
+## Layout
+
+```
+include/
+  types.h         SIMD vector types, selected by -march=native
+  tools.hpp       PRNG (TRIVIUM), timing, human-readable numbers
+  dict.hpp        PcsDict: the direct-mapped dictionary of distinguished points
+  problem.hpp     the interface a cipher implements: f, g, is_good_pair, vfg
+  counters.hpp    per-round diagnostic tallies + HyperLogLog
+  parameters.hpp  Parameters: topology, tuning, and what finalize() derives from it
+  trail.hpp       walking trails; turning a dictionary hit into a collision
+  spsc.hpp        wait-free single-producer/single-consumer queue
+  comm.hpp        queues, bulk DP buffers, control channel, per-thread state
+  walker.hpp      the walker thread
+  inserter.hpp    the inserter thread (owns one dictionary shard)
+  controller.hpp  rank 0's view: rounds, pacing, statistics, when to stop
+  engine.hpp      the node: the comm thread, the round loop, run_engine()
+  driver.hpp      command line + MPI startup, shared by every example
+  mitm.hpp        umbrella: problem wrappers, claw_search(), collision_search()
+  naive/          the naive all-to-all MITM.  NOT PORTED, not built (see below)
+examples/
+  <cipher>_problem.hpp   f, g, and a planted golden pair
+  <cipher>_demo.cpp      run the attack
+  <cipher>_bench.cpp     measure f evaluations per second
+```
+
+A new cipher is a `*_problem.hpp` implementing `f`, `g` and the domain against
+`AbstractClawProblem` (or `AbstractCollisionProblem`), plus a ~20-line driver.
+Vectorization is opt-in per problem: set `vlen` and provide `vfg` using the `v32` /
+`v64` types from `types.h`.  With `vlen == 1` the engine calls `f`/`g` directly and no
+`vfg` is needed.
+
+Recurring notation: `n` = domain bits, `m` = range bits, `w` = dictionary slots,
+`theta` = proportion of distinguished points, DP = distinguished point.
+
+`include/naive/` and `examples/naive_double_speck64_demo.cpp` are a *different*
+engine — the naive all-to-all MITM.  They still assume the old topology (several
+ranks per node, split into senders and receivers) and do not compile; they are kept
+as the starting point for porting that baseline back.
+
+## Testing
+
+There is no CTest suite.  The demos self-check: each plants a golden pair, and both
+the problem wrappers and the search entry points `assert` their way to it
+(`assert(pb.f(x0) == pb.g(x1))`).  Running `double_speck64_demo` on a small `--n` is
+the closest thing to a smoke test.

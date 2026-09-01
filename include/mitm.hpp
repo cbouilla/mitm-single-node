@@ -1,32 +1,65 @@
 #ifndef MITM
 #define MITM
 
-#include <optional>
-#include <unordered_map>
 #include <cassert>
 
-#include "common.hpp"
+#include "tools.hpp"
 #include "problem.hpp"
-#include "engine_common.hpp"
+#include "parameters.hpp"
+#include "engine.hpp"
+
+/*
+ * Umbrella header.  A driver includes this one, plus its own problem definition.
+ *
+ * There is a single engine (MPI + OpenMP, see engine.hpp).  What lives here is the
+ * layer above it: the wrappers that turn a claw- or collision-finding problem into
+ * the single random function the engine iterates, and the two entry points that
+ * translate the engine's answer back into the caller's coordinates.
+ */
 
 namespace mitm {
 
-/* This works when |Range| >= |Domain| in the input problem */
-template <class AbstractProblem>
-class ConcreteCollisionProblem {
+/*
+ * Turns a collision problem into one random function: iterate x -> f(i ^ x).
+ * Works when |Range| >= |Domain| in the input problem.
+ *
+ * INCOMPLETE, and known to be so since before the single-engine refactor -- it used
+ * to carry a commented-out `assert(0); // not ready yet`.  For some seeds the search
+ * plateaus and never retires the golden pair, while the claw wrappers below converge
+ * normally.  Verified to behave identically on the deleted sequential engine, so it
+ * is the wrapper and not the engine: `mix()` is a plain xor, so every version of the
+ * function has the same collision set (unlike the claw wrappers, whose choose() also
+ * re-randomizes WHICH of f/g is applied), and mix_good_pair() hands the pair to
+ * is_good_pair() in arrival order rather than normalizing it the way swapmix() does.
+ */
+template <class Problem>
+class CollisionWrapper {
 public:
-    const AbstractProblem &pb;
+    const Problem &pb;
     const int n, m;
     const u64 in_mask, out_mask;
+    static constexpr int vlen = Problem::vlen;
     u64 n_eval;                // #evaluations of (mix)f.  This does not count the invocations of f() by pb.good_pair().
 
 
-    ConcreteCollisionProblem(const AbstractProblem &pb) : pb(pb), n(pb.n), m(pb.m), in_mask(make_mask(pb.n)), out_mask(make_mask(pb.m))
+    CollisionWrapper(const Problem &pb) : pb(pb), n(pb.n), m(pb.m), in_mask(make_mask(pb.n)), out_mask(make_mask(pb.m))
     {
-        static_assert(std::is_base_of<AbstractCollisionProblem, AbstractProblem>::value,
+        static_assert(std::is_base_of<AbstractCollisionProblem, Problem>::value,
             "problem not derived from mitm::AbstractCollisionProblem");
         assert(m <= 64);
-        // assert(0);   // not reay yet
+        n_eval = 0;
+
+        /* check vmixf against mixf, which also exercises the problem's vf() */
+        PRNG vprng;
+        u64 i = vprng.rand() & out_mask;
+        u64 x[vlen] __attribute__ ((aligned(sizeof(u64) * vlen)));
+        u64 y[vlen] __attribute__ ((aligned(sizeof(u64) * vlen)));
+        for (int j = 0; j < vlen; j++)
+            x[j] = vprng.rand() & out_mask;
+        vmixf(i, x, y);
+        for (int j = 0; j < vlen; j++)
+            assert(y[j] == mixf(i, x[j]));
+        n_eval = 0;
     }
 
     /* randomization by a family of permutations of {0, 1}^n */
@@ -42,35 +75,26 @@ public:
         return pb.f(mix(i, x));
     }
 
+    void vmixf(u64 i, u64 x[], u64 r[])
+    {
+        // careful: vlen can be more than one SIMD vector
+        n_eval += vlen;
+        u64 y[vlen] __attribute__ ((aligned(sizeof(u64) * vlen)));
+        for (int j = 0; j < vlen; j++)
+            y[j] = mix(i, x[j]);
+        /* a scalar problem provides no vf(): call f() straight away */
+        if constexpr (vlen == 1)
+            r[0] = pb.f(y[0]);
+        else
+            pb.vf(y, r);
+    }
+
     bool mix_good_pair(u64 i, u64 x0, u64 x1)
-    { 
+    {
         return pb.is_good_pair(mix(i, x0), mix(i, x1));
     }
 };
 
-
-template <typename _Engine, class Parameters, typename AbstractProblem>
-optional<pair<u64, u64>> collision_search(const AbstractProblem& Pb, Parameters &params, PRNG &prng)
-{
-    static_assert(std::is_base_of<Engine, _Engine>::value,
-            "engine not derived from mitm::Engine");
-
-    ConcreteCollisionProblem wrapper(Pb);
-
-    params.finalize(Pb.n, Pb.m);
-    auto collision = _Engine::run(wrapper, params, prng);
-    if (collision) {
-        auto [i, x, y] = *collision;
-        u64 a = wrapper.mix(i, x);
-        u64 b = wrapper.mix(i, y);
-        assert(a != b);
-        assert(Pb.f(a) == Pb.f(b));
-        assert(Pb.is_good_pair(a, b));
-        return optional(pair(a, b));
-    } else {
-        return nullopt;
-    }
-}
 
 /****************************************************************************************/
 
@@ -85,23 +109,24 @@ public:
     static constexpr int vlen = Problem::vlen;
     u64 n_eval;                // #evaluations of (mix)f.  This does not count the invocations of f() by pb.good_pair().
 
-    EqualSizeClawWrapper(const Problem& pb) 
+    EqualSizeClawWrapper(const Problem& pb)
         : pb(pb), n(pb.n), m(pb.m), in_mask(make_mask(pb.n)), out_mask(make_mask(pb.m)), choice_mask(1ull << (pb.m - 1))
     {
         static_assert(std::is_base_of<AbstractClawProblem, Problem>::value,
             "problem not derived from mitm::AbstractClawProblem");
         assert(m <= 64);
         assert(pb.n == pb.m);
+        n_eval = 0;
 
         /* check vmixf */
         PRNG vprng;
         u64 i = vprng.rand() & out_mask;
-        u64 x[pb.vlen] __attribute__ ((aligned(sizeof(u64) * pb.vlen))); 
-        u64 y[pb.vlen] __attribute__ ((aligned(sizeof(u64) * pb.vlen)));
-        for (int i = 0; i < pb.vlen; i++)
-            x[i] = vprng.rand() & out_mask;
+        u64 x[vlen] __attribute__ ((aligned(sizeof(u64) * vlen)));
+        u64 y[vlen] __attribute__ ((aligned(sizeof(u64) * vlen)));
+        for (int j = 0; j < vlen; j++)
+            x[j] = vprng.rand() & out_mask;
         vmixf(i, x, y);
-        for (int j = 0; j < pb.vlen; j++)
+        for (int j = 0; j < vlen; j++)
             assert(y[j] == mixf(i, x[j]));
         n_eval = 0;
     }
@@ -132,15 +157,18 @@ public:
     void vmixf(u64 i, u64 x[], u64 r[])
     {
         // careful: vlen can be more than one SIMD vector
-        constexpr int vlen = Problem::vlen; 
         n_eval += vlen;
-        u64 y[vlen] __attribute__ ((aligned(sizeof(u64) * vlen))); 
+        u64 y[vlen] __attribute__ ((aligned(sizeof(u64) * vlen)));
         bool choices[vlen];
         for (int j = 0; j < vlen; j++) {
             y[j] = mix(i, x[j]);
             choices[j] = choose(i, x[j]);
         }
-        pb.vfg(y, choices, r);
+        /* a scalar problem provides no vfg(): call f() / g() straight away */
+        if constexpr (vlen == 1)
+            r[0] = choices[0] ? pb.f(y[0]) : pb.g(y[0]);
+        else
+            pb.vfg(y, choices, r);
     }
 
     pair<u64, u64> swapmix(u64 i, u64 a, u64 b) const
@@ -152,7 +180,7 @@ public:
         return pair(mix(i, x0), mix(i, x1));
     }
 
-    bool mix_good_pair(u64 i, u64 a, u64 b) 
+    bool mix_good_pair(u64 i, u64 a, u64 b)
     {
         if (choose(i, a) == choose(i, b))
             return false;
@@ -171,24 +199,24 @@ public:
     u64 n_eval;                // #evaluations of (mix)f.  This does not count the invocations of f() by pb.good_pair().
     u64 choice_mask;
 
-    LargerRangeClawWrapper(const Problem& pb) : pb(pb), n(pb.n + 1), m(pb.m), in_mask(make_mask(pb.n)), out_mask(make_mask(pb.m)) 
+    LargerRangeClawWrapper(const Problem& pb) : pb(pb), n(pb.n + 1), m(pb.m), in_mask(make_mask(pb.n)), out_mask(make_mask(pb.m))
     {
         static_assert(std::is_base_of<AbstractClawProblem, Problem>::value,
             "problem not derived from mitm::AbstractClawProblem");
         assert(m <= 64);
         assert(n <= m);
         choice_mask = 1ull << n;
+        n_eval = 0;
 
         /* check vmixf */
         PRNG vprng;
         u64 i = vprng.rand() & out_mask;
-        constexpr int vlen = Problem::vlen; 
-        u64 x[vlen] __attribute__ ((aligned(sizeof(u64) * pb.vlen))); 
-        u64 y[vlen] __attribute__ ((aligned(sizeof(u64) * pb.vlen)));
-        for (int i = 0; i < pb.vlen; i++)
-            x[i] = vprng.rand() & out_mask;
+        u64 x[vlen] __attribute__ ((aligned(sizeof(u64) * vlen)));
+        u64 y[vlen] __attribute__ ((aligned(sizeof(u64) * vlen)));
+        for (int j = 0; j < vlen; j++)
+            x[j] = vprng.rand() & out_mask;
         vmixf(i, x, y);
-        for (int j = 0; j < pb.vlen; j++)
+        for (int j = 0; j < vlen; j++)
             assert(y[j] == mixf(i, x[j]));
         n_eval = 0;
     }
@@ -219,19 +247,22 @@ public:
         else
             return pb.g(z & in_mask);
     }
-    
+
     void vmixf(u64 i, u64 x[], u64 r[])
     {
         // careful: vlen can be more than one SIMD vector
-        constexpr int vlen = Problem::vlen; 
         n_eval += vlen;
-        u64 y[vlen] __attribute__ ((aligned(sizeof(u64) * vlen))); 
+        u64 y[vlen] __attribute__ ((aligned(sizeof(u64) * vlen)));
         bool choice[vlen];
         for (int j = 0; j < vlen; j++) {
             y[j] = mix(i, x[j]);
             choice[j] = choose(i, x[j]);
         }
-        pb.vfg(y, choice, r);
+        /* a scalar problem provides no vfg(): call f() / g() straight away */
+        if constexpr (vlen == 1)
+            r[0] = choice[0] ? pb.f(y[0]) : pb.g(y[0]);
+        else
+            pb.vfg(y, choice, r);
     }
 
     pair<u64, u64> swapmix(u64 i, u64 a, u64 b) const
@@ -243,7 +274,7 @@ public:
         return pair(mix(i, x0), mix(i, x1));
     }
 
-    bool mix_good_pair(u64 i, u64 a, u64 b) 
+    bool mix_good_pair(u64 i, u64 a, u64 b)
     {
         if (choose(i, a) == choose(i, b))
             return false;
@@ -253,44 +284,56 @@ public:
 };
 
 
-template <class _Engine, class Parameters, class Problem>
+/****************************************************************************************/
+
+/* find x0 != x1 with f(x0) == f(x1) and is_good_pair(x0, x1) */
+template <class Problem>
+optional<pair<u64, u64>> collision_search(const Problem& pb, Parameters &params, PRNG &prng)
+{
+    if (params.verbose)
+        printf("Starting collision search with f : {0,1}^%d --> {0, 1}^%d (vlen=%d)\n",
+            pb.n, pb.m, Problem::vlen);
+
+    CollisionWrapper<Problem> wrapper(pb);
+    params.finalize(wrapper.n, wrapper.m);
+
+    auto collision = run_engine(wrapper, params, prng);
+    if (not collision)
+        return nullopt;
+
+    auto [i, x, y] = *collision;
+    u64 x0 = wrapper.mix(i, x);
+    u64 x1 = wrapper.mix(i, y);
+
+    /* quality control */
+    assert(x0 != x1);
+    assert(pb.f(x0) == pb.f(x1));
+    assert(pb.is_good_pair(x0, x1));
+    return optional(pair(x0, x1));
+}
+
+
+/* find x0, x1 with f(x0) == g(x1) and is_good_pair(x0, x1) */
+template <class Problem>
 optional<pair<u64, u64>> claw_search(const Problem& pb, Parameters &params, PRNG &prng)
 {
-    static_assert(std::is_base_of<Engine, _Engine>::value,
-            "engine not derived from mitm::Engine");
-
     if (params.verbose)
-        printf("Starting claw search with f : {0,1}^%d --> {0, 1}^%d\n", pb.n, pb.m);
-
-    if (Problem::vlen > 1) {
-        if (params.verbose)
-            printf("Using vectorized implementation with vectors of size %d\n", pb.vlen);
-        // check consistency of the vector function 
-        PRNG vprng;
-        u64 x[pb.vlen] __attribute__ ((aligned(sizeof(u64) * pb.vlen))); 
-        u64 z[pb.vlen] __attribute__ ((aligned(sizeof(u64) * pb.vlen)));
-        u64 mask = make_mask(pb.n);
-        bool choice[pb.vlen];
-        for (int i = 0; i < pb.vlen; i++) {
-            x[i] = vprng.rand() & mask;
-            choice[i] = vprng.rand() & 1;
-        }
-        pb.vfg(x, choice, z);
-        // for (int i = 0; i < pb.vlen; i++)
-        //     printf("y[%d] = %" PRIx64 " vs f(x[%d]) = %" PRIx64 "\n", i, y[i], i, pb.f(x[i]));
-        for (int i = 0; i < pb.vlen; i++)
-            assert(z[i] == (choice[i] ? pb.f(x[i]) : pb.g(x[i])));
-    }
+        printf("Starting claw search with f, g : {0,1}^%d --> {0, 1}^%d (vlen=%d)\n",
+            pb.n, pb.m, Problem::vlen);
 
     optional<tuple<u64,u64,u64>> claw;
     u64 x0, x1;
 
+    /*
+     * The two wrappers differ only in how they fold f and g into one function, but
+     * they are distinct types, so the branch has to carry the whole search.
+     */
     if (pb.n == pb.m) {
         if (params.verbose)
             printf("  - using |Domain| == |Range| mode.  Expecting 1.8*n/w rounds.\n");
         EqualSizeClawWrapper<Problem> wrapper(pb);
         params.finalize(wrapper.n, wrapper.m);
-        claw = _Engine::run(wrapper, params, prng);
+        claw = run_engine(wrapper, params, prng);
         if (claw) {
             auto [i, a, b] = *claw;
             std::tie(x0, x1) = wrapper.swapmix(i, a, b);
@@ -300,26 +343,25 @@ optional<pair<u64, u64>> claw_search(const Problem& pb, Parameters &params, PRNG
             printf("  - using |Domain| << |Range| mode.  Expecting 0.9*n/w rounds.\n");
         LargerRangeClawWrapper<Problem> wrapper(pb);
         params.finalize(wrapper.n, wrapper.m);
-        claw = _Engine::run(wrapper, params, prng);
+        claw = run_engine(wrapper, params, prng);
         if (claw) {
             auto [i, a, b] = *claw;
             std::tie(x0, x1) = wrapper.swapmix(i, a, b);
         }
     } else {
-        printf("Larger domain not yet supported...\n");
-        assert(0);
+        errx(1, "Larger domain not yet supported...");
     }
 
-    if (claw) {
-        /* quality control */
-        assert((x0 & make_mask(pb.n)) == x0);
-        assert((x1 & make_mask(pb.n)) == x1);    
-        assert(pb.f(x0) == pb.g(x1));
-        assert(pb.is_good_pair(x0, x1));
-        return pair(x0, x1);
-    } else {
+    if (not claw)
         return nullopt;
-    }
+
+    /* quality control */
+    assert((x0 & make_mask(pb.n)) == x0);
+    assert((x1 & make_mask(pb.n)) == x1);
+    assert(pb.f(x0) == pb.g(x1));
+    assert(pb.is_good_pair(x0, x1));
+    return optional(pair(x0, x1));
 }
+
 }
 #endif

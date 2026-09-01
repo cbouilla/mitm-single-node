@@ -1,11 +1,9 @@
-#ifndef MITM_MPI_INSERTER
-#define MITM_MPI_INSERTER
+#ifndef MITM_INSERTER
+#define MITM_INSERTER
 
-#include <vector>
-
-#include "../engine_common.hpp"
-#include "common.hpp"
-#include "pcs_comm.hpp"
+#include "dict.hpp"
+#include "parameters.hpp"
+#include "comm.hpp"
 
 namespace mitm {
 
@@ -30,9 +28,9 @@ namespace mitm {
  *
  * The shard and the incoming queue are private to this thread, so they are arguments
  * rather than shared context.  Winding down is driven by ctx.state (see thread_state
- * in pcs_comm.hpp).
+ * in comm.hpp).
  */
-inline void inserter_thread(ThreadContext &ctx, const MpiParameters &params, RoundState &round,
+inline void inserter_thread(ThreadContext &ctx, const Parameters &params, RoundState &round,
                             PcsDict &dict, SPSCQueue &in, CollisionQueue &coll_q)
 {
 	static const size_t BATCH = 64;
@@ -46,9 +44,12 @@ inline void inserter_thread(ThreadContext &ctx, const MpiParameters &params, Rou
 				/* by construction this point belongs to THIS thread's shard */
 				u64 key = p.x / params.n_inserters;
 				ctx.n_probe.fetch_add(1, std::memory_order_relaxed);
-				auto hit = probe_distinguished_point(ctx.ctr, dict, key, p.seed, p.len);
-				if (not hit)
-					continue;     // the trails do not coalesce, just a hash collision
+				auto hit = dict.pop_insert(key, p.seed, p.len);
+				if (not hit) {
+					/* the trails do not coalesce, just a hash collision */
+					ctx.ctr.bad_probe += 1;
+					continue;
+				}
 				auto [seed1, len1_maybe] = *hit;
 				CollisionCandidate c = {round.i, p.seed, p.len, key, seed1, len1_maybe};
 				if (not coll_q.push(c))
@@ -64,7 +65,7 @@ inline void inserter_thread(ThreadContext &ctx, const MpiParameters &params, Rou
 			}
 			continue;    // queue is not empty, don't relax
 		}
-		
+
 		cpu_relax();
 	}
 }

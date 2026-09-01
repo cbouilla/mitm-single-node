@@ -1,13 +1,12 @@
-#ifndef MITM_MPI_CONTROLLER
-#define MITM_MPI_CONTROLLER
+#ifndef MITM_CONTROLLER
+#define MITM_CONTROLLER
 
 #include <cmath>
 #include <mpi.h>
 
-#include "../common.hpp"
-#include "../engine_common.hpp"
-#include "common.hpp"
-#include "pcs_comm.hpp"
+#include "counters.hpp"
+#include "parameters.hpp"
+#include "comm.hpp"
 
 namespace mitm {
 
@@ -18,7 +17,7 @@ namespace mitm {
  */
 class Controller {
 public:
-	const MpiParameters &params;
+	const Parameters &params;
 
 	u64 nround = 0;
 	u64 stop = 0;
@@ -36,17 +35,17 @@ public:
 	double start_time;
 	vector<u8> hll;                                /* all collisions since the start */
 
-	Controller(const MpiParameters &p) : params(p), n_active_nodes(p.n_nodes), hll(0x10000)
+	Controller(const Parameters &p) : params(p), n_active_nodes(p.n_nodes), hll(0x10000)
 	{
 		start_time = wtime();
 	}
 
-	void banner(const PRNG &prng, u64 w_slots)
+	void banner(const PRNG &prng, u64 w_shard)
 	{
 		char hbuf[8], hdict[8];
 		u64 bufbytes = (u64) 2 * params.n_nodes * DP_WORDS * sizeof(u64) * params.buffer_capacity;
 		human_format(bufbytes, hbuf);
-		human_format(params.n_nodes * w_slots * sizeof(u64), hdict);
+		human_format(params.n_nodes * w_shard * sizeof(u64), hdict);
 		printf("Starting MPI+OpenMP collision search with seed=%016" PRIx64 "\n", prng.seed);
 		printf("RAM per node == %sB buffers + dict.  Total dict == %sB (2^%.2f slots)\n",
 			hbuf, hdict, std::log2((double) params.w));
@@ -115,26 +114,24 @@ public:
 	}
 
 	/*
-	 * `red` is the 7-way SUM reduction gathered at the end of the round:
-	 *   0: f evaluations   1: collisions   2: probe failures   3: walk robin-hood
-	 *   4: walk non-colliding   5: same-value collisions   6: DP failures
+	 * `st` is the ST_NWORDS-way SUM reduction of every thread's Counters (see
+	 * round_stat in comm.hpp), `hll_round` the MAX-reduction of their HyperLogLog
+	 * registers.  Both cover this round only; the running totals live here.
 	 */
-	void end_round(const u64 red[7], const vector<u8> &hll_i)
+	void end_round(const u64 st[ST_NWORDS], const vector<u8> &hll_round)
 	{
 		double delta = wtime() - round_start;
-		u64 N = 1ull << 30;                       /* placeholder, replaced below */
-		(void) N;
 
 		ndp_total += ndp;
-		ncoll_total += red[1];
-		nf_total += red[0];
+		ncoll_total += st[ST_NCOLL];
+		nf_total += st[ST_NEVAL];
 
 		for (int k = 0; k < 0x10000; k++)
-			if (hll_i[k] > hll[k])
-				hll[k] = hll_i[k];
+			if (hll_round[k] > hll[k])
+				hll[k] = hll_round[k];
 
 		char hrate[8], hnrate[8];
-		human_format((double) red[0] / params.n_walkers / delta, hrate);
+		human_format((double) st[ST_NEVAL] / params.n_walkers / delta, hrate);
 		human_format((double) ndp * DP_WORDS * sizeof(u64) / params.n_nodes / delta, hnrate);
 
 		printf("\n");
@@ -142,21 +139,29 @@ public:
 		       "Total #f=2^%.3f.  %s #f/s per walker.  node-->%sB/s\n",
 			nround, delta,
 			(double) ndp / params.w, std::log2((double) ndp_total ? (double) ndp_total : 1.),
-			(double) red[1] / params.w, std::log2((double) ncoll_total ? (double) ncoll_total : 1.),
+			(double) st[ST_NCOLL] / params.w, std::log2((double) ncoll_total ? (double) ncoll_total : 1.),
 			std::log2((double) nf_total ? (double) nf_total : 1.), hrate, hnrate);
 
-		if (ndp > 0)
-			printf("            %.2f%% probe failure.  %.2f%% walk-robinhood.  %.2f%% walk-noncolliding.  "
+		if (ndp > 0) {
+			double avglen = (double) st[ST_NPOINTS_TRAILS] / ndp;
+			printf("            %.2f avg trail length", avglen);
+			if (st[ST_NCOLL] > 0 && avglen > 0)
+				printf(" (x%.2f & x%.2f colliding)",
+					(double) st[ST_LEN_MIN] / st[ST_NCOLL] / avglen,
+					(double) st[ST_LEN_MAX] / st[ST_NCOLL] / avglen);
+			printf(".  %.2f%% probe failure.  %.2f%% walk-robinhood.  %.2f%% walk-noncolliding.  "
 			       "%.2f%% same-value.  %.2f%% DP failure\n",
-				100. * red[2] / ndp, 100. * red[3] / ndp, 100. * red[4] / ndp,
-				100. * red[5] / ndp, 100. * red[6] / ndp);
+				100. * st[ST_BAD_PROBE] / ndp, 100. * st[ST_BAD_ROBINHOOD] / ndp,
+				100. * st[ST_BAD_NONCOLLIDING] / ndp, 100. * st[ST_BAD_COLLISION] / ndp,
+				100. * st[ST_BAD_DP] / ndp);
+		}
 
 		if (drop_walkerq | drop_out | drop_inserterq | drop_coll)
 			printf("            DROPPED  %" PRId64 " walker-queue / %" PRId64 " output-buffer / "
 			       "%" PRId64 " inserter-queue / %" PRId64 " collision-queue\n",
 				drop_walkerq, drop_out, drop_inserterq, drop_coll);
 
-		u64 E_i = Counters::distinct_collisions_estimation(hll_i);
+		u64 E_i = Counters::distinct_collisions_estimation(hll_round);
 		u64 E = Counters::distinct_collisions_estimation(hll);
 		printf("            #distinct coll (this i / total) %.02f*w / 2^%.2f\n",
 			(double) E_i / params.w, std::log2((double) E ? (double) E : 1.));
@@ -164,11 +169,18 @@ public:
 		fflush(stdout);
 
 		nround += 1;
+		/* give up after max_versions rounds; the engine then reports "not found" */
+		if (nround >= params.max_versions)
+			stop = 1;
 	}
 
 	void done()
 	{
-		printf("Completed in %.2fs\n", wtime() - start_time);
+		if (solution)
+			printf("Completed in %.2fs\n", wtime() - start_time);
+		else
+			printf("Gave up after %" PRId64 " versions of the function (%.2fs)\n",
+				nround, wtime() - start_time);
 		fflush(stdout);
 	}
 };
