@@ -10,7 +10,6 @@
 #include <vector>
 
 #include "tools.hpp"
-#include "dict.hpp"
 
 namespace mitm {
 
@@ -24,8 +23,13 @@ namespace mitm {
  * A single rank with one walker and one inserter is the degenerate "sequential" case.
  */
 
-enum tags {TAG_POINTS, TAG_CONTROL};
-enum assignment {KEEP_GOING, NEW_VERSION};
+/*
+ * Message tags.  TAG_POINTS carries bulk DPs and the end-of-round sentinels between
+ * any two nodes; the other three are the control channel: the end-of-round signal goes
+ * from rank 0 to every node, reports and solutions from a node to rank 0.  One tag per
+ * message kind, so a message is told apart by its envelope and never by its length.
+ */
+enum tags {TAG_POINTS, TAG_END_ROUND, TAG_REPORT, TAG_SOLUTION};
 enum thread_role {COMM, INSERTER, WALKER};
 
 static constexpr int DP_WORDS = 3;     /* how many u64 per distinguished point on the wire */
@@ -67,7 +71,8 @@ struct Options {
 	size_t inserter_queue_capacity = 4096; /* comm -> inserter */
 
 	/* control channel */
-	int bsend_slack = 8;                   /* MPI_Bsend slots beyond the n_nodes worst case */
+	int bsend_slack = 8;                   /* MPI_Bsend slots beyond the 2*n_nodes bounded traffic
+	                                          (end-of-round signals + sentinels): our reports, our solution */
 
 	/* bulk DP buffering */
 	size_t buffer_capacity = 1500;         /* DPs per message (double-buffered per node) */
@@ -165,7 +170,9 @@ struct Parameters : Options {
 		/* dictionary */
 		if (nbytes_memory == 0)
 			errx(1, "the RAM budget per node must be given (and nonzero)");
-		w = PcsDict::get_nslots(nbytes_memory * n_nodes, n_inserters);
+		/* 8-byte slots, and a whole number of them per shard */
+		w = (nbytes_memory * n_nodes) / sizeof(u64);
+		w = (w / n_inserters) * n_inserters;
 		if (w == 0)
 			errx(1, "RAM budget too small: %" PRIu64 " bytes/node cannot hold one slot per shard",
 			     nbytes_memory);

@@ -37,15 +37,19 @@ with each other only through the collision queue.
    |      +--------------- coll_q  <------------+              |
    +--------------------------|--------------------------------+
                               |
-          TAG_POINTS   bulk DPs + sentinels   <-->  every rank (self included)
-          TAG_CONTROL  reports / assignments  <-->  rank 0
-          collectives  round header, statistics, answer
+          TAG_POINTS      bulk DPs + sentinels  <-->  every rank (self included)
+          TAG_END_ROUND   rank 0  -->  every node (self included)
+          TAG_REPORT      every node  -->  rank 0
+          TAG_SOLUTION    every node  -->  rank 0
+          collectives     round header, statistics, answer
 ```
 
 ## 2. Messages between nodes
 
-All messages are arrays of `MPI_UINT64_T` on `mpi_comm`.  There are two tags,
-`TAG_POINTS` and `TAG_CONTROL`, plus a few collectives.
+All messages are arrays of `MPI_UINT64_T` on `mpi_comm`.  There are four tags, one per
+message kind: `TAG_POINTS` for the data, and `TAG_END_ROUND`, `TAG_REPORT`,
+`TAG_SOLUTION` for the control channel, plus a few collectives.  A message is told
+apart by its tag, never by its length.
 
 ### 2.1 `TAG_POINTS`: distinguished points, node to node
 
@@ -89,18 +93,41 @@ three divisions are split over the three stages that need them:
 A point whose `node` is the local rank never touches MPI: `deliver_local()` pushes it
 straight into the inserter queue.
 
-### 2.2 `TAG_CONTROL`: reports and assignments
+### 2.2 The control channel: `TAG_END_ROUND`, `TAG_REPORT`, `TAG_SOLUTION`
 
-One always-posted `MPI_Irecv(buf, REP_NWORDS, MPI_ANY_SOURCE, TAG_CONTROL)` per rank
-carries the whole control channel in both directions (`ControlChannel`).  Messages
-are told apart by **length**: 1 word is an assignment, `REP_NWORDS` words is a report.
-Rank 0 talks to itself through MPI like any other node.  Every send is `MPI_Bsend`:
-it completes locally, so the comm thread never blocks and there is no request to
-track.  The attached buffer holds `3 * n_nodes + bsend_slack` report-sized slots
-(worst case: an assignment to every node, our own report, one sentinel per node).
+Three tags, one per message kind, and one always-posted `MPI_Irecv` per tag on the
+rank that consumes it:
 
-**Progress report** (node -> rank 0, `REP_NWORDS == 11` words).  All counts are
-**deltas since the node's previous report**; the controller sums them.
+| tag | from | to | words | posted by |
+|---|---|---|---|---|
+| `TAG_END_ROUND` | rank 0 | every node | 0 | `ControlChannel`, on every rank, with source `0` (no wildcard) |
+| `TAG_REPORT` | every node | rank 0 | `REP_NWORDS` | `Controller`, rank 0 only, `MPI_ANY_SOURCE` |
+| `TAG_SOLUTION` | every node | rank 0 | `SOL_NWORDS` | `Controller`, rank 0 only, `MPI_ANY_SOURCE` |
+
+Which receive completed says what the message is, so each buffer is sized exactly for
+its message and nothing is ever inferred from a length.  There is no `MPI_ANY_TAG`
+anywhere, which is what keeps these receives from ever matching `TAG_POINTS` traffic
+bound for rank 0's node role.  The report and solution receives are serviced by the
+controller itself (`Controller::service()`); the node's comm code only ever sees the
+end-of-round signal.  Rank 0 talks to itself through MPI like any other node.  Every
+send is `MPI_Bsend`: it completes locally, so the comm thread never blocks and there is
+no request to track.  The attached buffer is per process and holds
+`2 * n_nodes + bsend_slack` report-sized slots.  The bounded part is an end-of-round
+signal to every node (rank 0) and one sentinel per node, both once per round; our own
+reports and solution have no hard bound (reports are one-way and nothing throttles them
+but their pacing rule), and `bsend_slack` (default 8) covers them: a report's slot is
+reclaimed by the sender's own progress, and at least 256 turns of the comm loop, each
+with several `MPI_Test`s, separate two reports.  A full buffer is a fatal
+`MPI_ERR_BUFFER`, never a hang.
+
+The three tags are independent channels: MPI orders only the messages that match the
+same receive, so a solution may be matched before or after a report the same node sent
+earlier.  Nothing depends on that order: both only feed the controller's decision to
+close the round, which is taken once per `service()` call after both receives have
+been drained.
+
+**Progress report** (node -> rank 0, `TAG_REPORT`, `REP_NWORDS == 7` words).  All
+counts are **deltas since the node's previous report**; the controller sums them.
 
 | index | field | source |
 |---|---|---|
@@ -110,35 +137,32 @@ track.  The attached buffer holds `3 * n_nodes + bsend_slack` report-sized slots
 | `REP_DROP_OUT` | points dropped: outgoing MPI buffer busy | `OutBuffers::n_dropped` |
 | `REP_DROP_INSERTERQ` | points dropped: inserter queue full | `PcsNode::n_drop_inserterq` |
 | `REP_DROP_COLL` | candidates dropped: collision queue full | inserters' `n_drop_coll` |
-| `REP_GOLDEN` | 0 | |
-| `REP_I`, `REP_X0`, `REP_X1` | 0 | |
 | `REP_NPROBE` | dictionary probes retired | inserters' `n_probe` |
 
 Pacing: the comm thread considers reporting every 256 turns of its poll loop, and
 sends a report if either `ping_delay` seconds (default 0.1) have elapsed since the
 last one, or the node has found `points_per_version / (reports_per_round * n_nodes)`
-new DPs since the last one (so a short round cannot overshoot `beta * w`).  **At most
-one progress report is outstanding per node**: none is sent while
-`awaiting_assignment` is set, and it is cleared by the reply.
+new DPs since the last one (so a short round cannot overshoot `beta * w`).  A report
+is **one-way**: nothing is answered, and a node keeps reporting until its end-of-round
+signal arrives.
 
-**Golden report** (node -> rank 0, `REP_NWORDS` words).  `REP_GOLDEN = 1`, and
-`REP_I`, `REP_X0`, `REP_X1` carry the mixing-function index and the two colliding
-points; every other field is 0.  Sent once per node (`golden_sent`) as soon as the
-comm thread sees `RoundState::golden_found`.  It is **one-way**: no reply, and it does
-not touch `awaiting_assignment`.
+**Solution** (node -> rank 0, `TAG_SOLUTION`, `SOL_NWORDS == 3` words).  `SOL_I`,
+`SOL_X0`, `SOL_X1`: the mixing-function index and the two colliding points, exactly
+the layout of `RoundState::golden`.  Sent once per node (`golden_sent`) as soon as the
+comm thread sees `RoundState::golden_found`.  It is **one-way**.  The controller keeps
+the first one and raises `stop`.
 
-**Assignment** (rank 0 -> node, 1 word).  The reply to every progress report:
-
-| value | meaning |
-|---|---|
-| `KEEP_GOING` (0) | carry on with this version of the function |
-| `NEW_VERSION` (1) | stop producing points and drain: the round is over |
-
-The controller replies `NEW_VERSION` once the summed `REP_NDP` of the round has
-reached `points_per_version`, or once `stop` has been raised by a golden report.  It
-decrements `n_active_nodes` per `NEW_VERSION` it hands out, and it never sends
-anything unsolicited: a node that has not reported cannot be told to stop, which is
-why reports are also paced by DP count.
+**End of round** (rank 0 -> every node, `TAG_END_ROUND`, **zero-length**).  Meaning:
+"stop producing points and drain: the round is over".  Sent by
+`Controller::close_round()` to every node, rank 0 included, as soon as `service()`
+sees `stop` raised or the summed `REP_NDP` of the round at or above
+`points_per_version`.  It is the only message the controller ever sends, it is
+unsolicited, and it is sent **exactly once per round** (`round_closed`): the receive
+that matches it names source 0 and this tag, so successive signals are non-overtaking
+and a node consumes exactly one per round -- it is its only way out of the steady
+state -- and a second one would be consumed in the *next* round and end it at once.
+The controller only knows what has been reported, so a node that has not reported
+cannot push `ndp` over the threshold; that is why reports are also paced by DP count.
 
 ### 2.3 Collectives
 
@@ -170,8 +194,10 @@ startup.  The per-round ones are reached only after every node has finished its 
 | `RoundState::i`, `root_seed`, `stop` | comm (OpenMP master) | everyone | plain `u64`, published by an OpenMP barrier | | |
 | `RoundState::golden` | any walker | comm | mutex + `atomic<bool>` flag | | first one wins |
 
-SPSC capacities are rounded up to a power of two.  Every queue is **non-blocking on
-both sides**: nobody ever waits for room or for data, they poll and move on.
+Each SPSC queue is built by its worker side (the walker, or the inserter) in
+`run()`, once that thread is pinned (§4.1).  SPSC capacities are rounded up to a
+power of two.  Every queue is **non-blocking on both sides**: nobody ever waits for
+room or for data, they poll and move on.
 
 ### 3.1 The SPSC queues
 
@@ -234,7 +260,7 @@ top of the next round.
   across threads, reduced across nodes, and reset by the comm thread (§4.6).
 - `RoundState::set_golden(i, x0, x1)` takes a mutex, keeps the first triple, and
   raises `golden_found` with a release store.  The comm thread polls the flag (acquire)
-  every turn of its loop during the round and forwards it as a golden report.
+  every turn of its loop during the round and forwards it as a solution message.
   Neither `golden_found` nor `golden_sent` is ever reset: a golden pair ends the search.
 
 ## 4. Lifecycle and synchronization steps
@@ -247,10 +273,17 @@ top of the next round.
    `MPI_Comm_rank/size`).
 3. The test-vector `MPI_Bcast` (§2.3) asserts every rank iterates the same function.
 4. `PcsNode` is constructed: `InBuffers` posts its `n_in_buffers` receives,
-   `ControlChannel` attaches the `MPI_Bsend` buffer and posts the control receive.
-   Nothing may `MPI_Bsend` before this, and nothing does.
-5. The OpenMP team starts.  Each thread pins itself to `thread_cpu[tid]`.
-   **OpenMP barrier**, then the master prints the thread-to-CPU map on rank 0.
+   `ControlChannel` attaches the `MPI_Bsend` buffer and posts the end-of-round receive,
+   and on rank 0 `Controller` posts the report and solution receives.  Nothing may
+   `MPI_Bsend` before this, and nothing does.  The per-thread tables (`ctx`,
+   `walker_q`, `inserter_q`, `dict`) are only sized here, not filled.
+5. The OpenMP team starts.  Each thread pins itself to `thread_cpu[tid]`, **then**
+   builds what it owns: its `ThreadContext`, its SPSC queue and, for an inserter,
+   its dictionary shard (`PcsDict`, `w_shard` slots, zero-filled).  Allocating after
+   pinning is deliberate: under Linux's first-touch policy a page lands on the NUMA
+   node of the CPU that first writes it, so this puts every object on its owner's
+   node.  **OpenMP barrier** publishes the slots; then the master checks that the
+   team is complete and prints the thread-to-CPU map on rank 0.
 
 ### 4.2 Round start
 
@@ -258,29 +291,30 @@ top of the next round.
 2. **Master only** (thread 0): rank 0 draws `i` and `root_seed` and reads
    `controller.stop`; **`MPI_Bcast` of the 3-word round header** from rank 0.  Every
    rank stores it into `RoundState`.  On rank 0, `controller.begin_round()` resets the
-   per-round tallies and `n_active_nodes = n_nodes`, unless `stop` is set.
+   per-round tallies and `round_closed`, unless `stop` is set.
 3. **OpenMP barrier**: publishes `RoundState` to every thread.
 4. If `stop`, every thread leaves the round loop (§4.7).  Otherwise thread 0 enters
    `comm_round()`, inserters `inserter_thread()`, walkers `walker_thread()`.
 
 ### 4.3 Steady state
 
-**Comm thread**, one turn of its loop, forever until `NEW_VERSION` arrives:
+**Comm thread**, one turn of its loop, forever until the end-of-round signal arrives:
 
 1. `route_walker_queues()`: pop up to 64 DPs from each walker queue; local points go
    to `deliver_local()`, remote ones to `outbuf.push()`.
 2. `outbuf.poll()`: `MPI_Testsome` on the outgoing sends, releasing finished buffers.
 3. `poll_incoming()`: `MPI_Testsome` on the receive pool; scatter completed buffers to
    the inserter queues, count sentinels, repost.
-4. `service_control()`: `MPI_Test` the control receive.  An assignment clears
-   `awaiting_assignment` and, if it is `NEW_VERSION`, sets `got_new_version`.  A
-   report (rank 0 only) goes to `controller.handle_report()`, whose reply, if any, is
-   `MPI_Bsend`-ed back to the report's source.
-5. If `golden_found` and not yet sent: `MPI_Bsend` a golden report to rank 0.
-6. Every 256 turns, if no report is outstanding and the pacing rule (§2.2) says so:
-   read the walkers' and inserters' published tallies, `MPI_Bsend` a progress report
-   with the deltas, set `awaiting_assignment`.
-7. If `got_new_version`: leave the loop and run the drain (§4.5).
+4. `service_control()`: `MPI_Test` the end-of-round receive; if it completed, set
+   `round_over` (and repost it for the next round).  On rank 0, then
+   `controller.service()`: drain the solution receive (each one goes to
+   `handle_solution()`) and the report receive (each one goes to `handle_report()`),
+   then close the round (§2.2) if it is not closed yet and `stop` is raised or
+   `ndp >= points_per_version`.
+5. If `golden_found` and not yet sent: `MPI_Bsend` the solution to rank 0.
+6. Every 256 turns, if the pacing rule (§2.2) says so: read the walkers' and inserters'
+   published tallies and `MPI_Bsend` a progress report with the deltas.
+7. If `round_over`: leave the loop and run the drain (§4.5).
 
 Nothing in this loop blocks.
 
@@ -292,10 +326,11 @@ and restarting the chain; add the chunk's evaluations to `ctr`; publish `n_dp`.
 (`PcsDict::pop_insert`), push a `CollisionCandidate` for every hit (drop if full);
 then read `state`; if nothing to do, `cpu_relax()`.
 
-**Controller** (inside `handle_report` on rank 0): a golden report records the
-solution (first one wins) and raises `stop`; a progress report adds its deltas, and is
-answered `NEW_VERSION` if `stop` is raised or `ndp >= points_per_version`, else
-`KEEP_GOING`.  The live one-line display is refreshed at most every 0.5 s.
+**Controller** (inside `service()` on rank 0): a solution is recorded (first one wins)
+and raises `stop`; a progress report adds its deltas; then, once per round, the round
+is closed -- `TAG_END_ROUND` to every node -- as soon as `stop` is raised or
+`ndp >= points_per_version`.  The live one-line display is refreshed at most every
+0.5 s.
 
 ### 4.4 Point flow, end to end
 
@@ -316,12 +351,12 @@ inserter:  key = x / n_inserters, probe the shard
 coll_q  -->  walker: walk both trails, locate the collision, test the pair
                 |  golden
                 v
-          RoundState::set_golden  -->  comm thread  -->  golden report to rank 0
+          RoundState::set_golden  -->  comm thread  -->  solution to rank 0
 ```
 
 ### 4.5 End of round: the drain
 
-Entered by the comm thread when its node has been told `NEW_VERSION`.  The order is
+Entered by the comm thread when its end-of-round signal has arrived.  The order is
 what makes the round airtight: no thread declares itself finished while something
 can still arrive for it.
 
@@ -331,14 +366,16 @@ can still arrive for it.
 | 2 | loop { check every walker is `HELD`; `route_walker_queues()`; `outbuf.poll()`; `poll_incoming()`; `service_control()` } until all walkers are `HELD`, the last pass moved nothing, and every walker queue has `head == tail` | every DP this node produced this round has been routed (delivered locally or handed to `OutBuffers`) |
 | 3 | loop { `outbuf.flush_poll()`; `poll_incoming()`; `service_control()` } until nothing is left to send and every `Isend` has completed | every DP bound for another node has left this node.  Receiving continues throughout, so the peers we wait on can complete their sends too |
 | 4 | `outbuf.send_sentinels()` | every node (self included) will learn that we are done sending; the sentinel cannot overtake the data it follows |
-| 5 | loop { `poll_incoming()`; `service_control()` } until `n_sentinels == n_nodes` | every node has finished sending to us, and everything they sent has been scattered to the inserter queues.  Rank 0 keeps answering reports here: the other nodes reach *their* step 4 only after it tells them `NEW_VERSION` |
-| 5b | rank 0 only: loop { `service_control()` } until `controller.n_active_nodes == 0` | rank 0 does not leave the round while a node is still waiting for its assignment (which would strand it in front of the collectives).  Already implied by step 5 in practice, since a node only sends its sentinel after `NEW_VERSION` |
+| 5 | loop { `poll_incoming()`; `service_control()` } until `n_sentinels == n_nodes` | every node has finished sending to us, and everything they sent has been scattered to the inserter queues.  Every node was sent its end-of-round signal before rank 0 could even enter its drain, so nobody is waiting on rank 0 here; it keeps digesting reports so the round's tallies cover what the others produced meanwhile |
 | 6 | `state(INSERTER) := DRAIN`; loop { `service_control()` } until all inserters are `QUIESCENT` | every DP of the round has been probed; no new collision candidate can appear |
 | 7 | `state(WALKER) := DRAIN`; loop { `service_control()` } until all walkers are `QUIESCENT` | the collision queue is empty; every candidate of the round has been resolved.  Doing this last is what keeps a golden pair found on the very last candidate from being lost |
 
-The control channel is serviced in every waiting loop because rank 0 hands itself
-`NEW_VERSION` like everyone else and drains like everyone else; if it stopped
-answering during its own drain, the other nodes would never be told to stop.
+The control channel is serviced in every waiting loop: on rank 0 so that the reports
+and solutions of nodes still in their steady state are digested (the round's tallies,
+and `stop` for the next round header), and on every rank because in steps 6 and 7 it is
+the only MPI call, whose progress our sentinels and rank 0's signals need to actually
+leave.  No node's liveness depends on it: every signal of the round has been sent
+before rank 0 can enter its own drain.
 
 ### 4.6 Epilogue
 
@@ -360,8 +397,9 @@ When the round header carries `stop`, every thread of every rank leaves the loop
 after the barrier of §4.2 step 3 (no round is armed).  Thread 0 of rank 0 packs the
 solution (`found, i, x0, x1`), prints the final line, and **`MPI_Bcast`s the 4-word
 answer**; every rank then cancels its posted receives (`InBuffers::shutdown`,
-`ControlChannel::shutdown`, which also detaches the `Bsend` buffer) and returns from
-`run()`.  The driver calls `MPI_Finalize`.
+`Controller::shutdown`, a no-op off rank 0, then `ControlChannel::shutdown`, which
+also detaches the `Bsend` buffer) and returns from `run()`.  The driver calls
+`MPI_Finalize`.
 
 ## 5. Guarantees and loss semantics
 
@@ -377,7 +415,7 @@ inserter-queue / collision-queue`).
 | comm -> remote node (`OutBuffers`) | yes | `n_dropped` (`REP_DROP_OUT`) |
 | comm -> inserter SPSC | yes | `n_drop_inserterq` |
 | inserter -> walkers (`coll_q`) | yes | `n_drop_coll` |
-| control channel (reports, assignments) | **never** | buffered send, buffer sized for the worst case |
+| control channel (end-of-round signals, reports, solutions) | **never** | buffered send, buffer sized for the bounded traffic plus slack (§2.2); a full buffer is a fatal error, not a drop |
 | sentinels | **never** | same buffer |
 | collectives | n/a | |
 
@@ -392,10 +430,9 @@ inserter-queue / collision-queue`).
   walkers go quiescent (drain step 7); `service_collision` asserts `c.i == round.i`.
 - The dictionary is empty at the start of every round (inserters flush between the
   two epilogue barriers).
-- A node reports at most once between two assignments, so the controller counts each
-  node once when it switches version (see §6 for the one window).
-- The controller never initiates a message; it only answers, so a round can only end
-  through the report/assignment handshake.
+- The controller sends exactly one message per round, the end-of-round signal to every
+  node, and answers nothing; a round can end no other way, and a node leaves the
+  steady state exactly once per round.
 
 **Why it does not deadlock.**
 
@@ -405,11 +442,12 @@ inserter-queue / collision-queue`).
 - While waiting for its own sends to complete (step 3) or for the peers' sentinels
   (step 5), a node keeps receiving and keeps servicing the control channel, so two
   nodes waiting on each other both make progress.
-- Rank 0 services reports during every phase of its own drain, so it can always hand
-  the remaining nodes their `NEW_VERSION`.
+- Rank 0 closes the round for every node in one go, and observes its own signal only on
+  a later turn, so by the time it enters its own drain every node has been sent its
+  signal.
 - The only blocking MPI calls (the round-start `Bcast` and the epilogue reductions)
-  are reached by a rank only after its drain, i.e. after every node has been told
-  `NEW_VERSION` and has confirmed with a sentinel; so every rank reaches them.
+  are reached by a rank only after its drain, i.e. after every node has received the
+  end-of-round signal and has confirmed with a sentinel; so every rank reaches them.
 - Inside a node, no thread ever waits on a queue; the only waits are the comm thread
   spinning on `state` values that the worker threads set for themselves at chunk
   boundaries, and the three OpenMP barriers per round, which every thread reaches
@@ -425,15 +463,16 @@ are benign for the search itself; they are listed so nobody rediscovers them.
   the drain loops service the control channel but do not check the flag.  Walkers
   keep resolving candidates through drain steps 1 through 7, so a pair found there
   is sent at the first turn of the *next* round's loop, after which the controller
-  raises `stop`, hands out `NEW_VERSION` to everyone, and the search ends one round
+  raises `stop`, closes the round for everyone, and the search ends one round
   later than it could.  If that drain belonged to the last permitted round
   (`max_versions`), no next round starts and the pair is never reported.
-- **One extra progress report can slip out after `NEW_VERSION`.**  Within one turn of
-  the comm loop, `service_control()` (which clears `awaiting_assignment` and sets
-  `got_new_version`) runs *before* the periodic-report check, and the loop only
-  breaks at the end of the turn.  On the 1-in-256 turn where the check fires and the
-  pacing rule allows it, a report leaves after the node has already been counted
-  out.  The controller then either decrements `n_active_nodes` a second time (harmless:
-  step 5, not 5b, is the real gate) or, if the report is polled after the next
-  `begin_round()`, credits a few stale DPs to the new round and answers with a
-  `KEEP_GOING` that clears the node's `awaiting_assignment` flag one report early.
+- **Reports are one-way, so the round's `ndp` is approximate.**  A node keeps reporting
+  until its end-of-round signal is matched, and the points it finds between its last
+  report and that moment are never reported; the reductions of §4.6 count them
+  exactly, `ndp` and the drop counters are diagnostic.  Further, a report and the same
+  node's later sentinel match different receives, so the MPI standard does not order
+  them: a report could in principle be matched only after rank 0 has run the epilogue
+  and reset `ndp`, and be credited to the next round, which could then close early by
+  at most one report per node.  Open MPI matches messages per source in sequence order
+  and `service()` drains the report receive to empty on every call, so this does not
+  happen in practice.

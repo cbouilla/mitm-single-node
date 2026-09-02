@@ -62,14 +62,13 @@ see `tgcc.sh`.
 include/
   types.h         SIMD vector types, selected by -march=native
   tools.hpp       PRNG (TRIVIUM), timing, human-readable numbers
-  dict.hpp        PcsDict: the direct-mapped dictionary of distinguished points
   problem.hpp     the interface a cipher implements: f, g, is_good_pair, vfg
   counters.hpp    per-round diagnostic tallies + HyperLogLog
   parameters.hpp  Options (user knobs, all defaulted) and Parameters (derived once from them + RAM budget + problem size; data only)
   spsc.hpp        wait-free single-producer/single-consumer queue
   comm.hpp        queues, bulk DP buffers, control channel, per-thread state
   walker.hpp      the walker thread; walking trails, turning a dictionary hit into a collision
-  inserter.hpp    the inserter thread (owns one dictionary shard)
+  inserter.hpp    the inserter thread and PcsDict, the dictionary shard it owns
   controller.hpp  rank 0's view: startup banner, rounds, pacing, statistics, when to stop
   engine.hpp      the node: the comm thread, the round loop, run_engine()
   mitm.hpp        umbrella: problem wrappers, claw_search(), collision_search()

@@ -1,6 +1,7 @@
 #ifndef MITM_ENGINE
 #define MITM_ENGINE
 
+#include <cassert>
 #include <mpi.h>
 #include <omp.h>
 #include <pthread.h>
@@ -50,8 +51,11 @@ public:
 	PRNG &prng;
 	const ProblemWrapper &wrapper;                         /* stateless: every walker shares it */
 
+	/* Per-thread objects.  The constructor only sizes these tables: each slot is
+	   filled by the thread that owns it, inside run(), once that thread is pinned
+	   (NUMA first touch, see there). */
 	std::vector<std::unique_ptr<ThreadContext>> ctx;       /* n_threads, indexed by tid */
-	std::vector<std::unique_ptr<SPSCQueue>> walker_q;    /* one per walker thread */
+	std::vector<std::unique_ptr<SPSCQueue>> walker_q;      /* one per walker thread */
 	std::vector<std::unique_ptr<SPSCQueue>> inserter_q;    /* one per inserter thread */
 	std::vector<std::unique_ptr<PcsDict>> dict;            /* one shard per inserter thread */
 
@@ -66,8 +70,7 @@ public:
 	bool golden_sent = false;
 
 	/* control-loop state, shared between comm_round() and drain() */
-	bool awaiting_assignment = false;
-	bool got_new_version = false;
+	bool round_over = false;           /* our TAG_END_ROUND has arrived */
 
 	PcsNode(const ProblemWrapper &wrapper, const Parameters &params, PRNG &prng)
 		: params(params), prng(prng), wrapper(wrapper),
@@ -78,21 +81,13 @@ public:
 		  controller(params)
 	{
 		if (params.verbose)
-			controller.banner(prng.seed);      /* before anything big is allocated */
+			controller.banner(prng.seed);      /* nothing big is allocated before run() */
 
-		for (int t = 0; t < params.n_threads; t++)
-			ctx.push_back(std::make_unique<ThreadContext>());
-
-		for (int r = 0; r < params.inserters_per_node; r++) {
-			dict.push_back(std::make_unique<PcsDict>(params.jbits, params.w_shard));
-			inserter_q.push_back(std::make_unique<SPSCQueue>(params.inserter_queue_capacity));
-			ctx[1 + r]->role = INSERTER;
-		}
-		for (int w = 0; w < params.walkers_per_node; w++) {
-			walker_q.push_back(std::make_unique<SPSCQueue>(params.walker_queue_capacity));
-			ctx[1 + params.inserters_per_node + w]->role = WALKER;
-		}
-		ctx[0]->role = COMM;
+		/* empty slots only; see run() */
+		ctx.resize(params.n_threads);
+		dict.resize(params.inserters_per_node);
+		inserter_q.resize(params.inserters_per_node);
+		walker_q.resize(params.walkers_per_node);
 	}
 
 
@@ -156,32 +151,22 @@ public:
 	}
 
 	/*
-	 * Service the control channel.  This has to keep running during our own drain:
-	 * rank 0 hands itself NEW_VERSION like any other node and would otherwise stop
-	 * answering everyone else, who would then never stop producing.
+	 * Service the control channel: the end-of-round signal, if it came, and on rank 0
+	 * the controller's inbound traffic.  This keeps running during our own drain: on
+	 * rank 0 so that the reports and solutions of nodes still in their steady state are
+	 * digested (round tallies, and `stop` for the next round header), and on every rank
+	 * because it is the only MPI call in the last drain steps, whose progress our
+	 * sentinels and rank 0's signals need to actually leave.  Nobody's liveness depends
+	 * on it: every signal of the round is sent before rank 0 can enter its own drain.
 	 */
 	void service_control()
 	{
-		u64 msg[REP_NWORDS];
-		int src = -1;
-		int count = ctrl.poll(msg, &src);
-
-		if (count == 0)
-			return;
-
-		if (count == 1) {                       /* an assignment, for us */
-			awaiting_assignment = false;
-			if (msg[0] == NEW_VERSION)
-				got_new_version = true;
-			return;
+		if (ctrl.poll()) {
+			assert(not round_over);        /* exactly one signal per round */
+			round_over = true;
 		}
-
-		/* a node report; only the controller is ever sent one */
-		int a = controller.handle_report(msg);
-		if (a >= 0) {
-			u64 reply = (u64) a;
-			MPI_Bsend(&reply, 1, MPI_UINT64_T, src, TAG_CONTROL, params.mpi_comm);
-		}
+		if (params.rank == 0)
+			controller.service();
 	}
 
 	/******************* the comm thread, for one round *******************/
@@ -190,8 +175,7 @@ public:
 	{
 
 		double last_ping = wtime();
-		awaiting_assignment = false;
-		got_new_version = false;
+		round_over = false;
 
 		u64 prev_dp = 0, prev_ds = 0, prev_dc = 0, prev_do = 0, prev_dr = 0, prev_np = 0;
 
@@ -218,17 +202,12 @@ public:
 			/* a walker confirmed the golden collision: tell the controller now */
 			if (not golden_sent && round.golden_found.load(std::memory_order_acquire)) {
 				golden_sent = true;
-				u64 msg[REP_NWORDS] = {0};
-				msg[REP_GOLDEN] = 1;
-				msg[REP_I] = round.golden[0];
-				msg[REP_X0] = round.golden[1];
-				msg[REP_X1] = round.golden[2];
-				MPI_Bsend(msg, REP_NWORDS, MPI_UINT64_T, 0, TAG_CONTROL, params.mpi_comm);
+				MPI_Bsend(round.golden, SOL_NWORDS, MPI_UINT64_T, 0, TAG_SOLUTION, params.mpi_comm);
 			}
 
-			/* periodic call home.  Only ever one outstanding, so the controller can
-			   count each node exactly once when it switches to a new version. */
-			if (not awaiting_assignment && ((++poll_tick & 0xff) == 0)) {
+			/* periodic call home.  One-way: nothing comes back but, eventually, the
+			   end-of-round signal.  Paced by the rule above. */
+			if ((++poll_tick & 0xff) == 0) {
 				u64 cur_dp = 0, cur_ds = 0, cur_dc = 0, cur_np = 0;
 				for (int s = 0; s < params.walkers_per_node; s++) {
 					int t = 1 + params.inserters_per_node + s;
@@ -257,12 +236,11 @@ public:
 				prev_dp = cur_dp; prev_ds = cur_ds; prev_dc = cur_dc;
 				prev_do = cur_do; prev_dr = cur_dr; prev_np = cur_np;
 
-				MPI_Bsend(msg, REP_NWORDS, MPI_UINT64_T, 0, TAG_CONTROL, params.mpi_comm);
-				awaiting_assignment = true;
+				MPI_Bsend(msg, REP_NWORDS, MPI_UINT64_T, 0, TAG_REPORT, params.mpi_comm);
 			}
 		no_report:
 
-			if (got_new_version)
+			if (round_over)
 				break;
 		}
 
@@ -335,21 +313,14 @@ public:
 		outbuf.send_sentinels();
 
 		/* 5. keep taking delivery until every node (ourselves included) has finished.
-		      The other nodes only get here once the controller has told them to, so
-		      rank 0 must keep answering reports throughout. */
+		      Every node was sent its end-of-round signal in one go, and rank 0 only gets
+		      here after receiving its own, so nobody is waiting on us; rank 0 keeps
+		      digesting reports so the round's tallies cover what the others produced
+		      meanwhile. */
 		while (inbuf.n_sentinels < params.n_nodes) {
 			poll_incoming();
 			service_control();
 		}
-
-		/* 5b. rank 0 must not leave the round until every node has been handed its
-		       NEW_VERSION -- a node still waiting for a reply would never reach the
-		       collective epilogue, and the whole job would deadlock there. */
-		if (params.rank == 0)
-			while (controller.n_active_nodes > 0) {
-				service_control();
-				cpu_relax();
-			}
 
 		/* 6. nothing further will ever be delivered: the inserters can finish their
 		      queues and announce themselves quiescent */
@@ -425,19 +396,47 @@ public:
 		#pragma omp parallel num_threads(params.n_threads)
 		{
 			int tid = omp_get_thread_num();
+
+			/*
+			 * Pin first, allocate second.  Under Linux's first-touch policy a page
+			 * belongs to the NUMA node of the CPU that first writes it, so each thread
+			 * builds what it owns -- its context, its queue and, for an inserter, its
+			 * shard, whose zero-fill is the write that matters -- only once it sits on
+			 * its CPU.  The barrier below publishes the slots before anyone looks across.
+			 */
+			int cpu = pin_to_cpu(params.thread_cpu[tid]);
+			int role = WALKER;
+			if (tid == 0)
+				role = COMM;
+			else if (tid <= params.inserters_per_node)
+				role = INSERTER;
+			ctx[tid] = std::make_unique<ThreadContext>(role, cpu);
 			ThreadContext &me = *ctx[tid];
-			me.cpu = pin_to_cpu(params.thread_cpu[tid]);
+			if (role == INSERTER) {
+				dict[tid - 1] = std::make_unique<PcsDict>(params.jbits, params.w_shard);
+				inserter_q[tid - 1] = std::make_unique<SPSCQueue>(params.inserter_queue_capacity);
+			} else if (role == WALKER) {
+				walker_q[tid - 1 - params.inserters_per_node]
+					= std::make_unique<SPSCQueue>(params.walker_queue_capacity);
+			}
 
 			#pragma omp barrier
 			#pragma omp master
-			if (params.verbose && params.bind_threads) {
-				printf("MPI: rank 0 thread->cpu map:");
-				for (int t = 0; t < params.n_threads; t++)
-					printf(" %d:%s%d", t,
-						(t == 0) ? "c" : (t <= params.inserters_per_node ? "i" : "w"),
-						ctx[t]->cpu);
-				printf("\n");
-				fflush(stdout);
+			{
+				/* a short team would have left empty slots behind: say so, don't crash */
+				int got = omp_get_num_threads();
+				if (got != params.n_threads)
+					errx(1, "MPI: rank %d asked for %d OpenMP threads and got %d",
+					     params.rank, params.n_threads, got);
+				if (params.verbose && params.bind_threads) {
+					printf("MPI: rank 0 thread->cpu map:");
+					for (int t = 0; t < params.n_threads; t++)
+						printf(" %d:%s%d", t,
+							(t == 0) ? "c" : (t <= params.inserters_per_node ? "i" : "w"),
+							ctx[t]->cpu);
+					printf("\n");
+					fflush(stdout);
+				}
 			}
 
 			for (;;) {
@@ -500,7 +499,8 @@ public:
 		MPI_Bcast(answer, 4, MPI_UINT64_T, 0, params.mpi_comm);
 
 		inbuf.shutdown();
-		ctrl.shutdown();
+		controller.shutdown();
+		ctrl.shutdown();                       /* last: it detaches the Bsend buffer */
 		if (not answer[0])
 			return nullopt;
 		return optional(tuple(answer[1], answer[2], answer[3]));

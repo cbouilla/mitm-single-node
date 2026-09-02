@@ -14,8 +14,22 @@ namespace mitm {
  * The controller lives on the comm thread of rank 0, which also has a full node to
  * run.  It is therefore a state object driven by that thread's poll loop rather than
  * a loop of its own: nothing here blocks, and nothing probes.
+ *
+ * It owns the inbound side of rank 0's control channel: one always-posted receive for
+ * progress reports (TAG_REPORT) and one for solutions (TAG_SOLUTION), from any node.
+ * service() tests them, digests what arrived, and closes the round -- one zero-length
+ * TAG_END_ROUND to every node, itself included -- once the reported DP count has
+ * reached points_per_version or a solution has come in.  That is the only message the
+ * controller ever sends.  The object exists on every rank so that the node code stays
+ * uniform, but only rank 0 posts the receives; elsewhere it is inert.
  */
 class Controller {
+	MPI_Comm comm;
+	MPI_Request req_report = MPI_REQUEST_NULL;        /* rank 0 only */
+	MPI_Request req_solution = MPI_REQUEST_NULL;      /* rank 0 only */
+	u64 report_buf[REP_NWORDS];
+	u64 solution_buf[SOL_NWORDS];
+
 public:
 	const Parameters &params;
 
@@ -25,7 +39,7 @@ public:
 
 	/* this round */
 	u64 ndp = 0;                                   /* DPs reported by all nodes */
-	int n_active_nodes = 0;
+	bool round_closed = false;                     /* TAG_END_ROUND sent to every node */
 	double round_start = 0, last_display = 0;
 	u64 drop_walkerq = 0, drop_out = 0, drop_inserterq = 0, drop_coll = 0;
 	u64 nprobe = 0;                                /* dictionary probes retired */
@@ -35,48 +49,106 @@ public:
 	double start_time;
 	vector<u8> hll;                                /* all collisions since the start */
 
-	Controller(const Parameters &p) : params(p), n_active_nodes(p.n_nodes), hll(0x10000)
+	Controller(const Parameters &p)
+		: comm(p.mpi_comm), params(p), hll(0x10000)
 	{
 		start_time = wtime();
+		if (params.rank != 0)
+			return;                                /* nobody ever writes to us */
+		MPI_Irecv(report_buf, REP_NWORDS, MPI_UINT64_T, MPI_ANY_SOURCE, TAG_REPORT, comm, &req_report);
+		MPI_Irecv(solution_buf, SOL_NWORDS, MPI_UINT64_T, MPI_ANY_SOURCE, TAG_SOLUTION, comm, &req_solution);
 	}
 
 	void begin_round()
 	{
 		ndp = 0;
-		n_active_nodes = params.n_nodes;
+		round_closed = false;
 		drop_walkerq = drop_out = drop_inserterq = drop_coll = nprobe = 0;
 		round_start = wtime();
 		last_display = round_start;
 	}
 
 
-	/*
-	 * Digest one node report.  Returns the assignment to send back, or -1 when no
-	 * reply is due (solution reports are one-way).
-	 */
-	int handle_report(const u64 r[REP_NWORDS])
+	/* Digest one progress report: its deltas are added to the round's tallies. */
+	void handle_report(const u64 r[REP_NWORDS])
 	{
-		if (r[REP_GOLDEN]) {
-			if (not solution)
-				solution = optional(tuple(r[REP_I], r[REP_X0], r[REP_X1]));
-			stop = 1;
-			return -1;
-		}
-
 		ndp += r[REP_NDP];
 		drop_walkerq += r[REP_DROP_WALKERQ];
 		drop_out   += r[REP_DROP_OUT];
 		drop_inserterq += r[REP_DROP_INSERTERQ];
 		drop_coll  += r[REP_DROP_COLL];
 		nprobe     += r[REP_NPROBE];
-
-		int assignment = KEEP_GOING;
-		if (stop || ndp >= params.points_per_version) {
-			assignment = NEW_VERSION;
-			n_active_nodes -= 1;
-		}
 		display();
-		return assignment;
+	}
+
+	/* A node found the golden pair.  The first one wins, and the search ends. */
+	void handle_solution(const u64 s[SOL_NWORDS])
+	{
+		if (not solution)
+			solution = optional(tuple(s[SOL_I], s[SOL_X0], s[SOL_X1]));
+		stop = 1;
+	}
+
+	/*
+	 * Tell every node, ourselves included, that the round is over.  Exactly once per
+	 * round: the signal is matched by a receive that names source 0 and this tag, so
+	 * successive signals are non-overtaking and a node consumes exactly one per round
+	 * (it is its only way out of the steady state) -- a second one would be consumed in
+	 * the *next* round and end it at once.  Not to be confused with end_round(), the
+	 * statistics, which run once everybody has drained.
+	 */
+	void close_round()
+	{
+		round_closed = true;
+		for (int r = 0; r < params.n_nodes; r++)
+			MPI_Bsend(NULL, 0, MPI_UINT64_T, r, TAG_END_ROUND, comm);
+	}
+
+	/*
+	 * One turn of the controller: take delivery of everything that has reached rank 0
+	 * on the control channel, then decide.  Both inbound messages are one-way and their
+	 * relative order is irrelevant: the decision is taken once, after both receives
+	 * have been drained.  Each receive is drained to empty so that one call absorbs a
+	 * backlog -- this is what keeps a report matched late in our own drain from being
+	 * credited to the next round.  Called by the comm thread of rank 0 in every phase of
+	 * the round, its own drain included, so late reports and a late solution are
+	 * digested (round tallies, and `stop` for the next round header).
+	 */
+	void service()
+	{
+		int flag = 0;
+
+		for (;;) {
+			MPI_Test(&req_solution, &flag, MPI_STATUS_IGNORE);
+			if (!flag)
+				break;
+			handle_solution(solution_buf);
+			MPI_Irecv(solution_buf, SOL_NWORDS, MPI_UINT64_T, MPI_ANY_SOURCE, TAG_SOLUTION, comm, &req_solution);
+		}
+
+		for (;;) {
+			MPI_Test(&req_report, &flag, MPI_STATUS_IGNORE);
+			if (!flag)
+				break;
+			handle_report(report_buf);
+			MPI_Irecv(report_buf, REP_NWORDS, MPI_UINT64_T, MPI_ANY_SOURCE, TAG_REPORT, comm, &req_report);
+		}
+
+		if (not round_closed && (stop || ndp >= params.points_per_version))
+			close_round();
+	}
+
+	/* cancel the posted receives; a no-op off rank 0, where none were posted */
+	void shutdown()
+	{
+		if (req_report != MPI_REQUEST_NULL) {
+			MPI_Cancel(&req_report);
+			MPI_Wait(&req_report, MPI_STATUS_IGNORE);
+		}
+		if (req_solution != MPI_REQUEST_NULL) {
+			MPI_Cancel(&req_solution);
+			MPI_Wait(&req_solution, MPI_STATUS_IGNORE);
+		}
 	}
 
 	void display()

@@ -9,7 +9,6 @@
 #include <memory>
 
 #include "counters.hpp"
-#include "dict.hpp"
 #include "parameters.hpp"
 #include "spsc.hpp"
 
@@ -112,7 +111,7 @@ struct RoundState {
 
 	std::mutex golden_mtx;
 	std::atomic<bool> golden_found;
-	u64 golden[3];              /* i, x0, x1 */
+	u64 golden[3];              /* i, x0, x1: the TAG_SOLUTION payload (solution_field) */
 
 	RoundState() : golden_found(false)
 	{
@@ -136,8 +135,8 @@ struct RoundState {
 
 /* Per-thread state that the comm thread also touches */
 struct alignas(64) ThreadContext {
-	int role = WALKER;              /* set once at startup; the comm thread dispatches on it */
-	int cpu = -1;                   /* the thread pins itself, rank 0 prints the map */
+	const int role;                 /* the comm thread dispatches on it */
+	const int cpu;                  /* where the thread pinned itself; rank 0 prints the map */
 
 	/* see thread_state above: the comm thread asks, the thread answers */
 	std::atomic<int> state;
@@ -151,8 +150,9 @@ struct alignas(64) ThreadContext {
 	std::atomic<u64> n_drop_walkerq;   /* walker:   its queue to the comm thread was full */
 	std::atomic<u64> n_drop_coll;      /* inserter: the collision queue was full */
 
-	ThreadContext()
-		: state(RUNNING), n_dp(0), n_probe(0), n_drop_walkerq(0), n_drop_coll(0)
+	/* built by the thread it describes, once that thread is pinned (see PcsNode::run) */
+	ThreadContext(int role, int cpu)
+		: role(role), cpu(cpu), state(RUNNING), n_dp(0), n_probe(0), n_drop_walkerq(0), n_drop_coll(0)
 	{}
 };
 
@@ -323,13 +323,23 @@ struct InBuffers {
 /******************************* control channel ******************************/
 
 /*
- * Layout of a node report.  REP_NWORDS closes the enum, so the message size is the
- * field list itself rather than a constant that has to be kept in step with it.
+ * Layout of a progress report (TAG_REPORT).  REP_NWORDS closes the enum, so the
+ * message size is the field list itself rather than a constant that has to be kept
+ * in step with it.
  */
 enum report_field {
 	REP_NDP = 0, REP_NEVAL, REP_DROP_WALKERQ, REP_DROP_OUT, REP_DROP_INSERTERQ,
-	REP_DROP_COLL, REP_GOLDEN, REP_I, REP_X0, REP_X1, REP_NPROBE,
+	REP_DROP_COLL, REP_NPROBE,
 	REP_NWORDS
+};
+
+/*
+ * Layout of a solution (TAG_SOLUTION): the mixing-function index and the two
+ * colliding points.  RoundState::golden has exactly this layout and is sent as is.
+ */
+enum solution_field {
+	SOL_I = 0, SOL_X0, SOL_X1,
+	SOL_NWORDS
 };
 
 /*
@@ -345,58 +355,58 @@ enum round_stat {
 };
 
 /*
- * ONE always-posted receive carries the whole control channel, in both directions
- * and on every rank: assignments from the controller to a node, and reports from a
- * node to the controller.  They are told apart by length -- an assignment is a
- * single u64, a report is REP_NWORDS of them -- so no second receive, no second tag,
- * and no separate path for rank 0 talking to itself.
+ * The node's end of the control channel, on every rank.  Three tags, one per message
+ * kind, so a message is told apart by its envelope and never by its length:
+ *
+ *     TAG_END_ROUND    rank 0 --> node    zero-length: "the round is over"
+ *     TAG_REPORT       node --> rank 0    REP_NWORDS words (report_field)
+ *     TAG_SOLUTION     node --> rank 0    SOL_NWORDS words (solution_field)
+ *
+ * This class posts the one receive a node needs, for the end-of-round signal; it only
+ * ever comes from rank 0, so the receive names its source and there is no wildcard at
+ * all.  The inbound side of rank 0 -- the report and solution receives -- belongs to
+ * the Controller, the only thing that ever reads them.  Rank 0 talks to itself through
+ * MPI like any other node.
  *
  * Sends are plain MPI_Bsend at the call sites: the messages are short, buffered mode
  * completes locally, so there is nothing to track and the comm thread never blocks.
+ * The attached buffer is per process and serves every Bsend of the engine: reports,
+ * solutions, the controller's end-of-round signals and the end-of-round sentinels.
  */
 class ControlChannel {
 	MPI_Comm comm;
 	MPI_Request req = MPI_REQUEST_NULL;
-	u64 buf[REP_NWORDS];
 	std::vector<char> bsend_buf;
 
 public:
 	ControlChannel(const Parameters &params) : comm(params.mpi_comm)
 	{
-		static_assert(REP_NWORDS > 1, "a report must be distinguishable from an assignment by length");
-
-		/* Worst case in flight at once: an assignment to every node (rank 0), our own
-		   report, and one end-of-round sentinel per node -- OutBuffers::send_sentinels
-		   draws on this same per-process buffer.  Sentinels are zero-length, so sizing
-		   every slot for a full report is already generous. */
-		size_t slots = 3 * (size_t) params.n_nodes + params.bsend_slack;
+		/* Bounded in flight at once: an end-of-round signal to every node (rank 0) and
+		   one sentinel per node -- OutBuffers::send_sentinels draws on this same
+		   per-process buffer.  Both are zero-length.  Our own reports and solution have
+		   no hard bound (reports are one-way, nothing throttles them but their pacing
+		   rule); in practice a report's slot is reclaimed by the sender's own progress
+		   long before the next one, so bsend_slack covers them.  A report is the largest
+		   message, so sizing every slot for a full report is already generous.  A full
+		   buffer is a fatal MPI_ERR_BUFFER, never a hang. */
+		static_assert((int) REP_NWORDS >= (int) SOL_NWORDS, "the Bsend slots are sized for a report");
+		size_t slots = 2 * (size_t) params.n_nodes + params.bsend_slack;
 		size_t msg = REP_NWORDS * sizeof(u64) + MPI_BSEND_OVERHEAD;
 		bsend_buf.resize(slots * msg);
 		MPI_Buffer_attach(bsend_buf.data(), (int) bsend_buf.size());
 
-		MPI_Irecv(buf, REP_NWORDS, MPI_UINT64_T, MPI_ANY_SOURCE, TAG_CONTROL, comm, &req);
+		MPI_Irecv(NULL, 0, MPI_UINT64_T, 0, TAG_END_ROUND, comm, &req);
 	}
 
-	/*
-	 * Returns how many u64 arrived, and reposts: 0 == nothing yet, 1 == an assignment
-	 * (in out[0]), REP_NWORDS == a report from node *src.
-	 */
-	int poll(u64 out[REP_NWORDS], int *src)
+	/* true == the end-of-round signal arrived and the receive has been reposted */
+	bool poll()
 	{
 		int flag = 0;
-		MPI_Status st;
-		MPI_Test(&req, &flag, &st);
+		MPI_Test(&req, &flag, MPI_STATUS_IGNORE);
 		if (!flag)
-			return 0;
-
-		int count = 0;
-		MPI_Get_count(&st, MPI_UINT64_T, &count);
-		for (int k = 0; k < count; k++)
-			out[k] = buf[k];
-		*src = st.MPI_SOURCE;
-
-		MPI_Irecv(buf, REP_NWORDS, MPI_UINT64_T, MPI_ANY_SOURCE, TAG_CONTROL, comm, &req);
-		return count;
+			return false;
+		MPI_Irecv(NULL, 0, MPI_UINT64_T, 0, TAG_END_ROUND, comm, &req);
+		return true;
 	}
 
 	void shutdown()
