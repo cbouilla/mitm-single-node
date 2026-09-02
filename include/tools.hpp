@@ -18,6 +18,17 @@ using std::nullopt;
 
 namespace mitm {
 
+/* spin-wait hint: these threads are pinned and own their core, so we spin rather
+   than yield, but politely. */
+static inline void cpu_relax()
+{
+#if defined(__x86_64__) || defined(__i386__)
+    __builtin_ia32_pause();
+#elif defined(__aarch64__)
+    __asm__ __volatile__("yield");
+#endif
+}
+
 u64 make_mask(int n)
 {
     return (n >= 64) ? 0xffffffffffffffffull : (1ull << n) - 1;

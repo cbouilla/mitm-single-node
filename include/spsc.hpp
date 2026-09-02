@@ -5,8 +5,6 @@
 #include <vector>
 #include <cstddef>
 
-#include "parameters.hpp"
-
 namespace mitm {
 
 /*

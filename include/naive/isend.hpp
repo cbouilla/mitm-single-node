@@ -131,7 +131,7 @@ vector<pair<u64, u64>> naive_mpi_claw_search_isend(const Problem &pb, Parameters
         wait_avg /= params.local_size;
         double wait_std = (wait - wait_avg) * (wait - wait_avg);
         MPI_Allreduce(MPI_IN_PLACE, &wait_std, 1, MPI_DOUBLE, MPI_SUM, params.local_comm);
-        MPI_Allreduce(MPI_IN_PLACE, &ncoll, 1, MPI_UINT64_T, MPI_SUM, params.world_comm);
+        MPI_Allreduce(MPI_IN_PLACE, &ncoll, 1, MPI_UINT64_T, MPI_SUM, params.mpi_comm);
         wait_std = std::sqrt(wait_std);
         if (params.local_rank == 0) {
             printf("phase %d %s, wait min %.2fs max %.2fs avg %.2fs (%.1f%%) std %.2fs.\n",

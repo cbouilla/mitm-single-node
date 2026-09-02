@@ -10,11 +10,6 @@
 
 /*
  * Umbrella header.  A driver includes this one, plus its own problem definition.
- *
- * There is a single engine (MPI + OpenMP, see engine.hpp).  What lives here is the
- * layer above it: the wrappers that turn a claw- or collision-finding problem into
- * the single random function the engine iterates, and the two entry points that
- * translate the engine's answer back into the caller's coordinates.
  */
 
 namespace mitm {
@@ -276,7 +271,7 @@ template <class Problem>
 optional<pair<u64, u64>> collision_search(const Problem& pb, u64 nbytes_memory, const Options &opts, PRNG &prng)
 {
     int rank;
-    MPI_Comm_rank(opts.world_comm, &rank);
+    MPI_Comm_rank(opts.mpi_comm, &rank);
     if (opts.verbose && rank == 0)
         printf("Starting collision search with f : {0,1}^%d --> {0, 1}^%d (vlen=%d)\n",
             pb.n, pb.m, Problem::vlen);
@@ -303,8 +298,8 @@ template <class Problem>
 optional<pair<u64, u64>> claw_search(const Problem& pb, u64 nbytes_memory, const Options &opts, PRNG &prng)
 {
     int rank;
-    MPI_Comm_rank(opts.world_comm, &rank);
-    bool verbose = opts.verbose && rank == 0;
+    MPI_Comm_rank(opts.mpi_comm, &rank);
+    bool verbose = opts.verbose && (rank == 0);
     if (verbose)
         printf("Starting claw search with f, g : {0,1}^%d --> {0, 1}^%d (vlen=%d)\n",
             pb.n, pb.m, Problem::vlen);

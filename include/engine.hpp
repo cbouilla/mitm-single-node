@@ -72,8 +72,8 @@ public:
 	PcsNode(const ProblemWrapper &wrapper, const Parameters &params, PRNG &prng)
 		: params(params), prng(prng), wrapper(wrapper),
 		  coll_q(params.coll_queue_capacity),
-		  outbuf(params.world_comm, params.n_nodes, params.buffer_capacity),
-		  inbuf(params.world_comm, params.n_in_buffers, params.buffer_capacity),
+		  outbuf(params.mpi_comm, params.n_nodes, params.buffer_capacity),
+		  inbuf(params.mpi_comm, params.n_in_buffers, params.buffer_capacity),
 		  ctrl(params),
 		  controller(params)
 	{
@@ -180,7 +180,7 @@ public:
 		int a = controller.handle_report(msg);
 		if (a >= 0) {
 			u64 reply = (u64) a;
-			MPI_Bsend(&reply, 1, MPI_UINT64_T, src, TAG_CONTROL, params.world_comm);
+			MPI_Bsend(&reply, 1, MPI_UINT64_T, src, TAG_CONTROL, params.mpi_comm);
 		}
 	}
 
@@ -223,7 +223,7 @@ public:
 				msg[REP_I] = round.golden[0];
 				msg[REP_X0] = round.golden[1];
 				msg[REP_X1] = round.golden[2];
-				MPI_Bsend(msg, REP_NWORDS, MPI_UINT64_T, 0, TAG_CONTROL, params.world_comm);
+				MPI_Bsend(msg, REP_NWORDS, MPI_UINT64_T, 0, TAG_CONTROL, params.mpi_comm);
 			}
 
 			/* periodic call home.  Only ever one outstanding, so the controller can
@@ -257,7 +257,7 @@ public:
 				prev_dp = cur_dp; prev_ds = cur_ds; prev_dc = cur_dc;
 				prev_do = cur_do; prev_dr = cur_dr; prev_np = cur_np;
 
-				MPI_Bsend(msg, REP_NWORDS, MPI_UINT64_T, 0, TAG_CONTROL, params.world_comm);
+				MPI_Bsend(msg, REP_NWORDS, MPI_UINT64_T, 0, TAG_CONTROL, params.mpi_comm);
 				awaiting_assignment = true;
 			}
 		no_report:
@@ -392,15 +392,15 @@ public:
 		st[ST_BAD_DP] = total.bad_dp;
 
 		if (params.rank == 0)
-			MPI_Reduce(MPI_IN_PLACE, st, ST_NWORDS, MPI_UINT64_T, MPI_SUM, 0, params.world_comm);
+			MPI_Reduce(MPI_IN_PLACE, st, ST_NWORDS, MPI_UINT64_T, MPI_SUM, 0, params.mpi_comm);
 		else
-			MPI_Reduce(st, NULL, ST_NWORDS, MPI_UINT64_T, MPI_SUM, 0, params.world_comm);
+			MPI_Reduce(st, NULL, ST_NWORDS, MPI_UINT64_T, MPI_SUM, 0, params.mpi_comm);
 
 		vector<u8> hll = total.hll;
 		if (params.rank == 0)
-			MPI_Reduce(MPI_IN_PLACE, hll.data(), 0x10000, MPI_UINT8_T, MPI_MAX, 0, params.world_comm);
+			MPI_Reduce(MPI_IN_PLACE, hll.data(), 0x10000, MPI_UINT8_T, MPI_MAX, 0, params.mpi_comm);
 		else
-			MPI_Reduce(hll.data(), NULL, 0x10000, MPI_UINT8_T, MPI_MAX, 0, params.world_comm);
+			MPI_Reduce(hll.data(), NULL, 0x10000, MPI_UINT8_T, MPI_MAX, 0, params.mpi_comm);
 
 		if (params.rank == 0)
 			controller.end_round(st, hll);
@@ -420,7 +420,7 @@ public:
 
 	/******************* the whole computation *******************/
 
-	optional<tuple<u64,u64,u64>> run(u64 out_mask)
+	optional<tuple<u64,u64,u64>> run()
 	{
 		#pragma omp parallel num_threads(params.n_threads)
 		{
@@ -448,11 +448,11 @@ public:
 					// acquire the new function version from the controller
 					u64 msg[3];
 					if (params.rank == 0) {
-						msg[0] = prng.rand() & out_mask;     // i
+						msg[0] = prng.rand() & wrapper.out_mask;     // i
 						msg[1] = prng.rand();                // root_seed
 						msg[2] = controller.stop;
 					}
-					MPI_Bcast(msg, 3, MPI_UINT64_T, 0, params.world_comm);
+					MPI_Bcast(msg, 3, MPI_UINT64_T, 0, params.mpi_comm);
 					round.i = msg[0];
 					round.root_seed = msg[1];
 					round.stop = msg[2];						
@@ -497,7 +497,7 @@ public:
 			}
 			controller.done();
 		}
-		MPI_Bcast(answer, 4, MPI_UINT64_T, 0, params.world_comm);
+		MPI_Bcast(answer, 4, MPI_UINT64_T, 0, params.mpi_comm);
 
 		inbuf.shutdown();
 		ctrl.shutdown();
@@ -534,11 +534,11 @@ optional<tuple<u64,u64,u64>> run_engine(const ProblemWrapper &wrapper, u64 nbyte
 	test[0] = prng.rand() & mask;
 	test[1] = prng.rand() & mask;
 	test[2] = wrapper.mixf(test[0], test[1]);
-	MPI_Bcast(test, 3, MPI_UINT64_T, 0, params.world_comm);
+	MPI_Bcast(test, 3, MPI_UINT64_T, 0, params.mpi_comm);
 	assert(test[2] == wrapper.mixf(test[0], test[1]));
 
 	PcsNode<ProblemWrapper> node(wrapper, params, prng);
-	return node.run(wrapper.out_mask);
+	return node.run();
 }
 
 }

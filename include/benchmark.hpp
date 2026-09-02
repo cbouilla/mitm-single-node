@@ -44,14 +44,14 @@ template<typename Problem>
 void benchmark(const Problem& pb, const Options &opts)
 {
 	int rank, n_nodes;
-	MPI_Comm_rank(opts.world_comm, &rank);
-	MPI_Comm_size(opts.world_comm, &n_nodes);
+	MPI_Comm_rank(opts.mpi_comm, &rank);
+	MPI_Comm_size(opts.mpi_comm, &n_nodes);
 	int n_inserters = n_nodes * opts.inserters_per_node;
 
 	if (rank == 0)
 		printf("Benchmarking scalar implementation (using %d processes)\n", n_nodes);
 
-	MPI_Barrier(opts.world_comm);
+	MPI_Barrier(opts.mpi_comm);
 
 	u64 N = 1ull << 26;
 	double start = wtime();
@@ -63,7 +63,7 @@ void benchmark(const Problem& pb, const Options &opts)
 		if (target == 0)
 			count += 1;
 	}
-	display_stats(N, start, 1, opts.world_comm, rank, n_nodes);
+	display_stats(N, start, 1, opts.mpi_comm, rank, n_nodes);
 
 	constexpr int vlen = Problem::vlen;
 	if constexpr (vlen > 1) {
@@ -78,7 +78,7 @@ void benchmark(const Problem& pb, const Options &opts)
 			x[i] = i;
 		}
 
-		MPI_Barrier(opts.world_comm);
+		MPI_Barrier(opts.mpi_comm);
 
 		double start = wtime();
 		u64 mask = make_mask(pb.n);
@@ -88,7 +88,7 @@ void benchmark(const Problem& pb, const Options &opts)
 			for (int j = 0; j < vlen; j++)
 				x[j] = z[j] & mask;
 		}
-		display_stats(N, start, vlen, opts.world_comm, rank, n_nodes);
+		display_stats(N, start, vlen, opts.mpi_comm, rank, n_nodes);
 	}
 }
 

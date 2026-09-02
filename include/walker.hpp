@@ -295,7 +295,7 @@ void walker_thread(ThreadContext &ctx, const ProblemWrapper &wrapper, const Para
 		if (st == DRAIN) {
 			/* every inserter has gone quiet, so no new candidate can appear: finish
 			   the queue and this round is over for us */
-			while (coll_q.count.load(std::memory_order_relaxed) > 0)
+			while (not coll_q.is_empty())
 				service_collision(ctx, wrapper, params, round, coll_q, root_seed);
 			ctx.n_dp.store(n_dp_local, std::memory_order_relaxed);
 			ctx.state.store(QUIESCENT, std::memory_order_release);
@@ -303,7 +303,7 @@ void walker_thread(ThreadContext &ctx, const ProblemWrapper &wrapper, const Para
 		}
 
 		/* Retire queued collisions before walking the next chunk. */
-		for (size_t c = 0; coll_q.count.load(std::memory_order_relaxed) > 0; c++) {
+		for (size_t c = 0; not coll_q.is_empty(); c++) {
 			if (params.coll_per_chunk && c >= params.coll_per_chunk)
 				break;
 			service_collision(ctx, wrapper, params, round, coll_q, root_seed);

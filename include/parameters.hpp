@@ -50,7 +50,7 @@ struct Options {
 	/* --- below this line, the defaults should be just fine */
 
 	/* nodes */
-	MPI_Comm world_comm = MPI_COMM_WORLD;
+	MPI_Comm mpi_comm = MPI_COMM_WORLD;
 
 	/* thread layout inside a node */
 	int walkers_per_node = 0;              /* 0 == fill the inherited affinity mask */
@@ -126,8 +126,8 @@ struct Parameters : Options {
 		: Options(o), nbytes_memory(nbytes_memory)
 	{
 		/* topology */
-		MPI_Comm_rank(world_comm, &rank);
-		MPI_Comm_size(world_comm, &n_nodes);
+		MPI_Comm_rank(mpi_comm, &rank);
+		MPI_Comm_size(mpi_comm, &n_nodes);
 		verbose = verbose && (rank == 0);
 
 		/* what did the launcher actually give us? */

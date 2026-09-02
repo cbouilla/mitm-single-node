@@ -1,7 +1,3 @@
-//
-// Created by ahmed on 23/10/23.
-//
-
 #ifndef MITM_DICT
 #define MITM_DICT
 

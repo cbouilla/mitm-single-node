@@ -15,16 +15,6 @@
 
 namespace mitm {
 
-/* spin-wait hint: these threads are pinned and own their core, so we spin rather
-   than yield, but politely. */
-static inline void cpu_relax()
-{
-#if defined(__x86_64__) || defined(__i386__)
-	__builtin_ia32_pause();
-#elif defined(__aarch64__)
-	__asm__ __volatile__("yield");
-#endif
-}
 
 /*
  * Routing.  The shard of a DP is `x % n_inserters`, with
@@ -49,28 +39,31 @@ struct CollisionCandidate {
 
 /*
  * Bounded, mutex-protected.  Inserter threads push; walker threads pop and pay for
- * the walk.  The emptiness probe is a relaxed atomic so walkers stay off the lock
- * on the common path.
+ * the walk.  A full queue drops the candidate and tells the pusher, which keeps the
+ * tally (ThreadContext::n_drop_coll) -- the queue itself counts nothing.  The
+ * emptiness probe is a relaxed atomic so walkers stay off the lock on the common
+ * path.
  */
 class CollisionQueue {
 	std::mutex mtx;
 	std::vector<CollisionCandidate> buf;
 	size_t head = 0, tail = 0;
+	std::atomic<size_t> count;      /* probed without the lock on the hot path */
 
 public:
-	std::atomic<size_t> count;      /* probed without the lock on the hot path */
-	std::atomic<u64> n_dropped;
+	CollisionQueue(size_t capacity) : buf(capacity < 1 ? 1 : capacity), count(0) {}
 
-	CollisionQueue(size_t capacity) : buf(capacity < 1 ? 1 : capacity), count(0), n_dropped(0) {}
-
+	/* Relaxed on purpose: a stale answer costs a walker one wasted pop() at worst. */
+	bool is_empty() const
+	{
+		return count.load(std::memory_order_relaxed) == 0;
+	}
 
 	bool push(const CollisionCandidate &c)
 	{
 		std::lock_guard<std::mutex> lock(mtx);
-		if (count.load(std::memory_order_relaxed) == buf.size()) {
-			n_dropped.fetch_add(1, std::memory_order_relaxed);
-			return false;
-		}
+		if (count.load(std::memory_order_relaxed) == buf.size())
+			return false;                /* full: the caller tallies the drop */
 		buf[tail] = c;
 		if (++tail == buf.size())
 			tail = 0;
@@ -89,7 +82,6 @@ public:
 		count.fetch_sub(1, std::memory_order_release);
 		return true;
 	}
-
 };
 
 
@@ -142,12 +134,7 @@ struct RoundState {
 
 /******************************* thread context *******************************/
 
-/*
- * Per-thread state that the comm thread also touches -- and nothing else.  Whatever a
- * walker or inserter keeps to itself (its problem wrapper, its chain state, its
- * queue, its dictionary shard) is a local of the thread function
- * or an argument to it, so what is left here is exactly the shared surface.
- */
+/* Per-thread state that the comm thread also touches */
 struct alignas(64) ThreadContext {
 	int role = WALKER;              /* set once at startup; the comm thread dispatches on it */
 	int cpu = -1;                   /* the thread pins itself, rank 0 prints the map */
@@ -374,7 +361,7 @@ class ControlChannel {
 	std::vector<char> bsend_buf;
 
 public:
-	ControlChannel(const Parameters &params) : comm(params.world_comm)
+	ControlChannel(const Parameters &params) : comm(params.mpi_comm)
 	{
 		static_assert(REP_NWORDS > 1, "a report must be distinguishable from an assignment by length");
 
