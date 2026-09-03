@@ -36,67 +36,56 @@ static inline int pin_to_cpu(int cpu)
 }
 
 
-/********************************** the node *********************************/
+/******************************* the comm thread ******************************/
 
 /*
  * One MPI rank per node, MPI_THREAD_FUNNELED.  Thread 0 is the only one that ever
- * touches MPI: it drains the walker threads' queues, routes points to output buffers
- * or straight into a local inserter's queue, and services the control channel.  On
- * rank 0 it additionally runs the controller.
+ * touches MPI, and this is all of it: it drains the walker threads' queues, routes
+ * points to the output buffers or straight into a local inserter's queue, services
+ * the control channel, drives the end-of-round wind-down, reduces the statistics
+ * and, on rank 0, runs the controller.  run() calls it at the synchronisation points
+ * of a round -- begin_round(), comm_round(), end_round(), and finish() after the last
+ * one -- and everything in between is here.  Its own tallies (the drops it causes)
+ * go into ctx[0]->ctr like every other thread's.
+ *
+ * Built by thread 0 inside the OpenMP team, once pinned and once the per-thread slots
+ * are published: the MPI buffers are its own (first touch, like every other thread's
+ * objects), and the constructor checks the team it is about to drive.  What is shared
+ * with the workers -- the parameters, the PRNG, the per-thread table and the round
+ * state -- is held by reference; everything else is owned.
  */
-template <class ProblemWrapper>
-class PcsNode {
+class CommThread {
 public:
 	const Parameters &params;
 	PRNG &prng;
-	const ProblemWrapper &wrapper;                         /* stateless: every walker shares it */
+	std::vector<std::unique_ptr<ThreadContext>> &ctx;     /* n_threads, indexed by tid */
+	RoundState &round;
 
-	/* Per-thread objects.  The constructor only sizes these tables: each slot is
-	   filled by the thread that owns it, inside run(), once that thread is pinned
-	   (NUMA first touch, see there). */
-	std::vector<std::unique_ptr<ThreadContext>> ctx;       /* n_threads, indexed by tid */
-	std::vector<std::unique_ptr<SPSCQueue>> walker_q;      /* one per walker thread */
-	std::vector<std::unique_ptr<SPSCQueue>> inserter_q;    /* one per inserter thread */
-	std::vector<std::unique_ptr<PcsDict>> dict;            /* one shard per inserter thread */
-
-	CollisionQueue coll_q;
-	RoundState round;
 	OutBuffers outbuf;
 	InBuffers inbuf;
 	ControlChannel ctrl;
 	Controller controller;
 
-	u64 n_drop_inserterq = 0;          /* comm thread could not hand a DP to a inserter */
 	bool golden_sent = false;
-
-	/* control-loop state, shared between comm_round() and drain() */
 	bool round_over = false;           /* our TAG_END_ROUND has arrived */
 
-	PcsNode(const ProblemWrapper &wrapper, const Parameters &params, PRNG &prng)
-		: params(params), prng(prng), wrapper(wrapper),
-		  coll_q(params.coll_queue_capacity),
+	CommThread(const Parameters &params, PRNG &prng,
+	           std::vector<std::unique_ptr<ThreadContext>> &ctx, RoundState &round)
+		: params(params), prng(prng), ctx(ctx), round(round),
 		  outbuf(params.mpi_comm, params.n_nodes, params.buffer_capacity),
 		  inbuf(params.mpi_comm, params.n_in_buffers, params.buffer_capacity),
 		  ctrl(params),
 		  controller(params)
-	{
-		if (params.verbose)
-			controller.banner(prng.seed);      /* nothing big is allocated before run() */
+	{}
 
-		/* empty slots only; see run() */
-		ctx.resize(params.n_threads);
-		dict.resize(params.inserters_per_node);
-		inserter_q.resize(params.inserters_per_node);
-		walker_q.resize(params.walkers_per_node);
-	}
-
+	/******************* routing *******************/
 
 	/* hand a point to the inserter thread that owns its shard, on this node */
 	void deliver_local(const DP &p)
 	{
 		int slot = (int) ((p.x / params.n_nodes) % params.inserters_per_node);
-		if (not inserter_q[slot]->push(p))
-			n_drop_inserterq += 1;
+		if (not ctx[1 + slot]->q->push(p))                /* inserter `slot` is thread 1 + slot */
+			ctx[0]->ctr.c[DROP_INSERTERQ] += 1;
 	}
 
 	/* pull whatever the walker threads have produced and route it */
@@ -105,15 +94,16 @@ public:
 		DP batch[64];
 		bool moved = false;
 		for (int s = 0; s < params.walkers_per_node; s++) {
-			size_t k = walker_q[s]->pop_bulk(batch, 64);
+			int t = 1 + params.inserters_per_node + s;          /* walker s is thread t */
+			size_t k = ctx[t]->q->pop_bulk(batch, 64);
 			if (k > 0)
 				moved = true;
 			for (size_t t = 0; t < k; t++) {
 				int dst = (int) (batch[t].x % params.n_nodes);
 				if (dst == params.rank)
 					deliver_local(batch[t]);
-				else
-					outbuf.push(batch[t], dst);       /* counts its own drops */
+				else if (not outbuf.push(batch[t], dst))
+					ctx[0]->ctr.c[DROP_OUT] += 1;
 			}
 		}
 		return moved;
@@ -169,15 +159,53 @@ public:
 			controller.service();
 	}
 
-	/******************* the comm thread, for one round *******************/
+	/******************* one round *******************/
 
+	/*
+	 * The tallies of every thread of this rank, added up as they stand.  They are
+	 * plain u64 that the workers write with no synchronisation at all: the flush
+	 * makes whatever has reached memory visible, and a count that lags by a unit or
+	 * two is fine for a progress report.  The exact values are read once, after the
+	 * end-of-round barrier (end_round).
+	 */
+	void snapshot(u64 sum[N_COUNTERS])
+	{
+		#pragma omp flush
+		for (int k = 0; k < N_COUNTERS; k++)
+			sum[k] = 0;
+		for (int t = 0; t < params.n_threads; t++)
+			for (int k = 0; k < N_COUNTERS; k++)
+				sum[k] += ctx[t]->ctr.c[k];
+	}
+
+	/*
+	 * The round header.  Rank 0 draws the function version and the root seed; 
+	 * every rank learns them from the broadcast.
+	 */
+	void begin_round(u64 out_mask)
+	{
+		u64 msg[3];
+		if (params.rank == 0) {
+			msg[0] = prng.rand() & out_mask;     /* i */
+			msg[1] = prng.rand();                /* root_seed */
+			msg[2] = controller.stop;
+		}
+		MPI_Bcast(msg, 3, MPI_UINT64_T, 0, params.mpi_comm);
+		round.i = msg[0];
+		round.root_seed = msg[1];
+		round.stop = msg[2];
+
+		if (params.rank == 0 && not round.stop)
+			controller.begin_round();
+	}
+
+	/* the steady state, until our end-of-round signal arrives; then the drain */
 	void comm_round()
 	{
-
 		double last_ping = wtime();
 		round_over = false;
 
-		u64 prev_dp = 0, prev_ds = 0, prev_dc = 0, prev_do = 0, prev_dr = 0, prev_np = 0;
+		u64 prev[N_COUNTERS] = {0};        /* the tallies at the previous report */
 
 		/*
 		 * Reporting on a timer alone lets a short round run far past beta*w: the
@@ -208,35 +236,20 @@ public:
 			/* periodic call home.  One-way: nothing comes back but, eventually, the
 			   end-of-round signal.  Paced by the rule above. */
 			if ((++poll_tick & 0xff) == 0) {
-				u64 cur_dp = 0, cur_ds = 0, cur_dc = 0, cur_np = 0;
-				for (int s = 0; s < params.walkers_per_node; s++) {
-					int t = 1 + params.inserters_per_node + s;
-					cur_dp += ctx[t]->n_dp.load(std::memory_order_relaxed);
-					cur_ds += ctx[t]->n_drop_walkerq.load(std::memory_order_relaxed);
-				}
-				for (int r = 0; r < params.inserters_per_node; r++) {
-					cur_dc += ctx[1 + r]->n_drop_coll.load(std::memory_order_relaxed);
-					cur_np += ctx[1 + r]->n_probe.load(std::memory_order_relaxed);
-				}
-				u64 cur_do = outbuf.n_dropped;
-				u64 cur_dr = n_drop_inserterq;
-
-				if (cur_dp - prev_dp < dp_report_threshold
+				u64 cur[N_COUNTERS];
+				snapshot(cur);
+				if (cur[N_DP] - prev[N_DP] < dp_report_threshold
 				    && wtime() - last_ping < params.ping_delay)
 					goto no_report;
 				last_ping = wtime();
 
-				u64 msg[REP_NWORDS] = {0};
-				msg[REP_NDP] = cur_dp - prev_dp;
-				msg[REP_DROP_WALKERQ] = cur_ds - prev_ds;
-				msg[REP_DROP_OUT] = cur_do - prev_do;
-				msg[REP_DROP_INSERTERQ] = cur_dr - prev_dr;
-				msg[REP_DROP_COLL] = cur_dc - prev_dc;
-				msg[REP_NPROBE] = cur_np - prev_np;
-				prev_dp = cur_dp; prev_ds = cur_ds; prev_dc = cur_dc;
-				prev_do = cur_do; prev_dr = cur_dr; prev_np = cur_np;
-
-				MPI_Bsend(msg, REP_NWORDS, MPI_UINT64_T, 0, TAG_REPORT, params.mpi_comm);
+				/* the report is the delta of every counter since the previous one */
+				u64 msg[N_COUNTERS];
+				for (int k = 0; k < N_COUNTERS; k++) {
+					msg[k] = cur[k] - prev[k];
+					prev[k] = cur[k];
+				}
+				MPI_Bsend(msg, N_COUNTERS, MPI_UINT64_T, 0, TAG_REPORT, params.mpi_comm);
 			}
 		no_report:
 
@@ -247,11 +260,6 @@ public:
 		drain();
 	}
 
-	/*
-	 * End of round.  The order here matters: stop the walkers, empty everything they
-	 * left behind, tell the other nodes we are done, keep receiving until they all say
-	 * the same, then let the inserters and the collision queue run dry.
-	 */
 	/* have all threads of `role` reached `want`? */
 	bool all_in_state(int role, int want)
 	{
@@ -294,10 +302,11 @@ public:
 			if (not all_held || moved)
 				continue;
 			bool all_empty = true;
-			for (int w = 0; w < params.walkers_per_node; w++)
-				if (walker_q[w]->head.load(std::memory_order_acquire)
-				    != walker_q[w]->tail.load(std::memory_order_acquire))
+			for (int w = 0; w < params.walkers_per_node; w++) {
+				SPSCQueue &q = *ctx[1 + params.inserters_per_node + w]->q;
+				if (q.head.load(std::memory_order_acquire) != q.tail.load(std::memory_order_acquire))
 					all_empty = false;
+			}
 			if (all_empty)
 				break;
 		}
@@ -343,150 +352,38 @@ public:
 
 	/******************* end-of-round statistics *******************/
 
-	void epilogue()
+	/*
+	 * After the end-of-round barrier: every worker has returned from its round, so
+	 * the tallies are exact and nobody is writing them.  Sum them over the threads
+	 * of this rank, reduce over the ranks -- SUM of the counts, MAX of the
+	 * HyperLogLog registers -- hand the result to the controller, and clear
+	 * everything that is scoped to the round, single-threaded here by design.
+	 */
+	void end_round()
 	{
 		Counters total;
 		for (int t = 0; t < params.n_threads; t++)
 			total.merge(ctx[t]->ctr);
 
-		/* everything in here is scoped to the round: reset() clears it below */
-		u64 st[ST_NWORDS];
-		st[ST_NEVAL] = total.n_eval;
-		st[ST_NPOINTS_TRAILS] = total.n_points_trails;
-		st[ST_NCOLL] = total.n_collisions;
-		st[ST_LEN_MIN] = total.colliding_len_min;
-		st[ST_LEN_MAX] = total.colliding_len_max;
-		st[ST_BAD_PROBE] = total.bad_probe;
-		st[ST_BAD_ROBINHOOD] = total.bad_walk_robinhood;
-		st[ST_BAD_NONCOLLIDING] = total.bad_walk_noncolliding;
-		st[ST_BAD_COLLISION] = total.bad_collision;
-		st[ST_BAD_DP] = total.bad_dp;
-
-		if (params.rank == 0)
-			MPI_Reduce(MPI_IN_PLACE, st, ST_NWORDS, MPI_UINT64_T, MPI_SUM, 0, params.mpi_comm);
-		else
-			MPI_Reduce(st, NULL, ST_NWORDS, MPI_UINT64_T, MPI_SUM, 0, params.mpi_comm);
-
-		vector<u8> hll = total.hll;
-		if (params.rank == 0)
-			MPI_Reduce(MPI_IN_PLACE, hll.data(), 0x10000, MPI_UINT8_T, MPI_MAX, 0, params.mpi_comm);
-		else
-			MPI_Reduce(hll.data(), NULL, 0x10000, MPI_UINT8_T, MPI_MAX, 0, params.mpi_comm);
-
-		if (params.rank == 0)
-			controller.end_round(st, hll);
-
-		/* reset every thread's per-round state (single-threaded here, by design) */
-		for (int t = 0; t < params.n_threads; t++) {
-			ctx[t]->ctr.reset();
-			ctx[t]->n_dp.store(0, std::memory_order_relaxed);
-			ctx[t]->n_probe.store(0, std::memory_order_relaxed);
-			ctx[t]->n_drop_walkerq.store(0, std::memory_order_relaxed);
-			ctx[t]->n_drop_coll.store(0, std::memory_order_relaxed);
+		if (params.rank == 0) {
+			MPI_Reduce(MPI_IN_PLACE, total.c, N_COUNTERS, MPI_UINT64_T, MPI_SUM, 0, params.mpi_comm);
+			MPI_Reduce(MPI_IN_PLACE, total.hll.data(), 0x10000, MPI_UINT8_T, MPI_MAX, 0, params.mpi_comm);
+			controller.end_round(total);
+		} else {
+			MPI_Reduce(total.c, NULL, N_COUNTERS, MPI_UINT64_T, MPI_SUM, 0, params.mpi_comm);
+			MPI_Reduce(total.hll.data(), NULL, 0x10000, MPI_UINT8_T, MPI_MAX, 0, params.mpi_comm);
 		}
-		outbuf.n_dropped = 0;
-		n_drop_inserterq = 0;
+
+		for (int t = 0; t < params.n_threads; t++)
+			ctx[t]->ctr.reset();
 		inbuf.n_sentinels = 0;
 	}
 
-	/******************* the whole computation *******************/
+	/******************* termination *******************/
 
-	optional<tuple<u64,u64,u64>> run()
+	/* after the last round: the answer to every rank, then close the channels */
+	optional<tuple<u64,u64,u64>> finish()
 	{
-		#pragma omp parallel num_threads(params.n_threads)
-		{
-			int tid = omp_get_thread_num();
-
-			/*
-			 * Pin first, allocate second.  Under Linux's first-touch policy a page
-			 * belongs to the NUMA node of the CPU that first writes it, so each thread
-			 * builds what it owns -- its context, its queue and, for an inserter, its
-			 * shard, whose zero-fill is the write that matters -- only once it sits on
-			 * its CPU.  The barrier below publishes the slots before anyone looks across.
-			 */
-			int cpu = pin_to_cpu(params.thread_cpu[tid]);
-			int role = WALKER;
-			if (tid == 0)
-				role = COMM;
-			else if (tid <= params.inserters_per_node)
-				role = INSERTER;
-			ctx[tid] = std::make_unique<ThreadContext>(role, cpu);
-			ThreadContext &me = *ctx[tid];
-			if (role == INSERTER) {
-				dict[tid - 1] = std::make_unique<PcsDict>(params.jbits, params.w_shard);
-				inserter_q[tid - 1] = std::make_unique<SPSCQueue>(params.inserter_queue_capacity);
-			} else if (role == WALKER) {
-				walker_q[tid - 1 - params.inserters_per_node]
-					= std::make_unique<SPSCQueue>(params.walker_queue_capacity);
-			}
-
-			#pragma omp barrier
-			#pragma omp master
-			{
-				/* a short team would have left empty slots behind: say so, don't crash */
-				int got = omp_get_num_threads();
-				if (got != params.n_threads)
-					errx(1, "MPI: rank %d asked for %d OpenMP threads and got %d",
-					     params.rank, params.n_threads, got);
-				if (params.verbose && params.bind_threads) {
-					printf("MPI: rank 0 thread->cpu map:");
-					for (int t = 0; t < params.n_threads; t++)
-						printf(" %d:%s%d", t,
-							(t == 0) ? "c" : (t <= params.inserters_per_node ? "i" : "w"),
-							ctx[t]->cpu);
-					printf("\n");
-					fflush(stdout);
-				}
-			}
-
-			for (;;) {
-				me.state = RUNNING;
-
-				#pragma omp master
-				{
-					// acquire the new function version from the controller
-					u64 msg[3];
-					if (params.rank == 0) {
-						msg[0] = prng.rand() & wrapper.out_mask;     // i
-						msg[1] = prng.rand();                // root_seed
-						msg[2] = controller.stop;
-					}
-					MPI_Bcast(msg, 3, MPI_UINT64_T, 0, params.mpi_comm);
-					round.i = msg[0];
-					round.root_seed = msg[1];
-					round.stop = msg[2];						
-					/* no point arming a round that nobody will run: everyone breaks
-					   out just past the barrier below */
-					if (params.rank == 0 && not round.stop)
-						controller.begin_round();
-				}
-
-				#pragma omp barrier         // makes the result of the Bcast visible to all threads
-
-				if (round.stop)
-					break;
-
-				if (tid == 0)
-					comm_round();
-				else if (me.role == INSERTER)
-					inserter_thread(me, params, round, *dict[tid - 1],
-					                *inserter_q[tid - 1], coll_q);
-				else
-					walker_thread(me, wrapper, params, round,
-					              *walker_q[tid - 1 - params.inserters_per_node], coll_q,
-					              tid - 1 - params.inserters_per_node);
-
-				#pragma omp barrier
-
-				if (tid == 0)
-					epilogue();
-				else if (me.role == INSERTER)
-					dict[tid - 1]->flush();
-
-				#pragma omp barrier
-			}
-		}
-
 		/* answer[0] says whether the other three mean anything */
 		u64 answer[4] = {0, 0, 0, 0};
 		if (params.rank == 0) {
@@ -508,17 +405,16 @@ public:
 };
 
 
+/******************* the whole computation *******************/
+
 /*
  * The one entry point of the engine.  Returns (i, x0, x1) -- the mixing function
  * index and the two colliding points, in wrapper coordinates -- or nothing if the
  * search gave up after opts.max_versions rounds.
- *
- * This is where the Options, the RAM budget and the wrapped problem's dimensions
- * meet, so this is where the Parameters are derived (once, and for everything below).
  */
-template<class ProblemWrapper>
-optional<tuple<u64,u64,u64>> run_engine(const ProblemWrapper &wrapper, u64 nbytes_memory,
-                                        const Options &opts, PRNG &prng)
+template <class ProblemWrapper>
+optional<tuple<u64,u64,u64>> run(const ProblemWrapper &wrapper, u64 nbytes_memory,
+                                 const Options &opts, PRNG &prng)
 {
 	/* MPI must be initialised with at least FUNNELED support */
 	int provided;
@@ -526,7 +422,7 @@ optional<tuple<u64,u64,u64>> run_engine(const ProblemWrapper &wrapper, u64 nbyte
 	if (provided < MPI_THREAD_FUNNELED)
 		errx(1, "MPI: MPI_THREAD_FUNNELED is required (got %d).  Use MPI_Init_thread.", provided);
 
-	Parameters params(opts, nbytes_memory, wrapper.n, wrapper.m);
+	const Parameters params(opts, nbytes_memory, wrapper.n, wrapper.m);
 
 	/* safety check: all ranks evaluate the same function */
 	u64 test[3];
@@ -537,8 +433,73 @@ optional<tuple<u64,u64,u64>> run_engine(const ProblemWrapper &wrapper, u64 nbyte
 	MPI_Bcast(test, 3, MPI_UINT64_T, 0, params.mpi_comm);
 	assert(test[2] == wrapper.mixf(test[0], test[1]));
 
-	PcsNode<ProblemWrapper> node(wrapper, params, prng);
-	return node.run();
+	if (params.verbose)
+		Controller::banner(params, prng.seed);     /* before the shards are allocated below */
+
+	/* What the threads share.  Each ctx slot is filled by the thread that owns it,
+	   inside the team, once that thread is pinned (NUMA first touch, see there). */
+	std::vector<std::unique_ptr<ThreadContext>> ctx(params.n_threads);     /* indexed by tid */
+	CollisionQueue coll_q(params.coll_queue_capacity);
+	RoundState round;
+	optional<tuple<u64,u64,u64>> answer;
+	CommThread comm(params, prng, ctx, round);
+
+	#pragma omp parallel num_threads(params.n_threads)
+	{
+		int tid = omp_get_thread_num();
+
+		/*
+		 * Pin first, allocate second.  Under Linux's first-touch policy a page
+		 * belongs to the NUMA node of the CPU that first writes it, so each thread
+		 * builds its context -- and with it its queue and, for an inserter, its
+		 * shard, whose zero-fill is the write that matters -- only once it sits on
+		 * its CPU.
+		 */
+		int cpu = pin_to_cpu(params.thread_cpu[tid]);
+		int role = WALKER;
+		if (tid == 0)
+			role = COMM;
+		else if (tid <= params.inserters_per_node)
+			role = INSERTER;
+		ctx[tid] = std::make_unique<ThreadContext>(role, cpu, params);
+		ThreadContext &me = *ctx[tid];
+
+		#pragma omp barrier             // now we can inspect ctx[]
+
+		for (;;) {
+			me.state = RUNNING;
+			
+			#pragma omp master
+			comm.begin_round(wrapper.out_mask);
+
+			#pragma omp barrier         // makes the round header visible to all threads
+
+			if (round.stop)
+				break;
+
+			if (me.role == COMM)
+				comm.comm_round();
+			else if (me.role == INSERTER)
+				inserter_thread(me, params, round, coll_q);
+			else
+				walker_thread(me, wrapper, params, round, coll_q, tid - 1 - params.inserters_per_node);
+
+			#pragma omp barrier
+
+			#pragma omp master
+			comm.end_round();
+			
+			if (me.role == INSERTER)
+				me.dict->flush();
+
+			#pragma omp barrier
+		}
+
+		#pragma omp master
+		answer = comm.finish();
+	}
+
+	return answer;
 }
 
 }

@@ -49,14 +49,14 @@ optional<tuple<u64,u64,u64>> walk(const ProblemWrapper &wrapper, Counters &ctr, 
 	/* move the longest sequence until the remaining number of steps is equal */
 	/* to the shortest sequence. */
 	u64 len1 = len1__;
-	ctr.n_eval += (len0 > len1) ? len0 - len1 : len1 - len0;   /* the two loops below */
+	ctr.c[N_EVAL] += (len0 > len1) ? len0 - len1 : len1 - len0;   /* the two loops below */
 	for (; len0 > len1; len0--)
 		x0 = wrapper.mixf(i, x0);
 	for (; len0 < len1; len1--)
 		x1 = wrapper.mixf(i, x1);
 
 	if (x0 == x1) { /* robin-hood */
-		ctr.bad_walk_robinhood += 1;
+		ctr.c[BAD_WALK_ROBINHOOD] += 1;
 		return nullopt;
 	}
 
@@ -66,7 +66,7 @@ optional<tuple<u64,u64,u64>> walk(const ProblemWrapper &wrapper, Counters &ctr, 
 		/* return as soon equality is found. */
 		u64 y0 = wrapper.mixf(i, x0);
 		u64 y1 = wrapper.mixf(i, x1);
-		ctr.n_eval += 2;
+		ctr.c[N_EVAL] += 2;
 
 		/* First, do the outputs collide? If yes, return true and exit. */
 		if (y0 == y1) {
@@ -78,7 +78,7 @@ optional<tuple<u64,u64,u64>> walk(const ProblemWrapper &wrapper, Counters &ctr, 
 	}
 
 	if (x0 != x1)    /* false positive from the dictionnary */
-		ctr.bad_walk_noncolliding += 1;
+		ctr.c[BAD_WALK_NONCOLLIDING] += 1;
 	return nullopt;
 }
 
@@ -122,24 +122,24 @@ optional<tuple<u64,u64,u64>> walk_nolen1(const ProblemWrapper &wrapper, Counters
 		if (is_distinguished_point(x1, params.threshold))
 			break;
 	}
-	ctr.n_eval += len1;                                        /* one per turn of the loop */
+	ctr.c[N_EVAL] += len1;                                     /* one per turn of the loop */
 
 	if (x1 / params.n_inserters != end0) {
-		ctr.bad_walk_noncolliding += 1;
+		ctr.c[BAD_WALK_NONCOLLIDING] += 1;
 		return nullopt;
 	}
 
 	/* move the longest sequence until the remaining number of steps is equal */
 	/* to the shortest sequence. */
 	if (len0 > len1)
-		ctr.n_eval += len0 - len1;                             /* the loop below */
+		ctr.c[N_EVAL] += len0 - len1;                          /* the loop below */
 	for (; len0 > len1; len0--)
 		x0 = wrapper.mixf(i, x0);
 
 	/* at this stage, len0 <= len1 */
 	x1 = trail1[len1 - len0];
 	if (x0 == x1) { /* robin-hood */
-		ctr.bad_walk_robinhood += 1;
+		ctr.c[BAD_WALK_ROBINHOOD] += 1;
 		return nullopt;
 	}
 
@@ -148,7 +148,7 @@ optional<tuple<u64,u64,u64>> walk_nolen1(const ProblemWrapper &wrapper, Counters
 		/* walk them together */
 		u64 y0 = wrapper.mixf(i, x0);
 		u64 y1 = trail1[j+1];
-		ctr.n_eval += 1;
+		ctr.c[N_EVAL] += 1;
 		/* do the outputs collide? If yes, return true and exit. */
 		if (y0 == y1) {
 			/* careful: x0 & x1 contain inputs before mixing */
@@ -186,7 +186,7 @@ optional<tuple<u64,u64,u64>> resolve_collision(const ProblemWrapper &wrapper, Co
 	auto [x0, x1, len1] = *collision;
 	assert(len1_maybe == 0 || len1_maybe == len1);
 	if (x0 == x1) {
-		ctr.bad_collision += 1;
+		ctr.c[BAD_COLLISION] += 1;
 		return nullopt;    /* duh */
 	}
 
@@ -247,8 +247,9 @@ bool service_collision(ThreadContext &ctx, const ProblemWrapper &wrapper, const 
  * also picks up collision candidates that inserter threads have queued, and pays for
  * the expensive part -- walking both trails and testing the pair.
  *
- * The chains and the outgoing queue are private to this thread, so they are locals and
- * arguments; only the tallies the comm thread reads live in ctx.  The wrapper is
+ * The chains are private to this thread, so they are locals; its outgoing queue and
+ * its tallies are its own too, built with its ThreadContext, and are taken by
+ * reference up front to keep the hot loop free of the indirection.  The wrapper is
  * stateless and shared read-only by every walker.  `walker_index` is 0-based within
  * this rank -- combined with the rank it gives the global walker index, which seeds
  * the chain counter exactly as `local_rank` did.
@@ -257,9 +258,11 @@ bool service_collision(ThreadContext &ctx, const ProblemWrapper &wrapper, const 
  */
 template <class ProblemWrapper>
 void walker_thread(ThreadContext &ctx, const ProblemWrapper &wrapper, const Parameters &params,
-                   RoundState &round, SPSCQueue &out, CollisionQueue &coll_q, int walker_index)
+                   RoundState &round, CollisionQueue &coll_q, int walker_index)
 {
 	constexpr int vlen = ProblemWrapper::vlen;
+	SPSCQueue &out = *ctx.q;
+	Counters &ctr = ctx.ctr;
 
 	const u64 i = round.i;
 	const u64 root_seed = round.root_seed;
@@ -279,8 +282,6 @@ void walker_thread(ThreadContext &ctx, const ProblemWrapper &wrapper, const Para
 		start_chain(params, wrapper.out_mask, root_seed, j, x, len, seed, params.n_walkers, k);
 	assert((j & jmask) == j);
 
-	u64 n_dp_local = 0;
-
 	for (;;) {
 		int st = ctx.state.load(std::memory_order_acquire);
 
@@ -297,7 +298,6 @@ void walker_thread(ThreadContext &ctx, const ProblemWrapper &wrapper, const Para
 			   the queue and this round is over for us */
 			while (not coll_q.is_empty())
 				service_collision(ctx, wrapper, params, round, coll_q, root_seed);
-			ctx.n_dp.store(n_dp_local, std::memory_order_relaxed);
 			ctx.state.store(QUIESCENT, std::memory_order_release);
 			return;
 		}
@@ -324,15 +324,15 @@ void walker_thread(ThreadContext &ctx, const ProblemWrapper &wrapper, const Para
 				bool failure = (len[k] == params.dp_max_it);
 
 				if (dp) {
-					n_dp_local += 1;
-					ctx.ctr.n_points_trails += len[k];
+					ctr.c[N_DP] += 1;
+					ctr.c[N_POINTS_TRAILS] += len[k];
 					DP p = {seed[k], x[k], len[k]};
 					if (not out.push(p))
-						ctx.n_drop_walkerq.fetch_add(1, std::memory_order_relaxed);
+						ctr.c[DROP_WALKERQ] += 1;
 				}
 				if (dp || failure) {
 					if (failure && not dp)
-						ctx.ctr.bad_dp += 1;
+						ctr.c[BAD_DP] += 1;
 					start_chain(params, wrapper.out_mask, root_seed, j,
 					            x, len, seed, params.n_walkers, k);
 					assert((j & jmask) == j);
@@ -340,10 +340,7 @@ void walker_thread(ThreadContext &ctx, const ProblemWrapper &wrapper, const Para
 			}
 		}
 		/* the chunk always runs to completion: exactly one vmixf per turn */
-		ctx.ctr.n_eval += params.chunk_size * vlen;
-
-		/* publish progress for the comm thread's periodic report */
-		ctx.n_dp.store(n_dp_local, std::memory_order_relaxed);
+		ctr.c[N_EVAL] += params.chunk_size * vlen;
 	}
 }
 

@@ -11,6 +11,7 @@
 #include "counters.hpp"
 #include "parameters.hpp"
 #include "spsc.hpp"
+#include "dict.hpp"
 
 namespace mitm {
 
@@ -39,7 +40,7 @@ struct CollisionCandidate {
 /*
  * Bounded, mutex-protected.  Inserter threads push; walker threads pop and pay for
  * the walk.  A full queue drops the candidate and tells the pusher, which keeps the
- * tally (ThreadContext::n_drop_coll) -- the queue itself counts nothing.  The
+ * tally (DROP_COLL in its Counters) -- the queue itself counts nothing.  The
  * emptiness probe is a relaxed atomic so walkers stay off the lock on the common
  * path.
  */
@@ -133,7 +134,12 @@ struct RoundState {
 
 /******************************* thread context *******************************/
 
-/* Per-thread state that the comm thread also touches */
+/*
+ * What a worker thread owns -- its SPSC queue and, for an inserter, its dictionary
+ * shard -- plus the few fields the comm thread also touches.  One per thread, the
+ * comm thread's included (it owns neither a queue nor a shard: its objects are the
+ * CommThread's; what it does own here is its tallies).
+ */
 struct alignas(64) ThreadContext {
 	const int role;                 /* the comm thread dispatches on it */
 	const int cpu;                  /* where the thread pinned itself; rank 0 prints the map */
@@ -141,19 +147,30 @@ struct alignas(64) ThreadContext {
 	/* see thread_state above: the comm thread asks, the thread answers */
 	std::atomic<int> state;
 
-	/* the thread tallies into this; the comm thread merges and clears it at round end */
+	/* Every tally of this thread, written by it alone with no synchronisation
+	   (plain u64).  The comm thread sums them over the threads after an `omp flush`
+	   for its progress reports, where a stale unit or two does not matter, and reads
+	   them exactly after the end-of-round barrier, when it also clears them. */
 	Counters ctr;
 
-	/* published by the thread, read by the comm thread for its periodic report */
-	std::atomic<u64> n_dp;             /* walker:   distinguished points found */
-	std::atomic<u64> n_probe;          /* inserter: dictionary probes retired */
-	std::atomic<u64> n_drop_walkerq;   /* walker:   its queue to the comm thread was full */
-	std::atomic<u64> n_drop_coll;      /* inserter: the collision queue was full */
+	/* the thread's own.  Null for the roles that have none: the comm thread has no
+	   queue, only an inserter has a shard.  Read-only pointers once built. */
+	std::unique_ptr<SPSCQueue> q;      /* walker: to the comm thread.  inserter: from it */
+	std::unique_ptr<PcsDict> dict;     /* inserter: its shard of the dictionary */
 
-	/* built by the thread it describes, once that thread is pinned (see PcsNode::run) */
-	ThreadContext(int role, int cpu)
-		: role(role), cpu(cpu), state(RUNNING), n_dp(0), n_probe(0), n_drop_walkerq(0), n_drop_coll(0)
-	{}
+	/* Built by the thread it describes, once that thread is pinned (see run() in engine.hpp):
+	   the queue's buffer and the shard's zero-fill are then that thread's first touch,
+	   which is what places them on its NUMA node. */
+	ThreadContext(int role, int cpu, const Parameters &params)
+		: role(role), cpu(cpu), state(RUNNING)
+	{
+		if (role == WALKER) {
+			q = std::make_unique<SPSCQueue>(params.walker_queue_capacity);
+		} else if (role == INSERTER) {
+			q = std::make_unique<SPSCQueue>(params.inserter_queue_capacity);
+			dict = std::make_unique<PcsDict>(params.jbits, params.w_shard);
+		}
+	}
 };
 
 
@@ -162,7 +179,8 @@ struct alignas(64) ThreadContext {
 /*
  * Double buffering, one pair per destination node: `ready` accumulates, `outgoing`
  * is in flight.  Never blocks -- if the previous send has not finished when `ready`
- * fills up, the point is dropped, which costs work but never correctness.
+ * fills up, the point is dropped, which costs work but never correctness; push()
+ * says so and the comm thread keeps the tally (DROP_OUT), the buffers count nothing.
  *
  * Because the transmitting data lives in `outgoing` and push() only ever touches
  * `ready`, a buffer that is still in flight simply cannot be handed to MPI twice.
@@ -203,7 +221,6 @@ class OutBuffers {
 	}
 
 public:
-	u64 n_dropped = 0;
 	u64 bytes_sent = 0;
 
 	OutBuffers(MPI_Comm comm, int n_nodes, size_t dp_capacity)
@@ -219,10 +236,8 @@ public:
 	/* append one DP to the buffer bound for node `dst`.  false == dropped. */
 	bool push(const DP &p, int dst)
 	{
-		if (ready[dst].size() + DP_WORDS > cap && not rotate(dst)) {
-			n_dropped += 1;
-			return false;
-		}
+		if (ready[dst].size() + DP_WORDS > cap && not rotate(dst))
+			return false;                    /* the caller tallies the drop */
 		ready[dst].push_back(p.seed);
 		ready[dst].push_back(p.x);
 		ready[dst].push_back(p.len);
@@ -285,7 +300,7 @@ public:
  * rather than by the number of peers.
  *
  * Deliberately just state: the comm thread drives the Testsome/scatter/repost loop
- * itself (PcsNode::poll_incoming), because handing this class a scatter callback
+ * itself (CommThread::poll_incoming), because handing this class a scatter callback
  * would mean a closure at every call site.
  */
 struct InBuffers {
@@ -323,19 +338,15 @@ struct InBuffers {
 /******************************* control channel ******************************/
 
 /*
- * Layout of a progress report (TAG_REPORT).  REP_NWORDS closes the enum, so the
- * message size is the field list itself rather than a constant that has to be kept
- * in step with it.
- */
-enum report_field {
-	REP_NDP = 0, REP_NEVAL, REP_DROP_WALKERQ, REP_DROP_OUT, REP_DROP_INSERTERQ,
-	REP_DROP_COLL, REP_NPROBE,
-	REP_NWORDS
-};
-
-/*
  * Layout of a solution (TAG_SOLUTION): the mixing-function index and the two
  * colliding points.  RoundState::golden has exactly this layout and is sent as is.
+ * SOL_NWORDS closes the enum, so the message size is the field list itself rather
+ * than a constant that has to be kept in step with it.
+ *
+ * The other two payloads of the engine -- a progress report (TAG_REPORT) and the
+ * end-of-round statistics (MPI_Reduce) -- are both N_COUNTERS words in `enum counter`
+ * order (counters.hpp): the Counters array itself, as deltas since the previous
+ * report for the former and as the round's total for the latter.
  */
 enum solution_field {
 	SOL_I = 0, SOL_X0, SOL_X1,
@@ -343,23 +354,11 @@ enum solution_field {
 };
 
 /*
- * Layout of the end-of-round statistics.  Every thread's Counters are merged into one
- * per node, packed in this order and MPI_SUM-reduced onto rank 0 (the HyperLogLog
- * registers travel separately, under MPI_MAX).  Same trick as above: the enum closes
- * with its own length.
- */
-enum round_stat {
-	ST_NEVAL = 0, ST_NPOINTS_TRAILS, ST_NCOLL, ST_LEN_MIN, ST_LEN_MAX,
-	ST_BAD_PROBE, ST_BAD_ROBINHOOD, ST_BAD_NONCOLLIDING, ST_BAD_COLLISION, ST_BAD_DP,
-	ST_NWORDS
-};
-
-/*
  * The node's end of the control channel, on every rank.  Three tags, one per message
  * kind, so a message is told apart by its envelope and never by its length:
  *
  *     TAG_END_ROUND    rank 0 --> node    zero-length: "the round is over"
- *     TAG_REPORT       node --> rank 0    REP_NWORDS words (report_field)
+ *     TAG_REPORT       node --> rank 0    N_COUNTERS words (enum counter)
  *     TAG_SOLUTION     node --> rank 0    SOL_NWORDS words (solution_field)
  *
  * This class posts the one receive a node needs, for the end-of-round signal; it only
@@ -389,9 +388,9 @@ public:
 		   long before the next one, so bsend_slack covers them.  A report is the largest
 		   message, so sizing every slot for a full report is already generous.  A full
 		   buffer is a fatal MPI_ERR_BUFFER, never a hang. */
-		static_assert((int) REP_NWORDS >= (int) SOL_NWORDS, "the Bsend slots are sized for a report");
+		static_assert((int) N_COUNTERS >= (int) SOL_NWORDS, "the Bsend slots are sized for a report");
 		size_t slots = 2 * (size_t) params.n_nodes + params.bsend_slack;
-		size_t msg = REP_NWORDS * sizeof(u64) + MPI_BSEND_OVERHEAD;
+		size_t msg = N_COUNTERS * sizeof(u64) + MPI_BSEND_OVERHEAD;
 		bsend_buf.resize(slots * msg);
 		MPI_Buffer_attach(bsend_buf.data(), (int) bsend_buf.size());
 

@@ -277,7 +277,7 @@ optional<pair<u64, u64>> collision_search(const Problem& pb, u64 nbytes_memory, 
             pb.n, pb.m, Problem::vlen);
 
     CollisionWrapper<Problem> wrapper(pb);
-    auto collision = run_engine(wrapper, nbytes_memory, opts, prng);
+    auto collision = run(wrapper, nbytes_memory, opts, prng);
     if (not collision)
         return nullopt;
 
@@ -315,7 +315,7 @@ optional<pair<u64, u64>> claw_search(const Problem& pb, u64 nbytes_memory, const
         if (verbose)
             printf("  - using |Domain| == |Range| mode.  Expecting 1.8*n/w rounds.\n");
         EqualSizeClawWrapper<Problem> wrapper(pb);
-        claw = run_engine(wrapper, nbytes_memory, opts, prng);
+        claw = run(wrapper, nbytes_memory, opts, prng);
         if (claw) {
             auto [i, a, b] = *claw;
             std::tie(x0, x1) = wrapper.swapmix(i, a, b);
@@ -324,7 +324,7 @@ optional<pair<u64, u64>> claw_search(const Problem& pb, u64 nbytes_memory, const
         if (verbose)
             printf("  - using |Domain| << |Range| mode.  Expecting 0.9*n/w rounds.\n");
         LargerRangeClawWrapper<Problem> wrapper(pb);
-        claw = run_engine(wrapper, nbytes_memory, opts, prng);
+        claw = run(wrapper, nbytes_memory, opts, prng);
         if (claw) {
             auto [i, a, b] = *claw;
             std::tie(x0, x1) = wrapper.swapmix(i, a, b);

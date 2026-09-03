@@ -27,7 +27,7 @@ class Controller {
 	MPI_Comm comm;
 	MPI_Request req_report = MPI_REQUEST_NULL;        /* rank 0 only */
 	MPI_Request req_solution = MPI_REQUEST_NULL;      /* rank 0 only */
-	u64 report_buf[REP_NWORDS];
+	u64 report_buf[N_COUNTERS];
 	u64 solution_buf[SOL_NWORDS];
 
 public:
@@ -37,47 +37,42 @@ public:
 	u64 stop = 0;
 	optional<tuple<u64,u64,u64>> solution;         /* (i, x0, x1) */
 
-	/* this round */
-	u64 ndp = 0;                                   /* DPs reported by all nodes */
+	/* this round, as the progress reports add up so far.  Approximate (§6 of
+	   PROTOCOL.md): it drives the live display and decides when the round closes,
+	   nothing else -- the round report prints the exact reduction. */
+	u64 reported[N_COUNTERS] = {0};
 	bool round_closed = false;                     /* TAG_END_ROUND sent to every node */
 	double round_start = 0, last_display = 0;
-	u64 drop_walkerq = 0, drop_out = 0, drop_inserterq = 0, drop_coll = 0;
-	u64 nprobe = 0;                                /* dictionary probes retired */
 
-	/* totals */
-	u64 ndp_total = 0, ncoll_total = 0, nf_total = 0;
+	/* all-time: every round's reduction, merged (counts summed, HyperLogLog maxed) */
+	Counters total;
 	double start_time;
-	vector<u8> hll;                                /* all collisions since the start */
 
 	Controller(const Parameters &p)
-		: comm(p.mpi_comm), params(p), hll(0x10000)
+		: comm(p.mpi_comm), params(p)
 	{
 		start_time = wtime();
 		if (params.rank != 0)
 			return;                                /* nobody ever writes to us */
-		MPI_Irecv(report_buf, REP_NWORDS, MPI_UINT64_T, MPI_ANY_SOURCE, TAG_REPORT, comm, &req_report);
+		MPI_Irecv(report_buf, N_COUNTERS, MPI_UINT64_T, MPI_ANY_SOURCE, TAG_REPORT, comm, &req_report);
 		MPI_Irecv(solution_buf, SOL_NWORDS, MPI_UINT64_T, MPI_ANY_SOURCE, TAG_SOLUTION, comm, &req_solution);
 	}
 
 	void begin_round()
 	{
-		ndp = 0;
+		for (int k = 0; k < N_COUNTERS; k++)
+			reported[k] = 0;
 		round_closed = false;
-		drop_walkerq = drop_out = drop_inserterq = drop_coll = nprobe = 0;
 		round_start = wtime();
 		last_display = round_start;
 	}
 
 
 	/* Digest one progress report: its deltas are added to the round's tallies. */
-	void handle_report(const u64 r[REP_NWORDS])
+	void handle_report(const u64 r[N_COUNTERS])
 	{
-		ndp += r[REP_NDP];
-		drop_walkerq += r[REP_DROP_WALKERQ];
-		drop_out   += r[REP_DROP_OUT];
-		drop_inserterq += r[REP_DROP_INSERTERQ];
-		drop_coll  += r[REP_DROP_COLL];
-		nprobe     += r[REP_NPROBE];
+		for (int k = 0; k < N_COUNTERS; k++)
+			reported[k] += r[k];
 		display();
 	}
 
@@ -131,10 +126,10 @@ public:
 			if (!flag)
 				break;
 			handle_report(report_buf);
-			MPI_Irecv(report_buf, REP_NWORDS, MPI_UINT64_T, MPI_ANY_SOURCE, TAG_REPORT, comm, &req_report);
+			MPI_Irecv(report_buf, N_COUNTERS, MPI_UINT64_T, MPI_ANY_SOURCE, TAG_REPORT, comm, &req_report);
 		}
 
-		if (not round_closed && (stop || ndp >= params.points_per_version))
+		if (not round_closed && (stop || reported[N_DP] >= params.points_per_version))
 			close_round();
 	}
 
@@ -158,12 +153,13 @@ public:
 			return;
 		last_display = now;
 		double delta = now - round_start;
+		u64 ndp = reported[N_DP];
 		double dp_rate = ndp / delta;
 		double completion = (double) ndp / params.points_per_version;
 		char hrate[8], hnrate[8], hprobe[8];
 		human_format(dp_rate / params.theta / params.n_walkers, hrate);
 		human_format(ndp * DP_WORDS * sizeof(u64) / params.n_nodes / delta, hnrate);
-		human_format((double) nprobe / params.n_inserters / delta, hprobe);
+		human_format((double) reported[N_PROBE] / params.n_inserters / delta, hprobe);
 		printf("\rRound %" PRId64 ":  %.1fs (%.1f%%, ETA %.1fs).  %.2f*w #DP.  %s #f/s per walker.  %s probe/s per inserter.  node-->%sB/s   ",
 			nround, delta, 100. * completion,
 			(completion > 0) ? delta * (1 - completion) / completion : 0.,
@@ -172,55 +168,51 @@ public:
 	}
 
 	/*
-	 * `st` is the ST_NWORDS-way SUM reduction of every thread's Counters (see
-	 * round_stat in comm.hpp), `hll_round` the MAX-reduction of their HyperLogLog
-	 * registers.  Both cover this round only; the running totals live here.
+	 * `r` is the round's Counters, merged over every thread of every node: the SUM
+	 * reduction of the counts and the MAX reduction of the HyperLogLog registers.
+	 * Exact, unlike `reported`, so everything printed here comes from it; the
+	 * running totals live here too.
 	 */
-	void end_round(const u64 st[ST_NWORDS], const vector<u8> &hll_round)
+	void end_round(const Counters &r)
 	{
 		double delta = wtime() - round_start;
+		total.merge(r);
 
-		ndp_total += ndp;
-		ncoll_total += st[ST_NCOLL];
-		nf_total += st[ST_NEVAL];
-
-		for (int k = 0; k < 0x10000; k++)
-			if (hll_round[k] > hll[k])
-				hll[k] = hll_round[k];
-
+		u64 ndp = r.c[N_DP];
 		char hrate[8], hnrate[8];
-		human_format((double) st[ST_NEVAL] / params.n_walkers / delta, hrate);
+		human_format((double) r.c[N_EVAL] / params.n_walkers / delta, hrate);
 		human_format((double) ndp * DP_WORDS * sizeof(u64) / params.n_nodes / delta, hnrate);
 
 		printf("\n");
 		printf("Round %" PRId64 ".  %.1fs.  #DP %.2f*w (total 2^%.2f).  #coll %.2f*w (total 2^%.2f).  "
 		       "Total #f=2^%.3f.  %s #f/s per walker.  node-->%sB/s\n",
 			nround, delta,
-			(double) ndp / params.w, std::log2((double) ndp_total ? (double) ndp_total : 1.),
-			(double) st[ST_NCOLL] / params.w, std::log2((double) ncoll_total ? (double) ncoll_total : 1.),
-			std::log2((double) nf_total ? (double) nf_total : 1.), hrate, hnrate);
+			(double) ndp / params.w, std::log2((double) total.c[N_DP] ? (double) total.c[N_DP] : 1.),
+			(double) r.c[N_COLLISIONS] / params.w,
+			std::log2((double) total.c[N_COLLISIONS] ? (double) total.c[N_COLLISIONS] : 1.),
+			std::log2((double) total.c[N_EVAL] ? (double) total.c[N_EVAL] : 1.), hrate, hnrate);
 
 		if (ndp > 0) {
-			double avglen = (double) st[ST_NPOINTS_TRAILS] / ndp;
+			double avglen = (double) r.c[N_POINTS_TRAILS] / ndp;
 			printf("            %.2f avg trail length", avglen);
-			if (st[ST_NCOLL] > 0 && avglen > 0)
+			if (r.c[N_COLLISIONS] > 0 && avglen > 0)
 				printf(" (x%.2f & x%.2f colliding)",
-					(double) st[ST_LEN_MIN] / st[ST_NCOLL] / avglen,
-					(double) st[ST_LEN_MAX] / st[ST_NCOLL] / avglen);
+					(double) r.c[COLLIDING_LEN_MIN] / r.c[N_COLLISIONS] / avglen,
+					(double) r.c[COLLIDING_LEN_MAX] / r.c[N_COLLISIONS] / avglen);
 			printf(".  %.2f%% probe failure.  %.2f%% walk-robinhood.  %.2f%% walk-noncolliding.  "
 			       "%.2f%% same-value.  %.2f%% DP failure\n",
-				100. * st[ST_BAD_PROBE] / ndp, 100. * st[ST_BAD_ROBINHOOD] / ndp,
-				100. * st[ST_BAD_NONCOLLIDING] / ndp, 100. * st[ST_BAD_COLLISION] / ndp,
-				100. * st[ST_BAD_DP] / ndp);
+				100. * r.c[BAD_PROBE] / ndp, 100. * r.c[BAD_WALK_ROBINHOOD] / ndp,
+				100. * r.c[BAD_WALK_NONCOLLIDING] / ndp, 100. * r.c[BAD_COLLISION] / ndp,
+				100. * r.c[BAD_DP] / ndp);
 		}
 
-		if (drop_walkerq | drop_out | drop_inserterq | drop_coll)
+		if (r.c[DROP_WALKERQ] | r.c[DROP_OUT] | r.c[DROP_INSERTERQ] | r.c[DROP_COLL])
 			printf("            DROPPED  %" PRId64 " walker-queue / %" PRId64 " output-buffer / "
 			       "%" PRId64 " inserter-queue / %" PRId64 " collision-queue\n",
-				drop_walkerq, drop_out, drop_inserterq, drop_coll);
+				r.c[DROP_WALKERQ], r.c[DROP_OUT], r.c[DROP_INSERTERQ], r.c[DROP_COLL]);
 
-		u64 E_i = Counters::distinct_collisions_estimation(hll_round);
-		u64 E = Counters::distinct_collisions_estimation(hll);
+		u64 E_i = Counters::distinct_collisions_estimation(r.hll);
+		u64 E = Counters::distinct_collisions_estimation(total.hll);
 		printf("            #distinct coll (this i / total) %.02f*w / 2^%.2f\n",
 			(double) E_i / params.w, std::log2((double) E ? (double) E : 1.));
 		printf("\n");
@@ -233,10 +225,11 @@ public:
 	}
 
 	/*
-	 * The startup report, all of it, in one place.  Printed before the dictionary is
-	 * allocated, so that the plan is on record even if the allocation fails.
+	 * The startup report, all of it, in one place.  Static: run() prints it
+	 * before the team -- hence the dictionary, and the Controller itself -- exists,
+	 * so that the plan is on record even if the allocation fails.
 	 */
-	void banner(u64 seed)
+	static void banner(const Parameters &params, u64 seed)
 	{
 		char hbuf[8], hdict[8];
 		u64 bufbytes = (u64) 2 * params.n_nodes * DP_WORDS * sizeof(u64) * params.buffer_capacity;

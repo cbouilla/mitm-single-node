@@ -66,11 +66,12 @@ include/
   counters.hpp    per-round diagnostic tallies + HyperLogLog
   parameters.hpp  Options (user knobs, all defaulted) and Parameters (derived once from them + RAM budget + problem size; data only)
   spsc.hpp        wait-free single-producer/single-consumer queue
+  dict.hpp        PcsDict, the dictionary shard an inserter owns
   comm.hpp        queues, bulk DP buffers, control channel, per-thread state
   walker.hpp      the walker thread; walking trails, turning a dictionary hit into a collision
-  inserter.hpp    the inserter thread and PcsDict, the dictionary shard it owns
+  inserter.hpp    the inserter thread
   controller.hpp  rank 0's view: startup banner, rounds, pacing, statistics, when to stop
-  engine.hpp      the node: the comm thread, the round loop, run_engine()
+  engine.hpp      the comm thread (CommThread) and run(): preflight, the OpenMP team, the round loop
   mitm.hpp        umbrella: problem wrappers, claw_search(), collision_search()
   benchmark.hpp   f/g throughput per rank and across ranks, for the *_bench drivers
   naive/          the naive all-to-all MITM.  NOT PORTED, not built (see below)

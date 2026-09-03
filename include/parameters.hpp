@@ -96,7 +96,7 @@ struct Options {
 /*
  * Everything the engine needs to know, derived ONCE from the options, the RAM budget
  * and the size of the (wrapped) problem: MPI topology, thread layout and placement,
- * dictionary size and difficulty.  Built by run_engine() and never modified
+ * dictionary size and difficulty.  Built by run() and never modified
  * afterwards.  Data only: nothing here runs outside the constructor.
  *
  * The user's Options are copied in, so the *resolved* values of walkers_per_node,
