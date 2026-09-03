@@ -63,13 +63,11 @@ include/
   types.h         SIMD vector types, selected by -march=native
   tools.hpp       PRNG (TRIVIUM), timing, human-readable numbers
   problem.hpp     the interface a cipher implements: f, g, is_good_pair, vfg
-  counters.hpp    per-round diagnostic tallies + HyperLogLog
   parameters.hpp  Options (user knobs, all defaulted) and Parameters (derived once from them + RAM budget + problem size; data only)
   spsc.hpp        wait-free single-producer/single-consumer queue
-  dict.hpp        PcsDict, the dictionary shard an inserter owns
-  comm.hpp        queues, bulk DP buffers, control channel, per-thread state
+  comm.hpp        queues, bulk DP buffers, the counter enum, the control-channel payloads, ThreadContext and SharedContext
   walker.hpp      the walker thread; walking trails, turning a dictionary hit into a collision
-  inserter.hpp    the inserter thread
+  inserter.hpp    the inserter thread; PcsDict, the dictionary shard it builds and probes (held in SharedContext::shards)
   controller.hpp  rank 0's view: startup banner, rounds, pacing, statistics, when to stop
   engine.hpp      the comm thread (CommThread) and run(): preflight, the OpenMP team, the round loop
   mitm.hpp        umbrella: problem wrappers, claw_search(), collision_search()

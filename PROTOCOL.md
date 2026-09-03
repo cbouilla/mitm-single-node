@@ -1,7 +1,8 @@
 # Communication protocol
 
 Everything below is implemented in `include/engine.hpp` (the comm thread and the
-round loop), `include/comm.hpp`(queues, buffers, control channel),
+round loop), `include/comm.hpp` (queues, buffers, the counter enum, the control-channel payloads,
+`ThreadContext` and `SharedContext`),
 `include/spsc.hpp`, `include/controller.hpp`, `include/walker.hpp` and
 `include/inserter.hpp`.  Names in code font are the ones used there.
 
@@ -25,7 +26,10 @@ and **only thread 0 ever calls MPI** (its code is the `CommThread` class); the
 workers never see an `MPI_` symbol.
 Worker threads communicate with thread 0 through per-thread
 Single-Producer-Single-Consumer (SPSC) queues, one `state` atomic each and their
-plain-`u64` tallies, and with each other only through the collision queue.
+plain-`u64` tallies (all three in their `ThreadContext`; thread 0's own `state` is the
+phase of its round loop, §3.3), and with each other only
+through the collision queue and the HyperLogLog registers (both in the node's
+`SharedContext`, §3).
 
 ```
    one node (one MPI rank)
@@ -67,17 +71,20 @@ Sent with `MPI_Isend` from `OutBuffers`, which keeps one double buffer per
 destination: `ready[dst]` accumulates, `outgoing[dst]` is in flight.  When `ready`
 is full and the previous send to that node has not completed, the point is
 **dropped** (the comm thread tallies it, `DROP_OUT`), never blocked on.  A buffer is
-never sent empty.
+never sent empty.  An `Isend` is tested only when its slot is wanted (`rotate()`) and
+at the end of the round (`flush_poll()`); MPI progress is per process, so the receive
+tests of every loop turn drive the sends as well, and nothing polls them for their own
+sake.
 
 Received into a pool of `n_in_buffers` (default 8) always-posted `MPI_Irecv`s with
-`MPI_ANY_SOURCE` (`InBuffers`).  The comm thread's `poll_incoming()` runs
-`MPI_Testsome` over the pool, scatters each completed buffer to the local inserter
-queues, and reposts the receive.
+`MPI_ANY_SOURCE` (`CommThread::in_req`, one buffer `in_data[k]` each).  The comm
+thread's `poll_incoming()` runs `MPI_Testsome` over the pool, scatters each completed
+buffer to the local inserter queues, and reposts the receive.
 
 **End-of-round sentinel.**  A **zero-length** `TAG_POINTS` message, one to every node
 (itself included), sent with `MPI_Bsend` by `OutBuffers::send_sentinels()`.  Meaning:
 "I have sent you every point of this round."  A receiver counts them in
-`InBuffers::n_sentinels`; the round's incoming traffic is over when the count reaches
+`CommThread::n_sentinels`; the round's incoming traffic is over when the count reaches
 `n_nodes`.  It is sent only after every data `Isend` has completed locally (step 3 of
 the drain, §4.5), and MPI messages between one pair of ranks are non-overtaking, so
 the sentinel is matched after the data it closes.
@@ -102,7 +109,7 @@ rank that consumes it:
 
 | tag | from | to | words | posted by |
 |---|---|---|---|---|
-| `TAG_END_ROUND` | rank 0 | every node | 0 | `ControlChannel`, on every rank, with source `0` (no wildcard) |
+| `TAG_END_ROUND` | rank 0 | every node | 0 | `CommThread::req_end_round`, on every rank, with source `0` (no wildcard) |
 | `TAG_REPORT` | every node | rank 0 | `N_COUNTERS` | `Controller`, rank 0 only, `MPI_ANY_SOURCE` |
 | `TAG_SOLUTION` | every node | rank 0 | `SOL_NWORDS` | `Controller`, rank 0 only, `MPI_ANY_SOURCE` |
 
@@ -113,8 +120,9 @@ bound for rank 0's node role.  The report and solution receives are serviced by 
 controller itself (`Controller::service()`); the node's comm code only ever sees the
 end-of-round signal.  Rank 0 talks to itself through MPI like any other node.  Every
 send is `MPI_Bsend`: it completes locally, so the comm thread never blocks and there is
-no request to track.  The attached buffer is per process and holds
-`2 * n_nodes + bsend_slack` report-sized slots.  The bounded part is an end-of-round
+no request to track.  The attached buffer is per process -- `run()` attaches it before
+anything else of the engine exists and detaches it after the last round (§4.1, §4.7) --
+and holds `2 * n_nodes + bsend_slack` report-sized slots.  The bounded part is an end-of-round
 signal to every node (rank 0) and one sentinel per node, both once per round; our own
 reports and solution have no hard bound (reports are one-way and nothing throttles them
 but their pacing rule), and `bsend_slack` (default 8) covers them: a report's slot is
@@ -129,8 +137,8 @@ close the round, which is taken once per `service()` call after both receives ha
 been drained.
 
 **Progress report** (node -> rank 0, `TAG_REPORT`, `N_COUNTERS == 16` words).  The
-node's `Counters` array -- every thread's tallies summed (§3.4), in `enum counter`
-order (`counters.hpp`) -- as **deltas since the node's previous report**; the
+node's counters -- every thread's `ctr[N_COUNTERS]` summed (§3.4), in `enum counter`
+order (`comm.hpp`) -- as **deltas since the node's previous report**; the
 controller sums them into `reported[]`.  Only two of them act during the round:
 `N_DP` closes it and `N_PROBE` feeds the live display.  The rest ride along because
 one layout serves the per-thread tallies, the report and the end-of-round reduction
@@ -159,26 +167,31 @@ Pacing: the comm thread considers reporting every 256 turns of its poll loop, an
 sends a report if either `ping_delay` seconds (default 0.1) have elapsed since the
 last one, or the node has found `points_per_version / (reports_per_round * n_nodes)`
 new DPs since the last one (so a short round cannot overshoot `beta * w`).  A report
-is **one-way**: nothing is answered, and a node keeps reporting until its end-of-round
-signal arrives.
+is **one-way**: nothing is answered, and a node keeps reporting through its drain,
+until its comm thread goes quiescent (§4.5): no DP is produced past step 1, so those
+reports come one per `ping_delay` and carry the collisions resolved and the last
+points probed while the round winds down.
 
 **Solution** (node -> rank 0, `TAG_SOLUTION`, `SOL_NWORDS == 3` words).  `SOL_I`,
 `SOL_X0`, `SOL_X1`: the mixing-function index and the two colliding points, exactly
-the layout of `RoundState::golden`.  Sent once per node (`golden_sent`) as soon as the
-comm thread sees `RoundState::golden_found`.  It is **one-way**.  The controller keeps
-the first one and raises `stop`.
+the layout of `SharedContext::golden`.  Sent once per node (`golden_sent`) as soon as the
+comm thread sees `SharedContext::golden_found`, in whatever phase of the round.  It is
+**one-way**.  The controller keeps the first one and raises `stop`.
 
 **End of round** (rank 0 -> every node, `TAG_END_ROUND`, **zero-length**).  Meaning:
 "stop producing points and drain: the round is over".  Sent by
-`Controller::close_round()` to every node, rank 0 included, as soon as `service()`
-sees `stop` raised or the summed `N_DP` of the round's reports at or above
-`points_per_version`.  It is the only message the controller ever sends, it is
-unsolicited, and it is sent **exactly once per round** (`round_closed`): the receive
-that matches it names source 0 and this tag, so successive signals are non-overtaking
-and a node consumes exactly one per round -- it is its only way out of the steady
-state -- and a second one would be consumed in the *next* round and end it at once.
-The controller only knows what has been reported, so a node that has not reported
-cannot push `ndp` over the threshold; that is why reports are also paced by DP count.
+`Controller::service()` to every node, rank 0 included, as soon as it sees `stop`
+raised or the summed `N_DP` of the round's reports at or above `points_per_version`.
+It is the only message the controller ever sends, it is unsolicited, and it is sent
+**exactly once per round** (`round_closed`): the receive that matches it names source
+0 and this tag, so successive signals are non-overtaking and a node consumes exactly
+one per round -- it is its only way out of the steady state -- and a second one would
+be consumed in the *next* round and end it at once.  Closing the round is also where
+the search advances: the controller bumps `nround` and raises `stop` if
+`nround >= max_versions`, so that `stop` is final by the time the next round header
+is broadcast (§4.2).  The controller only knows what has been reported, so a node that
+has not reported cannot push `ndp` over the threshold; that is why reports are also
+paced by DP count.
 
 ### 2.3 Collectives
 
@@ -189,8 +202,8 @@ All on `mpi_comm`, all issued by thread 0, all `MPI_UINT64_T` unless stated.
 | driver `mitm::init`, if the seed was not given | `MPI_Bcast` | 1 word: PRNG seed (this is in `examples/driver.hpp`, not the library) | 0 |
 | `run()`, before the team exists | `MPI_Bcast` | 3 words: `x`, `y`, `mixf(x, y)`; every rank asserts it computes the same value | 0 |
 | start of every round | `MPI_Bcast` | 3 words: `i` (function version), `root_seed`, `stop` | 0 |
-| end of every round | `MPI_Reduce`, `MPI_SUM` | `N_COUNTERS == 16` words: the round's merged `Counters` array, in `enum counter` order (the layout of a report, totals instead of deltas) | 0 |
-| end of every round | `MPI_Reduce`, `MPI_MAX` | 65 536 `MPI_UINT8_T`: HyperLogLog registers of this round's collisions | 0 |
+| end of every round | `MPI_Reduce`, `MPI_SUM` | `N_COUNTERS == 16` words: the node's `ctr` arrays summed over its threads, in `enum counter` order (the layout of a report, totals instead of deltas) | 0 |
+| end of every round | `MPI_Reduce`, `MPI_MAX` | `HLL_REGISTERS == 65 536` `MPI_UINT8_T`: the node's HyperLogLog of this round's collisions (`SharedContext::hll`, copied out once every walker is quiescent) | 0 |
 | after the last round | `MPI_Bcast` | 4 words: `found`, `i`, `x0`, `x1` | 0 |
 
 These collectives are the **only blocking MPI calls** the engine makes after
@@ -201,13 +214,26 @@ startup.  The per-round ones are reached only after every node has finished its 
 
 | channel | producer | consumer | type | capacity (`Options`) | when full |
 |---|---|---|---|---|---|
-| `ctx[R+1+w]->q` | walker `w` | comm | `SPSCQueue` of `DP` | `walker_queue_capacity` (1024) | walker drops the DP, tallies `DROP_WALKERQ` |
-| `ctx[1+r]->q` | comm | inserter `r` | `SPSCQueue` of `DP` | `inserter_queue_capacity` (4096) | comm drops the DP, tallies `DROP_INSERTERQ` |
-| `coll_q` | every inserter | every walker | `CollisionQueue` (mutex, bounded) | `coll_queue_capacity` (8192) | inserter drops the candidate, tallies `DROP_COLL` |
-| `ThreadContext::state` | comm and the thread itself | the other side | `atomic<int>` | | see §3.3 |
-| `ThreadContext::ctr` | the thread | comm | plain `Counters`: `u64[N_COUNTERS]` + HLL registers, no atomics, see §3.4 | | |
-| `RoundState::i`, `root_seed`, `stop` | comm (thread 0) | everyone | plain `u64`, published by an OpenMP barrier | | |
-| `RoundState::golden` | any walker | comm | mutex + `atomic<bool>` flag | | first one wins |
+| `shared.ctx[R+1+w]->q` | walker `w` | comm | `SPSCQueue` of `DP` | `walker_queue_capacity` (1024) | walker drops the DP, tallies `DROP_WALKERQ` |
+| `shared.ctx[1+r]->q` | comm | inserter `r` | `SPSCQueue` of `DP` | `inserter_queue_capacity` (4096) | comm drops the DP, tallies `DROP_INSERTERQ` |
+| `shared.coll_q` | every inserter | every walker | `CollisionQueue` (mutex, bounded) | `coll_queue_capacity` (8192) | inserter drops the candidate, tallies `DROP_COLL` |
+| `ThreadContext::state` | comm and the thread itself (thread 0's: itself alone) | the other side | `atomic<int>` | | see §3.3 |
+| `ThreadContext::ctr` | the thread (the comm thread's own drops in `ctx[0]`) | comm | plain `u64[N_COUNTERS]`, no atomics, see §3.4 | | |
+| `SharedContext::i`, `root_seed`, `stop` | comm (thread 0) | everyone | plain `u64`, published by an OpenMP barrier | | |
+| `SharedContext::hll` | any walker | comm, after the round | `atomic<u8>[HLL_REGISTERS]`, CAS-max per register, relaxed, see §3.4 | | never full |
+| `SharedContext::shards[r]` | inserter `r` | inserter `r` | `PcsDict`: built, probed and flushed by its inserter alone | `w_shard` slots | a dictionary: a full slot is overwritten |
+| `SharedContext::golden` | any walker | comm | mutex + `atomic<bool>` flag | | first one wins |
+
+Where state lives, per rank: private to a worker thread and never touched by the comm
+thread, a local of that thread's function; specific to one thread but also touched by
+the comm thread (`role`, `state`, `ctr`, the SPSC queue), its `ThreadContext`; common
+to all threads, the `SharedContext` (the round header, the `ctx` and `shards` tables,
+`coll_q`, the HyperLogLog, the golden pair), one per rank, a local of `run()`; private
+to the comm thread (MPI buffers, requests, the controller), a member of `CommThread`.
+Every counter, the comm thread's own included, is in a `ThreadContext`, so that the
+node's tallies are one loop with no special case (§3.4); the shards are in the
+`SharedContext` although only their inserter touches them, because zeroing them may
+one day be collective.
 
 Each SPSC queue belongs to the `ThreadContext` of its worker side (the walker, or
 the inserter), which builds it once that thread is pinned (§4.1).  SPSC capacities are rounded up to a
@@ -226,7 +252,8 @@ of a round (§4.5, step 2).
 
 ### 3.2 The collision queue
 
-`CollisionCandidate` is what an inserter hands to the walkers on a dictionary hit:
+`CollisionCandidate` is what an inserter hands to the walkers, through
+`SharedContext::coll_q`, on a dictionary hit:
 
 | field | meaning |
 |---|---|
@@ -264,20 +291,49 @@ point pushed between the two checks is still probed before it goes quiet.  All s
 loads are acquire, all stores release.  Every thread resets itself to `RUNNING` at the
 top of the next round.
 
+The comm thread's own `state` (`ctx[0]->state`) is the phase of its round loop (§4.3,
+§4.5).  It alone reads and writes it (relaxed), and no worker ever sees these values:
+
+```
+comm:      RUNNING -> COLLECTING -> FLUSHING -> WAITING -> DRAINING_INSERTERS -> DRAINING_WALKERS -> QUIESCENT
+```
+
+| state | the node is | left when (§4.5) |
+|---|---|---|
+| `RUNNING` | in its steady state | the end-of-round signal has arrived (step 1) |
+| `COLLECTING` | routing what the walkers, told to `HOLD`, left in their queues | every walker is `HELD` and every walker queue is empty (step 2) |
+| `FLUSHING` | sending its partial output buffers | nothing is left to send and every `Isend` has completed; the sentinels go out (steps 3, 4) |
+| `WAITING` | taking delivery until every node's sentinel | `n_sentinels == n_nodes`; the inserters are told to `DRAIN` (steps 5, 6) |
+| `DRAINING_INSERTERS` | waiting for the inserters to empty their queues | every inserter is `QUIESCENT`; the walkers are told to `DRAIN` (steps 6, 7) |
+| `DRAINING_WALKERS` | waiting for the walkers to empty the collision queue | every walker is `QUIESCENT` (step 7) |
+| `QUIESCENT` | done for this round: `comm_round()` runs the epilogue (§4.6) and returns | |
+
 ### 3.4 Statistics and the golden pair
 
-- Every tally of a thread lives in its `Counters ctr`: one `u64[N_COUNTERS]` indexed
-  by `enum counter`, plus the HyperLogLog registers.  The owner writes it with **no
+- Every tally of a thread lives in its `ThreadContext::ctr`: one `u64[N_COUNTERS]`
+  indexed by `enum counter` (`comm.hpp`).  The owner writes it with **no
   synchronisation at all** -- plain increments, no atomics -- and the comm thread's
-  own drops go into `ctx[0]->ctr` the same way.  The comm thread reads them twice.
-  During the round, `CommThread::snapshot()` sums the arrays of every thread after a
-  `#pragma omp flush`, to build a progress report: it sees whatever has reached
-  memory, so a count may lag by a unit or two, which is fine for a report.  After the
-  end-of-round OpenMP barrier the values are exact: they are merged across threads,
-  reduced across nodes, and reset by the comm thread (§4.6).
-- `RoundState::set_golden(i, x0, x1)` takes a mutex, keeps the first triple, and
+  own drops go into `ctx[0]->ctr` the same way: no counter lives anywhere else.  The
+  comm thread reads them twice.  During the round, `CommThread::snapshot()` sums the
+  arrays of every thread after a `#pragma omp flush`, to build a progress report: it
+  sees whatever has reached memory, so a count may lag a little (one bumped once per
+  chunk can sit in a register until the walker's next release store or mutex), which
+  is fine for a report.  Once every worker is `QUIESCENT` the values are exact -- a
+  worker's last increment happens-before its `QUIESCENT` store (release), which the
+  comm thread loaded with acquire (§4.5, steps 6 and 7) -- and they are summed across
+  threads, reduced across nodes, and zeroed by the comm thread (§4.6).
+- The HyperLogLog over the round's collisions is one per node, `SharedContext::hll`:
+  `HLL_REGISTERS == 65 536` `atomic<u8>`.  On every collision a walker calls
+  `SharedContext::found_collision(x0, x1)`: the register is the top 16 bits of the
+  pair's hash, its value the position of the lowest set bit, and a CAS loop raises
+  the register to it and never lowers it (an atomic max).  Relaxed throughout:
+  nobody reads a register before every walker is `QUIESCENT`, when the comm thread
+  copies them out for the `MPI_MAX` reduction and zeroes them; the walkers' release
+  stores of `QUIESCENT` order the registers for its acquire loads.
+- `SharedContext::set_golden(i, x0, x1)` takes a mutex, keeps the first triple, and
   raises `golden_found` with a release store.  The comm thread polls the flag (acquire)
-  every turn of its loop during the round and forwards it as a solution message.
+  every turn of its loop, in every phase of the round, and forwards it as a solution
+  message.
   Neither `golden_found` nor `golden_sent` is ever reset: a golden pair ends the search.
 
 ## 4. Lifecycle and synchronization steps
@@ -287,55 +343,64 @@ top of the next round.
 1. The driver calls `MPI_Init_thread(MPI_THREAD_FUNNELED)`; `run()` refuses a lower
    level.  Every rank must use the same PRNG seed (the driver broadcasts it).
 2. `run()`, on the main thread: `Parameters` is built on every rank from identical
-   inputs (rank and size come from `MPI_Comm_rank/size`); the test-vector `MPI_Bcast`
-   (§2.3) asserts every rank iterates the same function; rank 0 prints the banner.
-   Then what the threads share is built, as locals of `run()`: the per-thread table
-   `ctx` (sized, not filled), the collision queue, the `RoundState`, and the
-   `CommThread` -- thread 0's object, and the main thread *is* thread 0 of the team
-   to come.  Its constructor posts every receive of the engine: `InBuffers` posts its
-   `n_in_buffers` receives, `ControlChannel` attaches the `MPI_Bsend` buffer and posts
-   the end-of-round receive, and on rank 0 `Controller` posts the report and solution
-   receives.  Nothing may `MPI_Bsend` before this, and nothing does.  Nothing big is
+   inputs (rank and size come from `MPI_Comm_rank/size`).  Then the engine's
+   `MPI_Bsend` buffer (§2.2) is attached, as a local of `run()`: MPI has one per
+   process, so whatever the caller had attached is detached first --
+   `MPI_Buffer_detach` waits for that buffer's pending sends -- and remembered, to be
+   put back at the end (§4.7).  Nothing may `MPI_Bsend` before this, and nothing does.
+   The test-vector `MPI_Bcast` (§2.3) asserts every rank iterates the same function;
+   rank 0 prints the banner.  Then what the threads share is built, as locals of
+   `run()`: the `SharedContext` -- the round header and golden slot, the collision
+   queue, the zeroed HyperLogLog, and the `ctx` and `shards` tables, sized but not
+   filled -- and the `CommThread`, thread 0's object: the main thread *is* thread 0 of
+   the team to come.  Its constructor posts every receive of the engine: the
+   `n_in_buffers` point receives and the end-of-round receive itself, and on rank 0
+   the `Controller` it holds posts the report and solution receives.  Nothing big is
    allocated before the team exists: the MPI buffers are a few tens of kB.
 3. The OpenMP team starts.  Each thread pins itself to `thread_cpu[tid]`, **then**
-   builds its `ThreadContext`, which holds what it owns: for a walker its SPSC queue,
-   for an inserter its SPSC queue and its dictionary shard (`PcsDict`, `w_shard`
-   slots, zero-filled).  Allocating after pinning is deliberate: under Linux's
-   first-touch policy a page lands on the NUMA node of the CPU that first writes it,
-   so this puts every object on its owner's node.  **OpenMP barrier** publishes the
-   slots; the comm thread reads them from its first round on.
+   builds its `ThreadContext` into `shared.ctx[tid]` (for a worker, with its SPSC
+   queue), and an inserter also builds its dictionary shard into
+   `shared.shards[tid-1]` (`PcsDict`, `w_shard` slots, zero-filled).  Allocating
+   after pinning is deliberate: under Linux's first-touch policy a page lands on the
+   NUMA node of the CPU that first writes it, so this puts every object on its
+   owner's node.  **OpenMP barrier** publishes both tables; the comm thread reads
+   them from its first round on.
 
 ### 4.2 Round start
 
 1. Every thread sets its own `state = RUNNING`.
 2. **Thread 0 only**, `CommThread::begin_round()`: rank 0 draws `i` and `root_seed`
    and reads `controller.stop`; **`MPI_Bcast` of the 3-word round header** from
-   rank 0.  Every rank stores it into `RoundState`.  On rank 0,
+   rank 0.  Every rank stores it into `SharedContext`.  On rank 0,
    `controller.begin_round()` resets the per-round tallies and `round_closed`, unless
    `stop` is set.
-3. **OpenMP barrier**: publishes `RoundState` to every thread.
+3. **OpenMP barrier**: publishes `SharedContext` to every thread.
 4. If `stop`, every thread leaves the round loop (§4.7).  Otherwise thread 0 enters
    `CommThread::comm_round()`, inserters `inserter_thread()`, walkers `walker_thread()`.
 
 ### 4.3 Steady state
 
-**Comm thread**, one turn of its loop, forever until the end-of-round signal arrives:
+**Comm thread**, one turn of its loop.  The loop runs from the round start until the
+node is quiescent; its body is the same in every phase (the phase is `ctx[0]->state`,
+§3.3), and only the exit test at the end of a turn depends on it:
 
 1. `route_walker_queues()`: pop up to 64 DPs from each walker queue; local points go
    to `deliver_local()`, remote ones to `outbuf.push()`.
-2. `outbuf.poll()`: `MPI_Testsome` on the outgoing sends, releasing finished buffers.
-3. `poll_incoming()`: `MPI_Testsome` on the receive pool; scatter completed buffers to
+2. `poll_incoming()`: `MPI_Testsome` on the receive pool; scatter completed buffers to
    the inserter queues, count sentinels, repost.
-4. `service_control()`: `MPI_Test` the end-of-round receive; if it completed, set
+3. `service_control()`: `MPI_Test` the end-of-round receive; if it completed, set
    `round_over` (and repost it for the next round).  On rank 0, then
-   `controller.service()`: drain the solution receive (each one goes to
-   `handle_solution()`) and the report receive (each one goes to `handle_report()`),
-   then close the round (§2.2) if it is not closed yet and `stop` is raised or
-   `ndp >= points_per_version`.
-5. If `golden_found` and not yet sent: `MPI_Bsend` the solution to rank 0.
-6. Every 256 turns: `snapshot()` the node's tallies (§3.4) and, if the pacing rule
+   `controller.service()`: drain the solution receive (the first solution is kept and
+   `stop` is raised) and the report receive (each report's deltas are added to the
+   round's tallies), then close the round (§2.2) if it is not closed yet and `stop` is
+   raised or `ndp >= points_per_version`: bump `nround`, raise `stop` if
+   `nround >= max_versions`, `TAG_END_ROUND` to every node.
+4. If `golden_found` and not yet sent: `MPI_Bsend` the solution to rank 0.
+5. Every 256 turns: `snapshot()` the node's tallies (§3.4) and, if the pacing rule
    (§2.2) says so, `MPI_Bsend` a progress report with the deltas since the previous one.
-7. If `round_over`: leave the loop and run the drain (§4.5).
+6. The phase's exit test and the step it triggers (§4.5).  In `RUNNING`: if
+   `round_over`, step 1 of the drain -- the walkers are told to `HOLD` and the phase
+   becomes `COLLECTING`.
 
 Nothing in this loop blocks.
 
@@ -350,7 +415,8 @@ then read `state`; if nothing to do, `cpu_relax()`.
 
 **Controller** (inside `service()` on rank 0): a solution is recorded (first one wins)
 and raises `stop`; a progress report adds its deltas; then, once per round, the round
-is closed -- `TAG_END_ROUND` to every node -- as soon as `stop` is raised or
+is closed -- `nround` bumped, `stop` raised if `nround >= max_versions`,
+`TAG_END_ROUND` to every node -- as soon as `stop` is raised or
 `ndp >= points_per_version`.  The live one-line display is refreshed at most every
 0.5 s.
 
@@ -373,45 +439,58 @@ inserter:  key = x / n_inserters, probe the shard
 coll_q  -->  walker: walk both trails, locate the collision, test the pair
                 |  golden
                 v
-          RoundState::set_golden  -->  comm thread  -->  solution to rank 0
+          SharedContext::set_golden  -->  comm thread  -->  solution to rank 0
 ```
 
 ### 4.5 End of round: the drain
 
-Entered by the comm thread when its end-of-round signal has arrived.  The order is
-what makes the round airtight: no thread declares itself finished while something
-can still arrive for it.
+The same loop, phase by phase, from the arrival of the end-of-round signal.  Every
+turn still runs the full body of §4.3 -- routing, delivery, the control channel, the
+golden pair, the paced reports -- and then the exit test of its phase; passing it
+runs the step and moves to the next phase.  The order is what makes the round
+airtight: no thread declares itself finished while something can still arrive for it.
 
-| step | comm thread does | guarantee once it passes |
-|---|---|---|
-| 1 | `state(WALKER) := HOLD` | walkers will stop producing at their next chunk boundary; they keep resolving collisions |
-| 2 | loop { check every walker is `HELD`; `route_walker_queues()`; `outbuf.poll()`; `poll_incoming()`; `service_control()` } until all walkers are `HELD`, the last pass moved nothing, and every walker queue has `head == tail` | every DP this node produced this round has been routed (delivered locally or handed to `OutBuffers`) |
-| 3 | loop { `outbuf.flush_poll()`; `poll_incoming()`; `service_control()` } until nothing is left to send and every `Isend` has completed | every DP bound for another node has left this node.  Receiving continues throughout, so the peers we wait on can complete their sends too |
-| 4 | `outbuf.send_sentinels()` | every node (self included) will learn that we are done sending; the sentinel cannot overtake the data it follows |
-| 5 | loop { `poll_incoming()`; `service_control()` } until `n_sentinels == n_nodes` | every node has finished sending to us, and everything they sent has been scattered to the inserter queues.  Every node was sent its end-of-round signal before rank 0 could even enter its drain, so nobody is waiting on rank 0 here; it keeps digesting reports so the round's tallies cover what the others produced meanwhile |
-| 6 | `state(INSERTER) := DRAIN`; loop { `service_control()` } until all inserters are `QUIESCENT` | every DP of the round has been probed; no new collision candidate can appear |
-| 7 | `state(WALKER) := DRAIN`; loop { `service_control()` } until all walkers are `QUIESCENT` | the collision queue is empty; every candidate of the round has been resolved.  Doing this last is what keeps a golden pair found on the very last candidate from being lost |
+| step | phase | passes when | then | guarantee once it passes |
+|---|---|---|---|---|
+| 1 | `RUNNING` | `round_over` | `state(WALKER) := HOLD`; phase `COLLECTING` | walkers will stop producing at their next chunk boundary; they keep resolving collisions |
+| 2 | `COLLECTING` | every walker is `HELD`, this turn's `route_walker_queues()` moved nothing, and every walker queue has `head == tail` | phase `FLUSHING` | every DP this node produced this round has been routed (delivered locally or handed to `OutBuffers`).  The `HELD` load is acquire and a walker's last push happens-before its `HELD` store, so the queue test that follows sees it; a `HELD` walker never pushes again |
+| 3, 4 | `FLUSHING` | `outbuf.flush_poll()`: nothing left to send, every `Isend` completed | `outbuf.send_sentinels()`; phase `WAITING` | every DP bound for another node has left this node -- receiving went on throughout, so the peers we waited on could complete their sends too -- and every node (self included) will learn that we are done sending; the sentinel cannot overtake the data it follows |
+| 5, 6 | `WAITING` | `n_sentinels == n_nodes` | `state(INSERTER) := DRAIN`; phase `DRAINING_INSERTERS` | every node has finished sending to us, and everything they sent has been scattered to the inserter queues.  Every node was sent its end-of-round signal before rank 0 could even enter its drain, so nobody is waiting on rank 0 here; it keeps digesting reports so the round's tallies cover what the others produced meanwhile |
+| 6, 7 | `DRAINING_INSERTERS` | every inserter is `QUIESCENT` | `state(WALKER) := DRAIN`; phase `DRAINING_WALKERS` | every DP of the round has been probed; no new collision candidate can appear |
+| 7 | `DRAINING_WALKERS` | every walker is `QUIESCENT` | phase `QUIESCENT`: the epilogue (§4.6), then `comm_round()` returns | the collision queue is empty; every candidate of the round has been resolved.  Doing this last is what keeps a golden pair found on the very last candidate from being lost |
 
-The control channel is serviced in every waiting loop: on rank 0 so that the reports
+Running the full body in every phase is harmless.  From `FLUSHING` on the walkers are
+held and their queues empty, so the routing pass moves nothing (asserted).  Past
+`WAITING` no `TAG_POINTS` message of the round remains, and none of the next round can
+exist yet: a node sends round `r+1` points only after the round-`r+1` `Bcast` returns,
+which needs rank 0's round-`r` reductions to complete, i.e. every node past its own
+drain.  The control channel is serviced in every turn: on rank 0 so that the reports
 and solutions of nodes still in their steady state are digested (the round's tallies,
-and `stop` for the next round header), and on every rank because in steps 6 and 7 it is
-the only MPI call, whose progress our sentinels and rank 0's signals need to actually
-leave.  No node's liveness depends on it: every signal of the round has been sent
-before rank 0 can enter its own drain.
+and `stop` for the next round header), and on every rank because its `MPI_Test`s
+drive the progress our sentinels and rank 0's signals need to actually leave.  No
+node's liveness depends on it: every signal of the round has been sent before rank 0
+can enter its own drain.
 
 ### 4.6 Epilogue
 
-1. **OpenMP barrier**: every worker of this node has returned from its round function
-   and all their `Counters` are now exact and safe to read.
-2. Thread 0, `CommThread::end_round()`: merge the `n_threads` `Counters` into one,
-   **`MPI_Reduce` (SUM) of its `N_COUNTERS` words to rank 0**, then **`MPI_Reduce`
-   (MAX) of its HyperLogLog registers**.  On rank 0, `controller.end_round()` prints
-   the round report from the reduced values, folds them into its all-time `Counters`,
-   bumps `nround`, and raises `stop` if `nround >= max_versions`.  Then thread 0 resets
-   every thread's `ctr` and `inbuf.n_sentinels`.  Meanwhile, each inserter thread
-   zeroes its own dictionary shard (`PcsDict::flush`).
-3. **OpenMP barrier**: the next round's `Bcast` may not start before every shard is
-   clean and the tallies are cleared.
+1. Thread 0, at the end of `comm_round()`, once every worker of the node is
+   `QUIESCENT` -- their `ctr` arrays and the node's HyperLogLog are then exact and
+   nobody writes them (§3.4) -- `CommThread::end_round()`: sum the `n_threads` `ctr`
+   arrays (`snapshot()`), copy the registers out of `SharedContext::hll`,
+   **`MPI_Reduce` (SUM) of the `N_COUNTERS` words to rank 0**, then **`MPI_Reduce`
+   (MAX) of the `HLL_REGISTERS` bytes**.  On rank 0, `controller.end_round()` prints
+   the round report from the reduced values and folds them into its all-time `total[]`
+   and `hll[]`; it is printing only -- the round count and `stop` were settled when
+   the round was closed (§2.2).  Then thread 0 zeroes every thread's `ctr`, the node's
+   HyperLogLog and its own
+   `n_sentinels`; nobody touches any of them again before the next round's barrier
+   (§4.2, step 3).
+2. **OpenMP barrier**: every thread of the node is back from its round function.
+   Nothing depends on it; it is an explicit synchronisation point, kept as such.
+3. Each inserter thread zeroes its own dictionary shard
+   (`shared.shards[tid-1]->flush()`).  The shard is its alone, so this needs no
+   synchronisation with anyone, and it is done before the inserter reaches the next
+   round's barrier.
 
 ### 4.7 Termination
 
@@ -419,9 +498,11 @@ When the round header carries `stop`, every thread of every rank leaves the loop
 after the barrier of §4.2 step 3 (no round is armed).  Thread 0 then runs
 `CommThread::finish()`: on rank 0 it packs the solution (`found, i, x0, x1`) and
 prints the final line; every rank **`MPI_Bcast`s the 4-word answer**, then cancels
-its posted receives (`InBuffers::shutdown`, `Controller::shutdown`, a no-op off
-rank 0, then `ControlChannel::shutdown`, which also detaches the `Bsend` buffer).
-`run()` returns the answer on every rank.  The driver calls `MPI_Finalize`.
+its posted receives (the point receives, then `Controller::shutdown`, a no-op off
+rank 0, then the end-of-round receive).  Back in `run()`, the engine's `Bsend`
+buffer is detached -- this waits for its last buffered sends to be out -- and the
+caller's buffer, if there was one (§4.1), is attached again.  `run()` returns the
+answer on every rank.  The driver calls `MPI_Finalize`.
 
 ## 5. Guarantees and loss semantics
 
@@ -450,8 +531,8 @@ inserter-queue / collision-queue`).
   the inserters stop.
 - Every collision candidate of round `r` is resolved by a round-`r` walker before the
   walkers go quiescent (drain step 7); `service_collision` asserts `c.i == round.i`.
-- The dictionary is empty at the start of every round (inserters flush between the
-  two epilogue barriers).
+- The dictionary is empty at the start of every round (each inserter flushes its
+  shard after its round, before the next round's barrier).
 - The controller sends exactly one message per round, the end-of-round signal to every
   node, and answers nothing; a round can end no other way, and a node leaves the
   steady state exactly once per round.
@@ -461,9 +542,10 @@ inserter-queue / collision-queue`).
 - The comm thread never blocks on point-to-point MPI: every send is `Isend` (tested,
   never waited) or `Bsend` (completes locally); every receive is an always-posted
   `Irecv` that is only ever `Test`ed.
-- While waiting for its own sends to complete (step 3) or for the peers' sentinels
-  (step 5), a node keeps receiving and keeps servicing the control channel, so two
-  nodes waiting on each other both make progress.
+- The loop body never changes: while waiting for its own sends to complete (step 3),
+  for the peers' sentinels (step 5) or for its own workers (steps 6, 7), a node keeps
+  receiving and keeps servicing the control channel, so two nodes waiting on each
+  other both make progress.
 - Rank 0 closes the round for every node in one go, and observes its own signal only on
   a later turn, so by the time it enters its own drain every node has been sent its
   signal.
@@ -472,26 +554,31 @@ inserter-queue / collision-queue`).
   end-of-round signal and has confirmed with a sentinel; so every rank reaches them.
 - Inside a node, no thread ever waits on a queue; the only waits are the comm thread
   spinning on `state` values that the worker threads set for themselves at chunk
-  boundaries, and the three OpenMP barriers per round, which every thread reaches
-  unconditionally once its round function returns.
+  boundaries, and the two OpenMP barriers per round (§4.2 step 3, §4.6 step 2),
+  which every thread reaches unconditionally once its round function returns.
 
 ## 6. Known windows
 
 Two places where the protocol is slightly weaker than the rules above suggest.  Both
 are benign for the search itself; they are listed so nobody rediscovers them.
 
-- **A golden pair found during the drain is reported one round late.**  The comm
-  thread forwards `golden_found` only inside its steady-state loop (§4.3 step 5);
-  the drain loops service the control channel but do not check the flag.  Walkers
-  keep resolving candidates through drain steps 1 through 7, so a pair found there
-  is sent at the first turn of the *next* round's loop, after which the controller
-  raises `stop`, closes the round for everyone, and the search ends one round
-  later than it could.  If that drain belonged to the last permitted round
-  (`max_versions`), no next round starts and the pair is never reported.
+- **A golden pair found late in the drain can be reported one round late.**  The
+  comm thread forwards `golden_found` in every phase (§4.3 step 4), so a pair found
+  while the round winds down -- walkers keep resolving candidates through drain steps
+  1 to 7 -- is sent at once.  But rank 0 digests solutions in `service()`, which runs
+  in every phase of its own round and not between rounds: if rank 0 has already left
+  its drain when the message lands, it is matched at the first turn of the *next*
+  round, after which the controller raises `stop`, closes the round for everyone, and
+  the search ends one round later than it could.  If that round was the last
+  permitted one (`max_versions`), no next round starts and the pair is never
+  reported.  A final `service()` in `finish()` would not close this reliably: MPI does
+  not order a node's `Bsend` against its later `MPI_Reduce` contribution, so rank 0
+  cannot know the message has arrived.
 - **Reports are one-way, so the round's `reported[]` tallies are approximate.**  A
-  node keeps reporting until its end-of-round signal is matched, and the points it
-  finds between its last report and that moment are never reported; on top of that a
-  snapshot reads the workers' tallies without synchronisation (§3.4).  Only the live
+  node keeps reporting until its comm thread goes quiescent, so what is never
+  reported is the delta between its last report and that moment: whatever its last
+  chunks still produced, and up to a `ping_delay` of drain-time tallies; on top of
+  that a snapshot reads the workers' tallies without synchronisation (§3.4).  Only the live
   display and the decision to close the round rest on them; the reductions of §4.6
   count everything exactly, and the round report prints those.  Further, a report and
   the same node's later sentinel match different receives, so the MPI standard does

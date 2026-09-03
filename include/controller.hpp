@@ -4,7 +4,6 @@
 #include <cmath>
 #include <mpi.h>
 
-#include "counters.hpp"
 #include "parameters.hpp"
 #include "comm.hpp"
 
@@ -20,8 +19,10 @@ namespace mitm {
  * service() tests them, digests what arrived, and closes the round -- one zero-length
  * TAG_END_ROUND to every node, itself included -- once the reported DP count has
  * reached points_per_version or a solution has come in.  That is the only message the
- * controller ever sends.  The object exists on every rank so that the node code stays
- * uniform, but only rank 0 posts the receives; elsewhere it is inert.
+ * controller ever sends.  Closing the round is also where the search's own state
+ * advances: the round count, and `stop` once the last permitted round is over.  The
+ * rest of the class is printing.  The object exists on every rank so that the node
+ * code stays uniform, but only rank 0 posts the receives; elsewhere it is inert.
  */
 class Controller {
 	MPI_Comm comm;
@@ -33,8 +34,8 @@ class Controller {
 public:
 	const Parameters &params;
 
-	u64 nround = 0;
-	u64 stop = 0;
+	u64 nround = 0;                                /* rounds closed so far; the one in progress is the next */
+	u64 stop = 0;                                  /* no next round: solution found, or max_versions reached */
 	optional<tuple<u64,u64,u64>> solution;         /* (i, x0, x1) */
 
 	/* this round, as the progress reports add up so far.  Approximate (§6 of
@@ -44,8 +45,10 @@ public:
 	bool round_closed = false;                     /* TAG_END_ROUND sent to every node */
 	double round_start = 0, last_display = 0;
 
-	/* all-time: every round's reduction, merged (counts summed, HyperLogLog maxed) */
-	Counters total;
+	/* all-time: every round's reduction folded in -- counts summed, HyperLogLog
+	   registers maxed.  In-class initialisers: the constructor returns early off rank 0. */
+	u64 total[N_COUNTERS] = {0};
+	u8 hll[HLL_REGISTERS] = {0};
 	double start_time;
 
 	Controller(const Parameters &p)
@@ -67,38 +70,6 @@ public:
 		last_display = round_start;
 	}
 
-
-	/* Digest one progress report: its deltas are added to the round's tallies. */
-	void handle_report(const u64 r[N_COUNTERS])
-	{
-		for (int k = 0; k < N_COUNTERS; k++)
-			reported[k] += r[k];
-		display();
-	}
-
-	/* A node found the golden pair.  The first one wins, and the search ends. */
-	void handle_solution(const u64 s[SOL_NWORDS])
-	{
-		if (not solution)
-			solution = optional(tuple(s[SOL_I], s[SOL_X0], s[SOL_X1]));
-		stop = 1;
-	}
-
-	/*
-	 * Tell every node, ourselves included, that the round is over.  Exactly once per
-	 * round: the signal is matched by a receive that names source 0 and this tag, so
-	 * successive signals are non-overtaking and a node consumes exactly one per round
-	 * (it is its only way out of the steady state) -- a second one would be consumed in
-	 * the *next* round and end it at once.  Not to be confused with end_round(), the
-	 * statistics, which run once everybody has drained.
-	 */
-	void close_round()
-	{
-		round_closed = true;
-		for (int r = 0; r < params.n_nodes; r++)
-			MPI_Bsend(NULL, 0, MPI_UINT64_T, r, TAG_END_ROUND, comm);
-	}
-
 	/*
 	 * One turn of the controller: take delivery of everything that has reached rank 0
 	 * on the control channel, then decide.  Both inbound messages are one-way and their
@@ -117,7 +88,10 @@ public:
 			MPI_Test(&req_solution, &flag, MPI_STATUS_IGNORE);
 			if (!flag)
 				break;
-			handle_solution(solution_buf);
+			/* a node found the golden pair: the first one wins, and the search ends */
+			if (not solution)
+				solution = optional(tuple(solution_buf[SOL_I], solution_buf[SOL_X0], solution_buf[SOL_X1]));
+			stop = 1;
 			MPI_Irecv(solution_buf, SOL_NWORDS, MPI_UINT64_T, MPI_ANY_SOURCE, TAG_SOLUTION, comm, &req_solution);
 		}
 
@@ -125,12 +99,30 @@ public:
 			MPI_Test(&req_report, &flag, MPI_STATUS_IGNORE);
 			if (!flag)
 				break;
-			handle_report(report_buf);
+			/* a progress report: its deltas are added to the round's tallies */
+			for (int k = 0; k < N_COUNTERS; k++)
+				reported[k] += report_buf[k];
+			display();
 			MPI_Irecv(report_buf, N_COUNTERS, MPI_UINT64_T, MPI_ANY_SOURCE, TAG_REPORT, comm, &req_report);
 		}
 
-		if (not round_closed && (stop || reported[N_DP] >= params.points_per_version))
-			close_round();
+		/* Close the round: tell every node, ourselves included, that it is over.  Exactly
+		   once per round: the signal is matched by a receive that names source 0 and this
+		   tag, so successive signals are non-overtaking and a node consumes exactly one per
+		   round (it is its only way out of the steady state) -- a second one would be
+		   consumed in the *next* round and end it at once.  This is also where the search
+		   decides whether there is a next round: give up after max_versions of them, and
+		   the engine reports "not found".  `stop` goes out in the next round header, which
+		   rank 0 broadcasts once everybody has drained.  Not to be confused with
+		   end_round(), the statistics, printed at that point. */
+		if (not round_closed && (stop || reported[N_DP] >= params.points_per_version)) {
+			round_closed = true;
+			nround += 1;
+			if (nround >= params.max_versions)
+				stop = 1;
+			for (int r = 0; r < params.n_nodes; r++)
+				MPI_Bsend(NULL, 0, MPI_UINT64_T, r, TAG_END_ROUND, comm);
+		}
 	}
 
 	/* cancel the posted receives; a no-op off rank 0, where none were posted */
@@ -160,68 +152,70 @@ public:
 		human_format(dp_rate / params.theta / params.n_walkers, hrate);
 		human_format(ndp * DP_WORDS * sizeof(u64) / params.n_nodes / delta, hnrate);
 		human_format((double) reported[N_PROBE] / params.n_inserters / delta, hprobe);
-		printf("\rRound %" PRId64 ":  %.1fs (%.1f%%, ETA %.1fs).  %.2f*w #DP.  %s #f/s per walker.  %s probe/s per inserter.  node-->%sB/s   ",
-			nround, delta, 100. * completion,
+		printf("\rRound %" PRId64 ":  %.1fs (%.1f%%, ETA %.1fs).  %.2f*w #DP.  %s #f/s per walker.  "
+		       "%s probe/s per inserter.  node-->%sB/s   ",
+			nround + 1, delta, 100. * completion,
 			(completion > 0) ? delta * (1 - completion) / completion : 0.,
 			(double) ndp / params.w, hrate, hprobe, hnrate);
 		fflush(stdout);
 	}
 
 	/*
-	 * `r` is the round's Counters, merged over every thread of every node: the SUM
-	 * reduction of the counts and the MAX reduction of the HyperLogLog registers.
-	 * Exact, unlike `reported`, so everything printed here comes from it; the
-	 * running totals live here too.
+	 * The round report, once everybody has drained.  `r` is the round's counters,
+	 * summed over every thread of every node (the MPI_SUM reduction), `hll_round` the
+	 * MPI_MAX reduction of the nodes' HyperLogLog registers.  Exact, unlike `reported`,
+	 * so everything printed here comes from them; the running totals live here too.
+	 * Printing only: the round was closed, counted, and the next one decided on, in
+	 * service().
 	 */
-	void end_round(const Counters &r)
+	void end_round(const u64 r[N_COUNTERS], const u8 hll_round[HLL_REGISTERS])
 	{
 		double delta = wtime() - round_start;
-		total.merge(r);
+		for (int k = 0; k < N_COUNTERS; k++)
+			total[k] += r[k];
+		for (int k = 0; k < HLL_REGISTERS; k++)
+			if (hll[k] < hll_round[k])
+				hll[k] = hll_round[k];
 
-		u64 ndp = r.c[N_DP];
+		u64 ndp = r[N_DP];
 		char hrate[8], hnrate[8];
-		human_format((double) r.c[N_EVAL] / params.n_walkers / delta, hrate);
+		human_format((double) r[N_EVAL] / params.n_walkers / delta, hrate);
 		human_format((double) ndp * DP_WORDS * sizeof(u64) / params.n_nodes / delta, hnrate);
 
 		printf("\n");
 		printf("Round %" PRId64 ".  %.1fs.  #DP %.2f*w (total 2^%.2f).  #coll %.2f*w (total 2^%.2f).  "
 		       "Total #f=2^%.3f.  %s #f/s per walker.  node-->%sB/s\n",
 			nround, delta,
-			(double) ndp / params.w, std::log2((double) total.c[N_DP] ? (double) total.c[N_DP] : 1.),
-			(double) r.c[N_COLLISIONS] / params.w,
-			std::log2((double) total.c[N_COLLISIONS] ? (double) total.c[N_COLLISIONS] : 1.),
-			std::log2((double) total.c[N_EVAL] ? (double) total.c[N_EVAL] : 1.), hrate, hnrate);
+			(double) ndp / params.w, std::log2((double) total[N_DP] ? (double) total[N_DP] : 1.),
+			(double) r[N_COLLISIONS] / params.w,
+			std::log2((double) total[N_COLLISIONS] ? (double) total[N_COLLISIONS] : 1.),
+			std::log2((double) total[N_EVAL] ? (double) total[N_EVAL] : 1.), hrate, hnrate);
 
 		if (ndp > 0) {
-			double avglen = (double) r.c[N_POINTS_TRAILS] / ndp;
+			double avglen = (double) r[N_POINTS_TRAILS] / ndp;
 			printf("            %.2f avg trail length", avglen);
-			if (r.c[N_COLLISIONS] > 0 && avglen > 0)
+			if (r[N_COLLISIONS] > 0 && avglen > 0)
 				printf(" (x%.2f & x%.2f colliding)",
-					(double) r.c[COLLIDING_LEN_MIN] / r.c[N_COLLISIONS] / avglen,
-					(double) r.c[COLLIDING_LEN_MAX] / r.c[N_COLLISIONS] / avglen);
+					(double) r[COLLIDING_LEN_MIN] / r[N_COLLISIONS] / avglen,
+					(double) r[COLLIDING_LEN_MAX] / r[N_COLLISIONS] / avglen);
 			printf(".  %.2f%% probe failure.  %.2f%% walk-robinhood.  %.2f%% walk-noncolliding.  "
 			       "%.2f%% same-value.  %.2f%% DP failure\n",
-				100. * r.c[BAD_PROBE] / ndp, 100. * r.c[BAD_WALK_ROBINHOOD] / ndp,
-				100. * r.c[BAD_WALK_NONCOLLIDING] / ndp, 100. * r.c[BAD_COLLISION] / ndp,
-				100. * r.c[BAD_DP] / ndp);
+				100. * r[BAD_PROBE] / ndp, 100. * r[BAD_WALK_ROBINHOOD] / ndp,
+				100. * r[BAD_WALK_NONCOLLIDING] / ndp, 100. * r[BAD_COLLISION] / ndp,
+				100. * r[BAD_DP] / ndp);
 		}
 
-		if (r.c[DROP_WALKERQ] | r.c[DROP_OUT] | r.c[DROP_INSERTERQ] | r.c[DROP_COLL])
+		if (r[DROP_WALKERQ] | r[DROP_OUT] | r[DROP_INSERTERQ] | r[DROP_COLL])
 			printf("            DROPPED  %" PRId64 " walker-queue / %" PRId64 " output-buffer / "
 			       "%" PRId64 " inserter-queue / %" PRId64 " collision-queue\n",
-				r.c[DROP_WALKERQ], r.c[DROP_OUT], r.c[DROP_INSERTERQ], r.c[DROP_COLL]);
+				r[DROP_WALKERQ], r[DROP_OUT], r[DROP_INSERTERQ], r[DROP_COLL]);
 
-		u64 E_i = Counters::distinct_collisions_estimation(r.hll);
-		u64 E = Counters::distinct_collisions_estimation(total.hll);
+		u64 E_i = SharedContext::distinct_collisions_estimation(hll_round);
+		u64 E = SharedContext::distinct_collisions_estimation(hll);
 		printf("            #distinct coll (this i / total) %.02f*w / 2^%.2f\n",
 			(double) E_i / params.w, std::log2((double) E ? (double) E : 1.));
 		printf("\n");
 		fflush(stdout);
-
-		nround += 1;
-		/* give up after max_versions rounds; the engine then reports "not found" */
-		if (nround >= params.max_versions)
-			stop = 1;
 	}
 
 	/*

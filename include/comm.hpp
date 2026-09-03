@@ -7,13 +7,29 @@
 #include <vector>
 #include <array>
 #include <memory>
+#include <cmath>
+#include <cassert>
+#include <strings.h>          // ffsll, for the HyperLogLog
 
-#include "counters.hpp"
+#include "tools.hpp"
 #include "parameters.hpp"
 #include "spsc.hpp"
-#include "dict.hpp"
 
 namespace mitm {
+
+class PcsDict;   /* inserter.hpp.  SharedContext::shards holds pointers to the shards, and the one
+                    SharedContext is built and destroyed in run(), where the class is complete. */
+
+/*
+ * Where state lives, per rank.  Private to a worker thread and never touched by the
+ * comm thread: a local of that thread's function.  Specific to one thread but also
+ * touched by the comm thread: its ThreadContext.  Common to all threads: the
+ * SharedContext.  Private to the comm thread: a member or a local of CommThread
+ * (engine.hpp).  Two refinements: every counter, the comm thread's own included,
+ * is in a ThreadContext, so that the node's tallies are one loop with no special
+ * case; and the dictionary shards are in the SharedContext although only their
+ * inserter touches them today, because zeroing them may one day be collective.
+ */
 
 
 /*
@@ -40,7 +56,7 @@ struct CollisionCandidate {
 /*
  * Bounded, mutex-protected.  Inserter threads push; walker threads pop and pay for
  * the walk.  A full queue drops the candidate and tells the pusher, which keeps the
- * tally (DROP_COLL in its Counters) -- the queue itself counts nothing.  The
+ * tally (DROP_COLL in its ThreadContext) -- the queue itself counts nothing.  The
  * emptiness probe is a relaxed atomic so walkers stay off the lock on the common
  * path.
  */
@@ -85,7 +101,42 @@ public:
 };
 
 
-/******************************** round state *********************************/
+/********************************** counters **********************************/
+
+/*
+ * Every diagnostic tally of the engine, by index.  One array of u64 per thread
+ * (ThreadContext::ctr) holds them all, whichever thread produces them, so that the
+ * same layout serves for the per-thread tallies, the progress reports (deltas,
+ * TAG_REPORT) and the end-of-round MPI_Reduce.
+ *
+ * None of this is part of the attack: it is what tells us whether the parameters are
+ * any good.
+ */
+enum counter {
+	/* walkers */
+	N_EVAL = 0,             /* evaluations of the mixing function, by walking or by resolving */
+	N_DP,                   /* distinguished points found */
+	N_POINTS_TRAILS,        /* sum of the lengths of the trails that reached a DP */
+	N_COLLISIONS,           /* collisions located */
+	COLLIDING_LEN_MIN,      /* sum of the shorter length of each colliding pair */
+	COLLIDING_LEN_MAX,      /* ... and of the longer one */
+	BAD_DP,                 /* trail gave up before reaching a distinguished point */
+	BAD_COLLISION,          /* the two trails "collide" on the same value */
+	BAD_WALK_ROBINHOOD,     /* one trail is a suffix of the other */
+	BAD_WALK_NONCOLLIDING,  /* dictionary false positive: the trails never meet */
+	DROP_WALKERQ,           /* DP dropped: the queue to the comm thread was full */
+	/* inserters */
+	N_PROBE,                /* dictionary probes retired */
+	BAD_PROBE,              /* dictionary slot was empty, or held a different key */
+	DROP_COLL,              /* candidate dropped: the collision queue was full */
+	/* comm thread */
+	DROP_OUT,               /* DP dropped: the outgoing MPI buffer was still in flight */
+	DROP_INSERTERQ,         /* DP dropped: a local inserter's queue was full */
+	N_COUNTERS
+};
+
+
+/******************************** thread state ********************************/
 
 /*
  * How a round is wound down.  Each worker thread carries its own state; the comm
@@ -100,22 +151,125 @@ public:
  * the comm thread needs because a walker only looks at its state once per chunk --
  * an "empty" walker queue mid-chunk is not an idle one.  DRAIN means "nothing more
  * will ever arrive for you: finish what you hold and go quiet".
+ *
+ * The comm thread's own state is the phase of its round loop (CommThread::comm_round
+ * in engine.hpp), which it alone reads and writes:
+ *
+ *   comm:     RUNNING -> COLLECTING -> FLUSHING -> WAITING -> DRAINING_INSERTERS
+ *                     -> DRAINING_WALKERS -> QUIESCENT
+ *
+ * The order is what makes a round airtight: no thread declares itself finished while
+ * something can still arrive for it.  RUNNING is the steady state, until the
+ * end-of-round signal; then the walkers are told to HOLD.  COLLECTING waits for them
+ * all to be HELD and routes what they left in their queues.  FLUSHING ships the
+ * partial output buffers and, once every send has completed, tells every node
+ * (itself included) that we are done sending.  WAITING takes delivery until every
+ * node has said the same, so nothing can arrive for an inserter any more, and the
+ * inserters are told to DRAIN.  DRAINING_INSERTERS waits for them to be QUIESCENT:
+ * no new collision candidate can appear, so the walkers are told to DRAIN in turn.
+ * DRAINING_WALKERS waits for the walkers to be QUIESCENT -- last, which is what keeps
+ * a golden pair found on the very last candidate from being lost.  Then the comm
+ * thread is QUIESCENT itself and its round is over.
  */
-enum thread_state {RUNNING, HOLD, HELD, DRAIN, QUIESCENT};
+enum thread_state {
+	RUNNING, HOLD, HELD, DRAIN, QUIESCENT,                                /* workers (RUNNING, QUIESCENT: everyone) */
+	COLLECTING, FLUSHING, WAITING, DRAINING_INSERTERS, DRAINING_WALKERS   /* comm thread only */
+};
 
-struct RoundState {
-	/* written by the comm thread, read by everyone after an omp barrier */
+
+/******************************* thread context *******************************/
+
+/*
+ * What one thread owns that the comm thread also touches: its role, its wind-down
+ * state, its tallies and, for a worker, its SPSC queue.  One per thread, the comm
+ * thread's included (it has no queue; its tallies are here like everyone's, and its
+ * state is the phase of its round loop).
+ */
+struct alignas(64) ThreadContext {
+	const int role;                 /* the comm thread dispatches on it */
+
+	/* see thread_state above: the comm thread asks, the thread answers.  Thread 0's
+	   holds the phase of its own round loop, which nobody else reads. */
+	std::atomic<int> state;
+
+	/* Every tally of this thread, written by it alone with no synchronisation
+	   (plain u64, see enum counter).  The comm thread sums them over the threads
+	   after an `omp flush` for its progress reports, where a little staleness does
+	   not matter, and reads them exactly once every worker is QUIESCENT (the store
+	   that says so is a release, and it loads it with acquire), when it also clears
+	   them. */
+	u64 ctr[N_COUNTERS] = {};
+
+	/* the thread's own queue.  Null for the comm thread, which has none. */
+	std::unique_ptr<SPSCQueue> q;      /* walker: to the comm thread.  inserter: from it */
+
+	/* Built by the thread it describes, once that thread is pinned (see run() in
+	   engine.hpp): the queue's buffer is then that thread's first touch, which is
+	   what places it on its NUMA node. */
+	ThreadContext(int role, const Parameters &params)
+		: role(role), state(RUNNING)
+	{
+		if (role == WALKER)
+			q = std::make_unique<SPSCQueue>(params.walker_queue_capacity);
+		else if (role == INSERTER)
+			q = std::make_unique<SPSCQueue>(params.inserter_queue_capacity);
+	}
+};
+
+
+/******************************* shared context *******************************/
+
+static constexpr int HLL_REGISTERS = 0x10000;
+
+/*
+ * What every thread of the node shares: the round header, the per-thread table, the
+ * dictionary shards, the collision queue, the HyperLogLog and the golden pair.  One
+ * per rank, a local of run(), built before the team.  The two tables are sized here
+ * and filled inside the team by each thread once it is pinned (NUMA first touch, see
+ * run()); the shards are here rather than in their inserter's ThreadContext because
+ * zeroing them may one day be collective.
+ */
+struct SharedContext {
+	/* round header: written by the comm thread, read by everyone after an omp barrier */
 	u64 i = 0;
 	u64 root_seed = 0;
 	u64 stop = 0;
 
+	/* one slot per thread, indexed by tid.  Only the comm thread and run() index it;
+	   a worker is handed its own slot by reference and never looks at the others. */
+	std::vector<std::unique_ptr<ThreadContext>> ctx;
 
+	/* the dictionary shards: shard r belongs to inserter r, thread 1 + r, which alone
+	   builds, probes and flushes it (today) */
+	std::vector<std::unique_ptr<PcsDict>> shards;
+
+	/* inserters push, walkers pop */
+	alignas(64) CollisionQueue coll_q;
+
+	/*
+	 * HyperLogLog over this round's collisions, one per node, used to estimate how
+	 * many of them are DISTINCT -- the quantity that actually drives the attack.  Any
+	 * walker raises a register with a compare-and-swap (an atomic max); nobody reads
+	 * them before every walker is QUIESCENT, when the comm thread copies them out for
+	 * the MPI_MAX reduction and zeroes them.  Relaxed throughout, for that reason: the
+	 * walkers' QUIESCENT stores (release) order them for the comm thread's acquire.
+	 * C++17: a default-constructed std::atomic is NOT zero, hence the loop in the
+	 * constructor.
+	 */
+	alignas(64) std::atomic<u8> hll[HLL_REGISTERS];
+	static_assert(std::atomic<u8>::is_always_lock_free, "the HyperLogLog registers must be lock-free");
+
+	/* the golden pair: any walker writes (the first one wins), the comm thread polls */
 	std::mutex golden_mtx;
 	std::atomic<bool> golden_found;
 	u64 golden[3];              /* i, x0, x1: the TAG_SOLUTION payload (solution_field) */
 
-	RoundState() : golden_found(false)
+	SharedContext(const Parameters &params)
+		: ctx(params.n_threads), shards(params.inserters_per_node),
+		  coll_q(params.coll_queue_capacity), golden_found(false)
 	{
+		for (int k = 0; k < HLL_REGISTERS; k++)
+			hll[k].store(0, std::memory_order_relaxed);
 		golden[0] = golden[1] = golden[2] = 0;
 	}
 
@@ -129,47 +283,43 @@ struct RoundState {
 		golden[2] = x1;
 		golden_found.store(true, std::memory_order_release);
 	}
-};
 
-
-/******************************* thread context *******************************/
-
-/*
- * What a worker thread owns -- its SPSC queue and, for an inserter, its dictionary
- * shard -- plus the few fields the comm thread also touches.  One per thread, the
- * comm thread's included (it owns neither a queue nor a shard: its objects are the
- * CommThread's; what it does own here is its tallies).
- */
-struct alignas(64) ThreadContext {
-	const int role;                 /* the comm thread dispatches on it */
-	const int cpu;                  /* where the thread pinned itself; rank 0 prints the map */
-
-	/* see thread_state above: the comm thread asks, the thread answers */
-	std::atomic<int> state;
-
-	/* Every tally of this thread, written by it alone with no synchronisation
-	   (plain u64).  The comm thread sums them over the threads after an `omp flush`
-	   for its progress reports, where a stale unit or two does not matter, and reads
-	   them exactly after the end-of-round barrier, when it also clears them. */
-	Counters ctr;
-
-	/* the thread's own.  Null for the roles that have none: the comm thread has no
-	   queue, only an inserter has a shard.  Read-only pointers once built. */
-	std::unique_ptr<SPSCQueue> q;      /* walker: to the comm thread.  inserter: from it */
-	std::unique_ptr<PcsDict> dict;     /* inserter: its shard of the dictionary */
-
-	/* Built by the thread it describes, once that thread is pinned (see run() in engine.hpp):
-	   the queue's buffer and the shard's zero-fill are then that thread's first touch,
-	   which is what places them on its NUMA node. */
-	ThreadContext(int role, int cpu, const Parameters &params)
-		: role(role), cpu(cpu), state(RUNNING)
+	/*
+	 * A collision (x0, x1), x0 < x1: raise its HyperLogLog register.  The register is
+	 * the top 16 bits of the pair's hash, its value the position of the lowest set
+	 * bit.  The CAS loop only ever raises a register, and stops as soon as it sees
+	 * one at least as high.
+	 */
+	void found_collision(u64 x0, u64 x1)
 	{
-		if (role == WALKER) {
-			q = std::make_unique<SPSCQueue>(params.walker_queue_capacity);
-		} else if (role == INSERTER) {
-			q = std::make_unique<SPSCQueue>(params.inserter_queue_capacity);
-			dict = std::make_unique<PcsDict>(params.jbits, params.w_shard);
-		}
+		u64 h = murmur128(x0, x1);
+		u64 idx = h >> 48;
+		u8 rho = (u8) ffsll(h);
+		u8 cur = hll[idx].load(std::memory_order_relaxed);
+		while (cur < rho && not hll[idx].compare_exchange_weak(cur, rho, std::memory_order_relaxed))
+			;                              /* a failure reloaded cur: go round again */
+	}
+
+	/* the HyperLogLog estimator, on a plain copy of the registers (one round's, or the
+	   controller's all-time) */
+	static u64 distinct_collisions_estimation(const u8 h[HLL_REGISTERS])
+	{
+		double acc = 0;
+		double alpha = 0.7213 / (1 + 1.079 / HLL_REGISTERS);
+		for (int i = 0; i < HLL_REGISTERS; i++)
+			acc += std::ldexp(1.0, -(int) h[i]);       /* 2^-h[i]; (1 << h[i]) overflows past 31 */
+		double E = alpha * ((double) HLL_REGISTERS * HLL_REGISTERS) / acc;
+		if (E >= 2.5 * HLL_REGISTERS)
+			return E;
+		// low cardinality, potential correction
+		int V = 0;
+		for (int i = 0; i < HLL_REGISTERS; i++)
+			if (h[i] == 0)
+				V += 1;
+		if (V == 0)
+			return E;
+		else
+			return HLL_REGISTERS * std::log((double) HLL_REGISTERS / V);
 	}
 };
 
@@ -184,6 +334,12 @@ struct alignas(64) ThreadContext {
  *
  * Because the transmitting data lives in `outgoing` and push() only ever touches
  * `ready`, a buffer that is still in flight simply cannot be handed to MPI twice.
+ *
+ * The sends are never polled for their own sake: rotate() tests a request exactly
+ * when its slot is wanted, and flush_poll() at the end of the round.  MPI progress
+ * is per process, not per request -- every MPI_Test the comm loop makes on its
+ * receives drives these sends too -- so a periodic MPI_Testsome over n_nodes
+ * requests would only cost a pass over them on the single-threaded stage.
  */
 class OutBuffers {
 	using Buffer = std::vector<u64>;
@@ -194,16 +350,6 @@ class OutBuffers {
 	std::vector<Buffer> ready;               /* being filled */
 	std::vector<Buffer> outgoing;            /* in flight */
 	std::vector<MPI_Request> req;            /* for the OUTGOING buffers */
-	std::vector<int> done_idx;
-
-	void start_send(int dst)
-	{
-		if (outgoing[dst].empty())
-			return;                          /* never send empty: that is the sentinel */
-		MPI_Isend(outgoing[dst].data(), outgoing[dst].size(), MPI_UINT64_T, dst, TAG_POINTS,
-		          comm, &req[dst]);
-		bytes_sent += outgoing[dst].size() * sizeof(u64);
-	}
 
 	/* move `ready` out, if the previous send is done.  false == still busy */
 	bool rotate(int dst)
@@ -212,20 +358,20 @@ class OutBuffers {
 			int flag = 0;
 			MPI_Test(&req[dst], &flag, MPI_STATUS_IGNORE);
 			if (!flag)
-				return false;
+				return false;                /* the outgoing buffer is still being sent */
 		}
-		outgoing[dst].clear();               /* clear BEFORE the swap: leaves ready empty */
+		/* The outgoing buffer is available */
+		outgoing[dst].clear();
 		std::swap(ready[dst], outgoing[dst]);
-		start_send(dst);
+		if (not outgoing[dst].empty())       /* never send empty: that is the sentinel */
+			MPI_Isend(outgoing[dst].data(), outgoing[dst].size(), MPI_UINT64_T, dst, TAG_POINTS, comm, &req[dst]);
 		return true;
 	}
 
 public:
-	u64 bytes_sent = 0;
-
 	OutBuffers(MPI_Comm comm, int n_nodes, size_t dp_capacity)
 		: comm(comm), n_nodes(n_nodes), cap(DP_WORDS * dp_capacity),
-		  ready(n_nodes), outgoing(n_nodes), req(n_nodes, MPI_REQUEST_NULL), done_idx(n_nodes)
+		  ready(n_nodes), outgoing(n_nodes), req(n_nodes, MPI_REQUEST_NULL)
 	{
 		for (int d = 0; d < n_nodes; d++) {
 			ready[d].reserve(cap);
@@ -236,19 +382,12 @@ public:
 	/* append one DP to the buffer bound for node `dst`.  false == dropped. */
 	bool push(const DP &p, int dst)
 	{
-		if (ready[dst].size() + DP_WORDS > cap && not rotate(dst))
-			return false;                    /* the caller tallies the drop */
+		if ((ready[dst].size() + DP_WORDS > cap) && (not rotate(dst)))
+			return false;
 		ready[dst].push_back(p.seed);
 		ready[dst].push_back(p.x);
 		ready[dst].push_back(p.len);
 		return true;
-	}
-
-	/* release whatever finished transmitting */
-	void poll()
-	{
-		int outcount = 0;
-		MPI_Testsome(req.size(), req.data(), &outcount, done_idx.data(), MPI_STATUSES_IGNORE);
 	}
 
 	/*
@@ -275,15 +414,13 @@ public:
 	}
 
 	/*
-	 * Zero-length message == "I have sent you everything for this round".  Buffered
-	 * mode: it completes locally, so there is no request to track and nothing to wait
-	 * on, and a zero-length message costs only MPI_BSEND_OVERHEAD of the attached
-	 * buffer.  Ordering still holds -- MPI messages between a pair of ranks are
-	 * non-overtaking whatever the send mode, so a sentinel initiated after the data
-	 * Isends is delivered after them.
+	 * Zero-length message == "I have sent you everything for this round".
+	 * Ordering holds -- MPI messages between a pair of ranks are
+	 * non-overtaking whatever the send mode, so a sentinel initiated after
+	 * the data Isends is delivered after them.
 	 *
-	 * Requires the ControlChannel's MPI_Buffer_attach to have happened already; it
-	 * is done at construction, long before any round drains.
+	 * Requires the engine's MPI_Bsend buffer to be attached; run() does that before
+	 * anything else of the engine exists, long before any round drains.
 	 */
 	void send_sentinels()
 	{
@@ -292,132 +429,9 @@ public:
 	}
 };
 
-
-/*************************** incoming bulk DP buffers *************************/
-
-/*
- * A pool of MPI_ANY_SOURCE receives, so buffer memory is set by `n_in_buffers`
- * rather than by the number of peers.
- *
- * Deliberately just state: the comm thread drives the Testsome/scatter/repost loop
- * itself (CommThread::poll_incoming), because handing this class a scatter callback
- * would mean a closure at every call site.
- */
-struct InBuffers {
-	MPI_Comm comm;
-	size_t cap;                                 /* u64 per buffer */
-	std::vector<std::vector<u64>> data;
-	std::vector<MPI_Request> req;
-	std::vector<int> done_idx;
-	std::vector<MPI_Status> done_st;
-
-	int n_sentinels = 0;
-	u64 bytes_recv = 0;
-
-	InBuffers(MPI_Comm comm, int n_buffers, size_t dp_capacity)
-		: comm(comm), cap(DP_WORDS * dp_capacity), data(n_buffers),
-		  req(n_buffers, MPI_REQUEST_NULL), done_idx(n_buffers), done_st(n_buffers)
-	{
-		for (int k = 0; k < n_buffers; k++) {
-			data[k].resize(cap);
-			MPI_Irecv(data[k].data(), cap, MPI_UINT64_T, MPI_ANY_SOURCE, TAG_POINTS, comm, &req[k]);
-		}
-	}
-
-	void shutdown()
-	{
-		for (size_t k = 0; k < req.size(); k++)
-			if (req[k] != MPI_REQUEST_NULL) {
-				MPI_Cancel(&req[k]);
-				MPI_Wait(&req[k], MPI_STATUS_IGNORE);
-			}
-	}
-};
-
-
-/******************************* control channel ******************************/
-
-/*
- * Layout of a solution (TAG_SOLUTION): the mixing-function index and the two
- * colliding points.  RoundState::golden has exactly this layout and is sent as is.
- * SOL_NWORDS closes the enum, so the message size is the field list itself rather
- * than a constant that has to be kept in step with it.
- *
- * The other two payloads of the engine -- a progress report (TAG_REPORT) and the
- * end-of-round statistics (MPI_Reduce) -- are both N_COUNTERS words in `enum counter`
- * order (counters.hpp): the Counters array itself, as deltas since the previous
- * report for the former and as the round's total for the latter.
- */
 enum solution_field {
 	SOL_I = 0, SOL_X0, SOL_X1,
 	SOL_NWORDS
-};
-
-/*
- * The node's end of the control channel, on every rank.  Three tags, one per message
- * kind, so a message is told apart by its envelope and never by its length:
- *
- *     TAG_END_ROUND    rank 0 --> node    zero-length: "the round is over"
- *     TAG_REPORT       node --> rank 0    N_COUNTERS words (enum counter)
- *     TAG_SOLUTION     node --> rank 0    SOL_NWORDS words (solution_field)
- *
- * This class posts the one receive a node needs, for the end-of-round signal; it only
- * ever comes from rank 0, so the receive names its source and there is no wildcard at
- * all.  The inbound side of rank 0 -- the report and solution receives -- belongs to
- * the Controller, the only thing that ever reads them.  Rank 0 talks to itself through
- * MPI like any other node.
- *
- * Sends are plain MPI_Bsend at the call sites: the messages are short, buffered mode
- * completes locally, so there is nothing to track and the comm thread never blocks.
- * The attached buffer is per process and serves every Bsend of the engine: reports,
- * solutions, the controller's end-of-round signals and the end-of-round sentinels.
- */
-class ControlChannel {
-	MPI_Comm comm;
-	MPI_Request req = MPI_REQUEST_NULL;
-	std::vector<char> bsend_buf;
-
-public:
-	ControlChannel(const Parameters &params) : comm(params.mpi_comm)
-	{
-		/* Bounded in flight at once: an end-of-round signal to every node (rank 0) and
-		   one sentinel per node -- OutBuffers::send_sentinels draws on this same
-		   per-process buffer.  Both are zero-length.  Our own reports and solution have
-		   no hard bound (reports are one-way, nothing throttles them but their pacing
-		   rule); in practice a report's slot is reclaimed by the sender's own progress
-		   long before the next one, so bsend_slack covers them.  A report is the largest
-		   message, so sizing every slot for a full report is already generous.  A full
-		   buffer is a fatal MPI_ERR_BUFFER, never a hang. */
-		static_assert((int) N_COUNTERS >= (int) SOL_NWORDS, "the Bsend slots are sized for a report");
-		size_t slots = 2 * (size_t) params.n_nodes + params.bsend_slack;
-		size_t msg = N_COUNTERS * sizeof(u64) + MPI_BSEND_OVERHEAD;
-		bsend_buf.resize(slots * msg);
-		MPI_Buffer_attach(bsend_buf.data(), (int) bsend_buf.size());
-
-		MPI_Irecv(NULL, 0, MPI_UINT64_T, 0, TAG_END_ROUND, comm, &req);
-	}
-
-	/* true == the end-of-round signal arrived and the receive has been reposted */
-	bool poll()
-	{
-		int flag = 0;
-		MPI_Test(&req, &flag, MPI_STATUS_IGNORE);
-		if (!flag)
-			return false;
-		MPI_Irecv(NULL, 0, MPI_UINT64_T, 0, TAG_END_ROUND, comm, &req);
-		return true;
-	}
-
-	void shutdown()
-	{
-		if (req != MPI_REQUEST_NULL) {
-			MPI_Cancel(&req);
-			MPI_Wait(&req, MPI_STATUS_IGNORE);
-		}
-		void *ptr = NULL;
-		int sz = 0;
-		MPI_Buffer_detach(&ptr, &sz);
-	}
 };
 
 }

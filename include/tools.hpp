@@ -29,6 +29,20 @@ static inline void cpu_relax()
 #endif
 }
 
+/* pin the calling thread to `cpu`.  Returns cpu, or -1 on failure (or if cpu < 0). */
+static inline int pin_to_cpu(int cpu)
+{
+    if (cpu < 0)
+        return -1;
+    cpu_set_t set;
+    CPU_ZERO(&set);
+    CPU_SET(cpu, &set);
+    if (pthread_setaffinity_np(pthread_self(), sizeof(set), &set) != 0)
+        return -1;
+    return cpu;
+}
+
+
 u64 make_mask(int n)
 {
     return (n >= 64) ? 0xffffffffffffffffull : (1ull << n) - 1;
