@@ -29,9 +29,10 @@ workers never see an `MPI_` symbol.
 (`thread_cpu[tid]`), chosen from the hwloc topology: the comm thread takes the first
 CPU of the first NUMA node; inserter `i` goes to NUMA node `i mod n_numa_nodes` and
 walker `s` to NUMA node `s mod n_numa_nodes`, each taking the next free CPU of that
-node, or of the next node that still has one.  The dictionary shards, placed by first
-touch on their inserter's node (§4.1), are thus evenly spread over the NUMA nodes
-whenever `inserters_per_node` is a multiple of their count; rank 0 warns otherwise.
+node, or of the next node that still has one; threads beyond the mask's CPUs stay
+unpinned, and the rank warns.  The dictionary shards, placed by first touch on their
+inserter's node (§4.1), are thus evenly spread over the NUMA nodes whenever
+`inserters_per_node` is a multiple of their count; rank 0 warns otherwise.
 `--no-bind` (`Options::bind_threads == false`) leaves every thread unpinned.  Once
 pinned, each thread records the CPU and NUMA node the kernel reports
 (`ThreadContext::cpu`, `numa_node`).
@@ -232,7 +233,7 @@ startup.  The per-round ones are reached only after every node has finished its 
 | `ThreadContext::ctr` | the thread (the comm thread's own drops in `ctx[0]`) | comm | plain `u64[N_COUNTERS]`, no atomics, see §3.4 | | |
 | `SharedContext::i`, `root_seed`, `stop` | comm (thread 0) | everyone | plain `u64`, published by an OpenMP barrier | | |
 | `SharedContext::hll` | any walker | comm, after the round | `atomic<u8>[HLL_REGISTERS]`, CAS-max per register, relaxed, see §3.4 | | never full |
-| `SharedContext::shards[r]` | inserter `r` | inserter `r` | `PcsDict`: built, probed and flushed by its inserter alone | `w_shard` slots | a dictionary: a full slot is overwritten |
+| `SharedContext::shards[r]` | inserter `r` | inserter `r` | `PcsDict`: built, probed and flushed by its inserter alone | `w_shard` slots | a dictionary: a slot is overwritten by a trail at least as long (`pop_insert`) |
 | `SharedContext::golden` | any walker | comm | mutex + `atomic<bool>` flag | | first one wins |
 
 Where state lives, per rank: private to a worker thread and never touched by the comm
