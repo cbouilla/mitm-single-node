@@ -16,6 +16,9 @@ cmake -S . -B build && make -C build
 
 - C++17, compiled with `-march=native` — binaries are **not portable across CPU generations**, so on a cluster build on the same arch as the compute nodes. The SIMD path (AVX-512 / AVX2 / scalar) is selected by `#ifdef __AVX512F__ / __AVX2__` guards in `include/types.h` that `-march=native` triggers; the `config/*.cmake` probes set `HAVE_*` vars that are currently **unused**, and `config/neon.*` isn't wired into the root `CMakeLists.txt`.
 - **No `CMAKE_BUILD_TYPE` / `-O` flag is set and `NDEBUG` is off**, so default builds are unoptimized with live `assert()`s. Keep this in mind before trusting benchmark numbers.
+- Only the MPI **C** API is used, so `find_package(MPI REQUIRED COMPONENTS C)` and the drivers link `MPI::MPI_C`.
+  Don't ask for the `CXX` component: it is not the C++ bindings (that is `MPICXX`), it is FindMPI probing the
+  `mpicxx` wrapper, which some clusters ship broken or not at all — a spurious `missing: MPI_CXX_FOUND`.
 - Requires: **MPI**, **OpenMP**, **OpenSSL** (dev headers — the DES example self-checks against it), **hwloc 2.x** (dev headers, `libhwloc-dev`): it places the threads over the NUMA nodes and is a hard requirement with no fallback. If CMake can't find it, `module load hwloc` or `HWLOC_ROOT=/path cmake ...`.
 - Binaries land in `build/examples/`. After changing CMake files, a clean rebuild may need `rm -rf build`.
 - `examples/CMakeLists.txt` defines one `mitm_example(name [extra sources])` function; every driver links MPI + OpenMP + Threads + hwloc the same way.

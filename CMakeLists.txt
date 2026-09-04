@@ -11,7 +11,10 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON) # Compiler command json
 add_compile_options(-march=native -ggdb -Wall)
 # The little bird says clang has a nicer error report than gcc!
 
-find_package(MPI REQUIRED)
+# Only the MPI C API is used, from C++ (no MPI-2 C++ bindings, which MPI-3 deprecated and
+# Open MPI 5 removed).  Asking for the C component alone spares us FindMPI's mpicxx probe,
+# which fails on clusters whose C++ wrapper is missing or broken.
+find_package(MPI REQUIRED COMPONENTS C)
 find_package(OpenMP REQUIRED)
 find_package(Threads REQUIRED)
 find_package(OpenSSL REQUIRED)     # DES implementation

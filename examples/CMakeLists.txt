@@ -2,7 +2,9 @@
 function(mitm_example name)
     add_executable(${name} ${name}.cpp ${ARGN})
     target_include_directories(${name} PRIVATE ../include)
-    target_link_libraries(${name} PRIVATE MPI::MPI_CXX OpenMP::OpenMP_CXX Threads::Threads hwloc::hwloc)
+    target_link_libraries(${name} PRIVATE MPI::MPI_C OpenMP::OpenMP_CXX Threads::Threads hwloc::hwloc)
+    # Keep <mpi.h> from pulling in the deprecated MPI-2 C++ bindings; we never use them.
+    target_compile_definitions(${name} PRIVATE OMPI_SKIP_MPICXX MPICH_SKIP_MPICXX _MPICC_H)
 endfunction()
 
 
