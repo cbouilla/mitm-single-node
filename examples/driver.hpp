@@ -28,12 +28,14 @@ static void usage(const char *argv0)
 	printf("  --nrounds R      give up after R versions of the function\n");
 	printf("\n");
 	printf("  --walkers-per-node W     default: fill the affinity mask\n");
-	printf("  --inserters-per-node I   dictionary shards per node, spread over its NUMA nodes.  Default: 1\n");
-	printf("  --no-bind                do not pin threads to CPUs (no NUMA placement)\n");
+	printf("  --inserters-per-node I   dictionary shards per node, one per thread group.  Default: 1\n");
+	printf("  --cache-level N          cache level a thread group sits in.  0 == auto (the lowest one\n");
+	printf("                           shared by several cores).  Default: 0\n");
+	printf("  --no-bind                do not pin threads to CPUs (no cache/NUMA placement)\n");
 	printf("\n");
 	printf("  --walker-queue N     DPs buffered between a walker and the comm thread\n");
 	printf("  --inserter-queue N   DPs buffered between the comm thread and an inserter\n");
-	printf("  --coll-queue N       collision candidates buffered for the walkers\n");
+	printf("  --coll-queue N       collision candidates buffered per inserter, for its group\n");
 	printf("  --coll-per-chunk N   candidates a walker retires per chunk.  0 == until its batch stops filling\n");
 	printf("  --buffer N           DPs per node-to-node message\n");
 	printf("  --in-buffers N       posted MPI_Irecv slots\n");
@@ -49,7 +51,7 @@ static void process_command_line_options(int argc, char **argv, Options &opts,
                                          u64 &nbytes_memory, int &n, u64 &seed)
 {
 	enum {OPT_WALKER_QUEUE = 1000, OPT_INSERTER_QUEUE, OPT_COLL_QUEUE, OPT_COLL_PER_CHUNK,
-	      OPT_BUFFER, OPT_IN_BUFFERS, OPT_CHUNK, OPT_NO_BIND, OPT_HELP};
+	      OPT_BUFFER, OPT_IN_BUFFERS, OPT_CHUNK, OPT_CACHE_LEVEL, OPT_NO_BIND, OPT_HELP};
 
 	struct option longopts[] = {
 		{"ram",                required_argument, NULL, 'r'},
@@ -68,6 +70,7 @@ static void process_command_line_options(int argc, char **argv, Options &opts,
 		{"buffer",             required_argument, NULL, OPT_BUFFER},
 		{"in-buffers",         required_argument, NULL, OPT_IN_BUFFERS},
 		{"chunk",              required_argument, NULL, OPT_CHUNK},
+		{"cache-level",        required_argument, NULL, OPT_CACHE_LEVEL},
 		{"no-bind",            no_argument,       NULL, OPT_NO_BIND},
 		{"help",               no_argument,       NULL, OPT_HELP},
 		{NULL, 0, NULL, 0}
@@ -93,6 +96,7 @@ static void process_command_line_options(int argc, char **argv, Options &opts,
 		case OPT_BUFFER:         opts.buffer_capacity = std::stoull(optarg);         break;
 		case OPT_IN_BUFFERS:     opts.n_in_buffers = std::stoi(optarg);              break;
 		case OPT_CHUNK:          opts.chunk_size = std::stoull(optarg);              break;
+		case OPT_CACHE_LEVEL:    opts.cache_level = std::stoi(optarg);               break;
 		case OPT_NO_BIND:        opts.bind_threads = false;                          break;
 		case OPT_HELP:           usage(argv[0]);                                     break;
 		default:

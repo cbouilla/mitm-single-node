@@ -228,9 +228,10 @@ Each multiplies whatever parallel routing gives.
   budget).  Three ways per row -- no fan-out at all (the floor), one atomic reservation and
   one scattered store per point, and the same through one private cache line per destination
   -- and two point sizes, three words and two, since the destination index implies the low
-  bits of `x` and a two-word point puts four in a write-combining line instead of two.  The
-  number to beat is one comm thread's ~250 ns per point (§3).  It never seals a buffer nor
-  sends one, so it prices the steady state and not the handoff to the funnel.
+  bits of `x` and a two-word point puts four in a write-combining line instead of two.  A row
+  yields two different numbers: the node rate, which is what replaces one comm thread's
+  4.2 M DP/s, and the per-thread nanoseconds, which are the tax on a walker.  It never seals a
+  buffer nor sends one, so it prices the steady state and not the handoff to the funnel.
 
 ## 7. Numbers to re-measure
 
@@ -259,9 +260,9 @@ the same operating point as section 1, `w = 5.0e8` slots, auto-tuned `1/theta ==
 
 | leg | capacity | how |
 |---|---|---|
-| what the walkers offer | **98 M DP/s** (61 walkers) | round report, `-I 2` |
-| what one comm thread delivers | **4.2 M DP/s** | round report, `-I 8` |
-| what 8 shards can absorb | **142 M probe/s** | `double_speck64_bench --ram 4G -I 8` |
+| what the walkers offer | **98 M DP/s** (61 walkers) | round report, `--inserters-per-node 2` |
+| what one comm thread delivers | **4.2 M DP/s** | round report, `--inserters-per-node 8` |
+| what 8 shards can absorb | **142 M probe/s** | `double_speck64_bench --ram 4G --inserters-per-node 8` |
 
 One walker thread evaluates `vfg` at 79 M f/s with every PU busy (184 M/s alone --
 Skylake drops its clock hard under AVX-512), and SMT is nearly free here: 79 M/s per
@@ -422,5 +423,152 @@ rather than inferred.  What is new:
   rings; `R` ranks per node at `--n 48` or above, where a round is long enough that
   startup and dictionary zeroing vanish; and idea A on a node with more than two L3
   domains, where `R` can grow without taking the last walkers away.  The staging sweep of
-  §6 is now the first thing to run on each of them: nothing in §5 is worth building until
-  it says a walker can stage a point in well under the 250 ns a comm thread spends.
+  §6 has since been run on `grdix-14`: **§9**.
+
+## 9. Producer-side staging measured: the funnel is not a hard problem
+
+`grdix-14`, 256 cores / 512 PUs, 503 walker threads, `-O3 -DNDEBUG`, September 2026:
+`double_speck64_bench --n 40 --ram 4G --beta 0.25 --inserters-per-node 8`, the
+`staging_benchmark()` of §6.  Rates are for the whole node; `dest` is the fan-out
+`n_nodes * inserters_per_node` a producer-side router would face.  Three runs: the node's
+full walker count (§9.1), the thread count of a 40-core node (§9.2), and the buffer capacity
+turned down (§9.3), which is where the best figure of all of them is -- **5.1 G points/s,
+1200x one comm thread.**
+
+### 9.1 503 walkers: the ten-node machine's shape
+
+| dest | shared buf | private/thread | local | direct 3w | line 3w | direct 2w | **line 2w** |
+|---|---|---|---|---|---|---|---|
+| 1 | 0.0 MB | 0.1 kB | 98 G/s | 40 M/s | 81 M/s | 40 M/s | 157 M/s |
+| 4 | 0.2 MB | 0.3 kB | 115 G/s | 66 M/s | 158 M/s | 62 M/s | 311 M/s |
+| 16 | 0.8 MB | 1.0 kB | 106 G/s | 112 M/s | 264 M/s | 95 M/s | 520 M/s |
+| 64 | 3.1 MB | 4.1 kB | 105 G/s | 173 M/s | 432 M/s | 149 M/s | 976 M/s |
+| 256 | 12.6 MB | 16 kB | 98 G/s | 412 M/s | 1.2 G/s | 409 M/s | **2.6 G/s** |
+| 1024 | 50 MB | 66 kB | 112 G/s | 926 M/s | 2.2 G/s | 924 M/s | **4.1 G/s** |
+| 4096 | 201 MB | 262 kB | 96 G/s | 841 M/s | 1.1 G/s | 1.2 G/s | 2.5 G/s |
+| 16384 | 805 MB | 1.0 MB | 94 G/s | 934 M/s | 1.1 G/s | 1.2 G/s | 1.8 G/s |
+
+**Against 4.2 M DP/s through one comm thread (§8), the walkers stage their own points at
+1.8 to 4.1 G/s: two to three orders of magnitude.**  Sections 1 and 2 said routing
+throughput is the attack's speed one for one; this says routing stops being the thing that
+sets it.  What the walkers of this node can *offer* is 760 M DP/s (§1), so staging has 2.4x
+to 5x of headroom over the producers and **the constraint goes back to the walkers**, which
+is where it belongs.
+
+Four readings:
+
+- **The per-thread column is a tax, not a ceiling.**  At the 320 destinations of ten
+  256-core nodes, a point costs its walker 192 ns against the ~670 ns it spends walking the
+  trail that produced it: a 29% tax on walker throughput, paid by every core instead of
+  serialised through one.  That is the whole difference from the funnel, and it is why the
+  node rate and not the per-thread cost is what compares to §8's 4.2 M DP/s.
+- **The two-word point is worth 2x, not a third.**  1.2 -> 2.6 G/s at 256 destinations,
+  1.1 -> 1.8 G/s at 16384: a write-combining line holds four compressed points instead of
+  two, which halves both the reservations and the shared-buffer traffic.  The destination
+  index implies the low `log2(dest)` bits of `x` and a length saturates at 8 bits, so this
+  costs nothing but a wire format.  **It is part of the design, not an optimisation of it.**
+- **`direct` -- one `fetch_add` and one scattered store per point, no private state at all
+  -- is nearly as good at large fan-out and flat in it**: 0.9 to 1.2 G/s from 1024
+  destinations to 16384, where the write-combining line only wins 1.5x.  The line earns its
+  keep at *small* fan-out, where it is worth 6.4x (409 M/s -> 2.6 G/s at 256).  So the line
+  is what the ten-node machine needs and the thousand-node machine can take or leave.
+- **The knee past 1024 destinations is not fan-out** -- it is these buffers leaving L3, and
+  §9.3 removes it by making them smaller.  §9.2 rules fan-out out on its own: the same sweep
+  with 36 walkers, over a *larger* footprint, has no knee at all.
+
+### 9.2 36 walkers: the thousand-node machine's cell
+
+Same node and command, `--walkers-per-node 36`.  A thousand nodes of 40 cores is ~8000
+destinations reached by ~36 walkers, so this is that cell's thread count and fan-out on
+borrowed hardware -- not that machine, which has roughly 3x this one's memory bandwidth per
+core.  The smaller private side lets the sweep reach 65536 destinations.
+
+| dest | local | direct 3w | line 3w | direct 2w | **line 2w** | ns/point |
+|---|---|---|---|---|---|---|
+| 1 | 15.2 G/s | 22 M/s | 45 M/s | 22 M/s | 90 M/s | 399 |
+| 4 | 13.9 G/s | 30 M/s | 68 M/s | 30 M/s | 133 M/s | 271 |
+| 16 | 14.3 G/s | 45 M/s | 106 M/s | 43 M/s | 220 M/s | 164 |
+| 64 | 17.3 G/s | 79 M/s | 185 M/s | 72 M/s | 386 M/s | 93 |
+| 256 | 17.3 G/s | 170 M/s | 340 M/s | 141 M/s | 642 M/s | 56 |
+| 1024 | 17.1 G/s | 347 M/s | 523 M/s | 357 M/s | **902 M/s** | 40 |
+| 4096 | 17.3 G/s | 517 M/s | 636 M/s | 540 M/s | **992 M/s** | 36 |
+| 16384 | 17.3 G/s | 607 M/s | 688 M/s | 631 M/s | **1.0 G/s** | 36 |
+| 65536 | 15.4 G/s | 632 M/s | 660 M/s | 662 M/s | **1.0 G/s** | 36 |
+
+**Flat at 1.0 G/s and 36 ns a point from 1024 destinations to 65536**, over a footprint that
+grows 64x across those four rows (2.1 GB of shared buffers and 151 MB of private lines at
+65536).  Fan-out is free once there is enough of it to spread the reservations; the whole
+cost of routing a point, at any scale either target machine will reach, is 36 ns of the
+producing walker.
+
+That cell has to route 150 M DP/s -- §2 at `n = 51` with 40 TB of dictionary, where
+`D_node = R_f / L` is at once what the walkers produce and what has to be routed.  Staging
+delivers 1.0 G/s: **6.7x the whole node's production, 240x one comm thread.**  `direct`
+alone -- no private lines, one `fetch_add` and one store per point -- delivers 662 M/s
+there, so even the crudest version of §5 clears this
+machine; the write-combining line is worth 1.6x at that fan-out and 4.6x at 256, which is
+what earns it on the ten-node machine.
+
+The staging tax on a walker lands near 30% of its throughput in both configurations, from
+opposite directions: 192 ns against 600 ns of walking at `L = 16.9` on ten large nodes, 36 ns
+against ~104 ns at `L = 7.4` on a thousand small ones.  The tax scales as `1/L`, so it is
+worst exactly where the dictionary is largest -- the same shape as §2's "memory makes it
+worse", now costing 30% instead of two orders of magnitude.
+
+### 9.3 Capacity: the staging set wants to fit the caches, and then 5 G/s
+
+Same node and command as §9.1 -- 503 walkers -- with `--buffer 128` instead of the default
+1500, so a destination's buffer holds 128 points rather than 2048.  Footprints are the
+two-word ones; `line 2w @2048` repeats §9.1 for comparison.
+
+| dest | shared buf | private/thread | direct 3w | line 3w | direct 2w | **line 2w** | line 2w @2048 |
+|---|---|---|---|---|---|---|---|
+| 256 | 0.5 MB | 16 kB | 410 M/s | 1.1 G/s | 351 M/s | 2.3 G/s | 2.6 G/s |
+| 1024 | 2.1 MB | 66 kB | 919 M/s | 2.0 G/s | 680 M/s | 3.2 G/s | 4.1 G/s |
+| 4096 | 8.4 MB | 262 kB | 1.3 G/s | 2.5 G/s | 1.1 G/s | 3.8 G/s | 2.5 G/s |
+| 16384 | 33.6 MB | 1.0 MB | 1.7 G/s | 2.8 G/s | 1.8 G/s | **5.1 G/s** | 1.8 G/s |
+| 65536 | 134 MB | 4.2 MB | 991 M/s | 1.2 G/s | 1.4 G/s | 1.8 G/s | -- |
+
+**1.8 -> 5.1 G/s at 16384 destinations from shrinking the shared buffers 16x**, so §9.1's
+collapse was those buffers leaving L3 (537 MB at the old capacity, 34 MB at this one) and not
+memory bandwidth.  The peak of every run so far is that cell: **5.1 G points/s, 98 ns of one
+walker per point, 1200x what one comm thread delivers.**
+
+- **A small capacity is not universally better**: at 256 destinations it costs 2.6 -> 2.3
+  G/s, because those buffers already fitted and shrinking them only shortens the messages.
+  The rule is `dest * capacity * point_bytes` around the size of L3 -- which is exactly
+  §5.B's arithmetic, against a *cache* budget rather than a memory one.
+- **The new knee at 65536 is the private side**: one line per destination is `dest * 64 B`
+  per thread, and 1.0 MB at 16384 destinations still runs at 5.1 G/s while 4.2 MB at 65536
+  falls to 1.8.  So **one write-combining line per destination tops out around
+  `dest = L2 / 64`, some 16K destinations on this hardware** -- and both target machines are
+  under it, at 320 and ~8000.  Nothing needs a two-level key.
+- **The capacity is bounded from below by the funnel, and that is what §5.B was really
+  afraid of.**  A node's message rate is its point rate over the capacity, whatever the
+  destination count: 760 M DP/s at 128 points a message is 5.9 M messages/s, far past what
+  one thread can post.  Taking ~1 M `MPI_Isend`/s as that thread's budget -- an estimate, and
+  the next thing worth its own microbenchmark -- the floor is `capacity >= 760` on ten large
+  nodes and `>= 150` on a thousand small ones.  **The two constraints leave a wide window**:
+  at `capacity = 1024` the ten-node machine stages into 5 MB and at 256 the thousand-node
+  machine into 33 MB, both far inside the tens of MB this sweep runs at full speed.  128
+  points is where the sweep peaks, not what to ship.
+- **The ten-node machine is contention-limited, not fan-out-limited**, and the fix is a knob
+  it already has.  At 320 destinations 503 walkers reserve from 1.6 lines each and get 2.6
+  G/s; at 1024 they get 4.1.  The destination count *is* `n_nodes * inserters_per_node`, so
+  raising `--inserters-per-node` from 32 to ~100 buys the fan-out that removes the
+  contention -- and §8.1 measured the probe rate linear in the shard count, so the shards do
+  not mind.
+
+### 9.4 What this settles
+
+This retires §5.B's second worry.  It feared that buffer memory would force
+`buffer_capacity` down as the shard count grew, until a message was too small to amortise;
+the capacity does come down as the shard count grows, exactly as §5.B computed, and §9.3
+shows there is a wide window where it satisfies both ends -- large enough that the funnel
+posts ~1 M messages/s rather than 6 M, small enough that the buffers stay tens of MB and
+staging runs at full speed.  Neither target machine is near either edge.  What survives of
+§5.B is only its first bullet -- the destination key must name a single consumer -- and that
+is now the whole design: key the message on the global shard index, let every walker stage
+into it with one cache line per destination, size `buffer_capacity` so the buffers fit L3,
+and
+leave the funnel nothing but per-message work.

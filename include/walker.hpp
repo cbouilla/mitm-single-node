@@ -24,7 +24,7 @@ inline bool is_distinguished_point(u64 x, u64 threshold)
  * True == it was the golden pair, already published.
  */
 template<class ProblemWrapper>
-bool retire_collision(const ProblemWrapper &wrapper, u64 ctr[], SharedContext &shared,
+bool retire_collision(const ProblemWrapper &wrapper, u64 ctr[], u8 hll[], SharedContext &shared,
                       u64 seed0, u64 seed1, u64 x0, u64 x1, u64 len0, u64 len1)
 {
 	const u64 i = shared.i;
@@ -44,7 +44,7 @@ bool retire_collision(const ProblemWrapper &wrapper, u64 ctr[], SharedContext &s
 		ctr[COLLIDING_LEN_MIN] += len1;
 		ctr[COLLIDING_LEN_MAX] += len0;
 	}
-	shared.found_collision(std::min(y0, y1), std::max(y0, y1));
+	hll_record(hll, std::min(y0, y1), std::max(y0, y1));
 
 	if (not wrapper.mix_good_pair(i, x0, x1))
 		return false;
@@ -156,7 +156,7 @@ optional<tuple<u64,u64,u64>> walk_nolen1(const ProblemWrapper &wrapper, u64 ctr[
  * when the problem has no vector implementation (vlen == 1); VecResolver is the other one.
  */
 template<class ProblemWrapper>
-void resolve_collision(const ProblemWrapper &wrapper, u64 ctr[], const Parameters &params,
+void resolve_collision(const ProblemWrapper &wrapper, u64 ctr[], u8 hll[], const Parameters &params,
                        SharedContext &shared, u64 seed0, u64 end, u64 len0, u64 seed1, u64 len1_maybe)
 {
 	const u64 i = shared.i;
@@ -175,7 +175,7 @@ void resolve_collision(const ProblemWrapper &wrapper, u64 ctr[], const Parameter
 
 	auto [x0, x1, len1] = *collision;
 	assert(len1_maybe == 0 || len1_maybe == len1);
-	retire_collision(wrapper, ctr, shared, seed0, seed1, x0, x1, len0, len1);
+	retire_collision(wrapper, ctr, hll, shared, seed0, seed1, x0, x1, len0, len1);
 }
 
 
@@ -222,8 +222,16 @@ struct alignas(sizeof(u64) * ProblemWrapper::vlen) VecResolver {
 	int n_busy;               /* slots that are not SLOT_EMPTY: the walker is idle when this is 0 */
 	u64 n_retired;            /* candidates finished or abandoned, ever: what coll_per_chunk budgets */
 
+	/* the run this walker took from its group's queue; the scalar resolver draws from it too (§3.2) */
+	static constexpr int PENDING = 64;
+	CollisionCandidate pending[PENDING];
+	int first;                /* the next candidate to start, pending[first] */
+	int n_pending;            /* how many are left in the run */
+
 	VecResolver()
 	{
+		first = 0;
+		n_pending = 0;
 		for (int l = 0; l < vlen; l++) {
 			x[l] = 0;                    /* a free lane still goes through vmixf: keep it in range */
 			free_lane[l] = l;
@@ -236,6 +244,18 @@ struct alignas(sizeof(u64) * ProblemWrapper::vlen) VecResolver {
 			lane0[s] = -1;
 			lane1[s] = -1;
 		}
+	}
+
+	/* how many candidates are in hand, taking a fresh run from the queue when the last one ran out */
+	int refill(CollisionQueue &coll_q)
+	{
+		if (n_pending > 0)
+			return n_pending;
+		if (coll_q.is_empty())
+			return 0;              /* relaxed read: an idle queue costs no lock traffic (PROTOCOL.md §3.2) */
+		first = 0;
+		n_pending = (int) coll_q.pop_bulk(pending, PENDING);
+		return n_pending;
 	}
 
 	/* hand a slot's lanes back and free it.  Every path that abandons or completes a candidate ends here */
@@ -307,7 +327,8 @@ struct alignas(sizeof(u64) * ProblemWrapper::vlen) VecResolver {
 	}
 
 	/* start queued candidates in the empty slots.  Returns how many, so a caller can tell an empty queue */
-	int fill(const ProblemWrapper &wrapper, u64 ctr[], const Parameters &params, SharedContext &shared)
+	int fill(const ProblemWrapper &wrapper, u64 ctr[], const Parameters &params, SharedContext &shared,
+	         CollisionQueue &coll_q)
 	{
 		int started = 0;
 		for (int s = 0; s < nslots; s++) {
@@ -315,9 +336,10 @@ struct alignas(sizeof(u64) * ProblemWrapper::vlen) VecResolver {
 				continue;
 			if (n_free == 0)
 				break;                     /* every lane is walking: the rest waits its turn */
-			CollisionCandidate c;
-			if (not shared.coll_q.pop(c))
-				break;                     /* nothing queued */
+			if (refill(coll_q) == 0)
+				break;                     /* nothing in hand and nothing queued */
+			CollisionCandidate c = pending[first++];
+			n_pending -= 1;
 			assert(c.i == shared.i);
 			seed0[s] = c.seed0;
 			seed1[s] = c.seed1;
@@ -351,7 +373,8 @@ struct alignas(sizeof(u64) * ProblemWrapper::vlen) VecResolver {
 	 * One vmixf over every lane, then one step of every slot.  N_EVAL counts the evaluations a scalar
 	 * resolver would have made, not the lanes burnt, so that it stays comparable across the two paths.
 	 */
-	void step(const ProblemWrapper &wrapper, u64 ctr[], const Parameters &params, SharedContext &shared)
+	void step(const ProblemWrapper &wrapper, u64 ctr[], u8 hll[], const Parameters &params,
+	          SharedContext &shared)
 	{
 		wrapper.vmixf(shared.i, x, y);
 
@@ -385,7 +408,7 @@ struct alignas(sizeof(u64) * ProblemWrapper::vlen) VecResolver {
 				int b = lane1[s];
 				ctr[N_EVAL] += 2;
 				if (y[a] == y[b]) {
-					retire_collision(wrapper, ctr, shared, seed0[s], seed1[s],
+					retire_collision(wrapper, ctr, hll, shared, seed0[s], seed1[s],
 					                 x[a], x[b], len0[s], len1[s]);
 					release(s);
 					continue;
@@ -421,40 +444,40 @@ static void start_chain(const Parameters &params, u64 out_mask, u64 root_seed, u
 
 
 /*
- * Retire up to `budget` collision candidates (0 == no limit).  A step costs a whole vmixf however few
- * slots are in flight, so in the steady state we stop as soon as the queue is empty and the batch is
- * not full, and let the rest wait for the next chunk: running the batch down to its last candidate
- * would spend full-width steps on one or two live lanes.  `drain` is the end of the round, where
- * every candidate must be retired whatever it costs.  PROTOCOL.md §3.2, §3.3.
+ * Retire up to `budget` candidates (0 == no limit) from `coll_q`, the queue of this walker's own
+ * inserter.  A step costs a whole vmixf however few slots are in flight, so in the steady state we
+ * stop as soon as nothing more is in hand and the batch is not full, and let the rest wait for the
+ * next chunk: running the batch down to its last candidate would spend full-width steps on one or two
+ * live lanes.  `drain` is the end of the round, where every candidate must be retired whatever it
+ * costs.  PROTOCOL.md §3.2, §3.3.
  */
 template <class ProblemWrapper>
-void service_collisions(const ProblemWrapper &wrapper, u64 ctr[], const Parameters &params,
-                        SharedContext &shared, VecResolver<ProblemWrapper> &resolver,
-                        size_t budget, bool drain)
+void service_collisions(const ProblemWrapper &wrapper, u64 ctr[], u8 hll[], const Parameters &params,
+                        SharedContext &shared, CollisionQueue &coll_q,
+                        VecResolver<ProblemWrapper> &resolver, size_t budget, bool drain)
 {
 	constexpr int vlen = ProblemWrapper::vlen;
 
 	if constexpr (vlen == 1) {
-		for (size_t c = 0; not shared.coll_q.is_empty(); c++) {
+		for (size_t c = 0; resolver.refill(coll_q) > 0; c++) {
 			if (budget && c >= budget)
 				return;
-			CollisionCandidate cand;
-			if (not shared.coll_q.pop(cand))
-				return;
+			CollisionCandidate cand = resolver.pending[resolver.first++];
+			resolver.n_pending -= 1;
 			assert(cand.i == shared.i);
-			resolve_collision(wrapper, ctr, params, shared, cand.seed0, cand.end, cand.len0,
+			resolve_collision(wrapper, ctr, hll, params, shared, cand.seed0, cand.end, cand.len0,
 			                  cand.seed1, cand.len1_maybe);
 		}
 		return;
 	} else {
 		u64 retired = resolver.n_retired;
 		for (;;) {
-			resolver.fill(wrapper, ctr, params, shared);
+			resolver.fill(wrapper, ctr, params, shared, coll_q);
 			if (resolver.n_busy == 0)
-				return;                /* queue empty, nothing in flight */
-			if (not drain && resolver.n_busy < resolver.nslots && shared.coll_q.is_empty())
+				return;                /* nothing in hand, nothing queued, nothing in flight */
+			if (not drain && resolver.n_busy < resolver.nslots && resolver.refill(coll_q) == 0)
 				return;                /* a partial batch: park it rather than step it at this price */
-			resolver.step(wrapper, ctr, params, shared);
+			resolver.step(wrapper, ctr, hll, params, shared);
 			if (budget && resolver.n_retired - retired >= budget)
 				return;
 		}
@@ -464,8 +487,9 @@ void service_collisions(const ProblemWrapper &wrapper, u64 ctr[], const Paramete
 
 /*
  * A walker thread: walks vlen trails in lockstep, ships every DP to the comm thread over its SPSC
- * queue, and between chunks retires the candidates the inserters queued.  Chain indices are strided
- * by n_walkers from the global walker index.  Wind-down: ctx.state, PROTOCOL.md §3.3.
+ * queue, and between chunks retires the candidates queued by the one inserter of its own thread group
+ * (ctx.group, PROTOCOL.md §1).  Chain indices are strided by n_walkers from the global walker index.
+ * Wind-down: ctx.state, PROTOCOL.md §3.3.
  */
 template <class ProblemWrapper>
 void walker_thread(ThreadContext &ctx, const ProblemWrapper &wrapper, const Parameters &params,
@@ -473,7 +497,9 @@ void walker_thread(ThreadContext &ctx, const ProblemWrapper &wrapper, const Para
 {
 	constexpr int vlen = ProblemWrapper::vlen;
 	SPSCQueue &out = *ctx.q;
+	CollisionQueue &coll_q = *shared.coll_q[ctx.group];
 	u64 *ctr = ctx.ctr;
+	u8 *hll = ctx.hll.data();
 
 	const u64 i = shared.i;
 	const u64 root_seed = shared.root_seed;
@@ -505,13 +531,14 @@ void walker_thread(ThreadContext &ctx, const ProblemWrapper &wrapper, const Para
 		}
 
 		if (st == DRAIN) {
-			service_collisions(wrapper, ctr, params, shared, resolver, 0, true);
+			service_collisions(wrapper, ctr, hll, params, shared, coll_q, resolver, 0, true);
 			assert(resolver.n_busy == 0);
+			assert(resolver.n_pending == 0);
 			ctx.state.store(QUIESCENT, std::memory_order_release);
 			return;
 		}
 
-		service_collisions(wrapper, ctr, params, shared, resolver, params.coll_per_chunk, false);
+		service_collisions(wrapper, ctr, hll, params, shared, coll_q, resolver, params.coll_per_chunk, false);
 
 		if (st == HELD) {
 			cpu_relax();

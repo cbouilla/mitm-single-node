@@ -24,33 +24,63 @@ walkers_per_node` threads, laid out by thread id:
 (`R == inserters_per_node`.)  MPI is initialised with `MPI_THREAD_FUNNELED`
 and **only thread 0 ever calls MPI** (its code is the `CommThread` class).
 
-**Placement.**  `Parameters` assigns every thread to a CPU of the rank's affinity mask
-(`thread_cpu[tid]`), chosen from the hwloc topology: the comm thread takes the first
-CPU of the first NUMA node; inserter `i` goes to NUMA node `i mod n_numa_nodes` and
-walker `s` to NUMA node `s mod n_numa_nodes`, each taking the next free CPU of that
-node, or of the next node that still has one; threads beyond the mask's CPUs stay
-unpinned, and the rank warns.  The dictionary shards, placed by first touch on their
-inserter's node (§4.1), are thus evenly spread over the NUMA nodes whenever
-`inserters_per_node` is a multiple of their count; rank 0 warns otherwise.
-`--no-bind` (`Options::bind_threads == false`) leaves every thread unpinned.  Once
-pinned, each thread records the CPU and NUMA node the kernel reports
-(`ThreadContext::cpu`, `numa_node`).
+**One rank per NUMA node.**  The engine assumes it, and rank 0 prints a loud warning
+when its own affinity mask spans more than one (`Controller::banner()`).  Nothing
+enforces it and nothing breaks without it; the placement below simply stops meaning
+what it says, because a thread group would then straddle two memory domains.
+
+**Thread groups.**  The mask's **cores** are partitioned into **one group per
+inserter**, each group inside a single cache domain and all of them the same size to
+within one core.  The domain is the lowest cache level shared by several *cores* -- L3
+on both a Xeon (one per socket) and an EPYC (one per CCX), never hardcoded, detected by
+`topology_of_cpus()` and overridable with `--cache-level`.  Groups are spread over the
+domains in proportion to their cores, and a domain's leftover cores go to its earliest
+groups, because group 0 hosts the comm thread as well as its inserter.  **Cores, not
+CPUs**: a core's SMT siblings have to land in the same group, or the sibling of one
+group's inserter would belong to another group's walker.  Two configurations do not fit
+and rank 0 warns: more domains than inserters, where a group covers a run of whole
+domains instead of sitting inside one; and a group left with no CPU for a walker, which
+then borrows one from the fullest group.  Fewer walkers than inserters is refused
+outright -- every collision queue needs a walker to drain it (§3.2, §4.5).
+
+**Placement, and what SMT is for.**  Every thread takes the **emptiest core of its
+group**, the service threads first: the comm thread, then inserter `j` in group `j`,
+then the walkers spread over the groups, emptiest group first.  Two properties come out
+of that one rule.  Each service thread lands on a core of its own while cores last --
+two threads that spend their time waiting, one on queues and one on random DRAM, would
+only slow each other down on one core.  And the SMT siblings they leave are the first
+CPUs the walkers fill, which is what we want: a walker is a dependent chain of
+vectorised evaluations, so it fills exactly the issue slots a waiting thread leaves
+idle.  Measured (`PROBLEM.md` §3): idling those siblings is worth ~10% to the service
+threads, while SMT is worth +66% to the walkers -- so they are paired, never idled, and
+never given to a second service thread.  When a group has fewer cores than service
+threads the rule degrades to sharing and rank 0 warns.  Threads beyond the mask's CPUs
+stay unpinned and are spread over the groups by index, and the rank warns.  `--no-bind`
+(`Options::bind_threads == false`) leaves every thread unpinned and assigns walker `s`
+to group `s mod inserters_per_node`.  Once pinned, each thread records the CPU and NUMA
+node the kernel reports (`ThreadContext::cpu`, `numa_node`) and its group
+(`ThreadContext::group`).
+
+**A walker's group IS the inserter it resolves for.**  That is the whole point of the
+partition: one inserter per group means the walker-to-inserter map needs no table.
 Worker threads communicate with thread 0 through per-thread
 Single-Producer-Single-Consumer (SPSC) queues, one `state` atomic each and their
 plain-`u64` tallies (all three in their `ThreadContext`; thread 0's own `state` is the
-phase of its round loop, §3.3), and with each other only
-through the collision queue and the HyperLogLog registers (both in the node's
-`SharedContext`, §3).
+phase of its round loop, §3.3), and with each other only through the collision queue of
+their own group (`SharedContext::coll_q[group]`, §3.2).  Nothing else is shared between
+workers: the HyperLogLog registers are one plain array per walker (§3.4).
 
 ```
-   one node (one MPI rank)
+   one node (one MPI rank), one group per inserter
    +-----------------------------------------------------------+
-   |  walker 1 --SPSC--+                                       |
-   |  walker 2 --SPSC--+-->  comm  --SPSC-->  inserter 1       |
-   |    ...            |      |    --SPSC-->  inserter 2       |
-   |  walker W --SPSC--+      |               ...              |
-   |      ^                   |                 |              |
-   |      +--------------- coll_q  <------------+              |
+   |  group 1:  walker --SPSC--+                               |
+   |            walker --SPSC--+-->  comm  --SPSC-->  inserter 1
+   |               ^                  |                  |     |
+   |               +---- coll_q[0] <--|------------------+     |
+   |                                  |                        |
+   |  group 2:  walker --SPSC--+------+   --SPSC-->  inserter 2|
+   |               ^                  |                  |     |
+   |               +---- coll_q[1] <--|------------------+     |
    +--------------------------|--------------------------------+
                               |
           TAG_POINTS      bulk DPs + sentinels  <-->  every rank (self included)
@@ -211,7 +241,7 @@ All on `mpi_comm`, all issued by thread 0, all `MPI_UINT64_T` unless stated.
 | `run()`, before the team exists | `MPI_Bcast` | 3 words: `x`, `y`, `mixf(x, y)`; every rank asserts it computes the same value | 0 |
 | start of every round | `MPI_Bcast` | 3 words: `i` (function version), `root_seed`, `stop` | 0 |
 | end of every round | `MPI_Reduce`, `MPI_SUM` | `N_COUNTERS == 16` words: the node's `ctr` arrays summed over its threads, in `enum counter` order (the layout of a report, totals instead of deltas) | 0 |
-| end of every round | `MPI_Reduce`, `MPI_MAX` | `HLL_REGISTERS == 65 536` `MPI_UINT8_T`: the node's HyperLogLog of this round's collisions (`SharedContext::hll`, copied out once every walker is quiescent) | 0 |
+| end of every round | `MPI_Reduce`, `MPI_MAX` | `HLL_REGISTERS == 65 536` `MPI_UINT8_T`: the node's HyperLogLog of this round's collisions (its walkers' arrays merged once every one of them is quiescent) | 0 |
 | after the last round | `MPI_Bcast` | 4 words: `found`, `i`, `x0`, `x1` | 0 |
 
 These collectives are the **only blocking MPI calls** the engine makes after
@@ -224,24 +254,25 @@ startup.  The per-round ones are reached only after every node has finished its 
 |---|---|---|---|---|---|
 | `shared.ctx[R+1+w]->q` | walker `w` | comm | `SPSCQueue` of `DP` | `walker_queue_capacity` (1024) | walker drops the DP, tallies `DROP_WALKERQ` |
 | `shared.ctx[1+r]->q` | comm | inserter `r` | `SPSCQueue` of `DP`, filled from a per-shard bucket (§3.1) | `inserter_queue_capacity` (4096) | comm drops the points of the run that did not fit, tallies `DROP_INSERTERQ` |
-| `shared.coll_q` | every inserter | every walker | `CollisionQueue` (mutex, bounded) | `coll_queue_capacity` (8192) | inserter drops the candidate, tallies `DROP_COLL` |
+| `shared.coll_q[r]` | inserter `r` | the walkers of group `r` | `CollisionQueue` (mutex, bounded), transferred in runs both ways | `coll_queue_capacity` (8192), **per inserter** | inserter drops what did not fit, tallies `DROP_COLL` |
 | `ThreadContext::state` | comm and the thread itself (thread 0's: itself alone) | the other side | `atomic<int>` | | see §3.3 |
 | `ThreadContext::ctr` | the thread (the comm thread's own drops in `ctx[0]`) | comm | plain `u64[N_COUNTERS]`, no atomics, see §3.4 | | |
 | `SharedContext::i`, `root_seed`, `stop` | comm (thread 0) | everyone | plain `u64`, published by an OpenMP barrier | | |
-| `SharedContext::hll` | any walker | comm, after the round | `atomic<u8>[HLL_REGISTERS]`, CAS-max per register, relaxed, see §3.4 | | never full |
+| `ThreadContext::hll` | the walker itself | comm, after the round | plain `u8[HLL_REGISTERS]`, no atomics, see §3.4 | | never full |
 | `SharedContext::shards[r]` | inserter `r` | inserter `r` | `PcsDict`: built, probed and flushed by its inserter alone | `w_shard` slots | a dictionary: a slot is overwritten by a trail at least as long (`pop_insert`) |
 | `SharedContext::golden` | any walker | comm | mutex + `atomic<bool>` flag | | first one wins |
 
 Where state lives, per rank: private to a worker thread and never touched by the comm
 thread, a local of that thread's function; specific to one thread but also touched by
 the comm thread (`role`, `state`, `ctr`, the SPSC queue), its `ThreadContext`; common
-to all threads, the `SharedContext` (the round header, the `ctx` and `shards` tables,
-`coll_q`, the HyperLogLog, the golden pair), one per rank, a local of `run()`; private
-to the comm thread (MPI buffers, requests, the controller), a member of `CommThread`.
+to all threads, the `SharedContext` (the round header, the `ctx`, `shards` and `coll_q`
+tables, the golden pair), one per rank, a local of `run()`; private to the comm thread
+(MPI buffers, requests, the controller), a member of `CommThread`.
 Every counter, the comm thread's own included, is in a `ThreadContext`, so that the
-node's tallies are one loop with no special case (§3.4); the shards are in the
-`SharedContext` although only their inserter touches them, because zeroing them may
-one day be collective.
+node's tallies are one loop with no special case (§3.4), and so is every walker's
+HyperLogLog; the shards and the collision queues are in the `SharedContext` although
+only their inserter produces into them, because zeroing a shard may one day be
+collective and because a queue's consumers are a whole group.
 
 Each SPSC queue belongs to the `ThreadContext` of its worker side (the walker, or
 the inserter), which builds it once that thread is pinned (§4.1).  SPSC capacities are rounded up to a
@@ -270,10 +301,10 @@ them**: `route_walker_queues()` and `poll_incoming()` each flush every bucket be
 returning, so no point is held across a turn of the comm loop and the drain (§4.5) is
 unchanged -- the phase tests of steps 2 and 6 see exactly what they saw before.
 
-### 3.2 The collision queue
+### 3.2 The collision queues
 
-`CollisionCandidate` is what an inserter hands to the walkers, through
-`SharedContext::coll_q`, on a dictionary hit:
+`CollisionCandidate` is what an inserter hands to the walkers of its own group, through
+its own `SharedContext::coll_q[r]`, on a dictionary hit:
 
 | field | meaning |
 |---|---|
@@ -282,8 +313,19 @@ unchanged -- the phase tests of steps 2 and 6 see exactly what they saw before.
 | `end` | the shared endpoint, as the dictionary key `x / n_inserters` |
 | `seed1`, `len1_maybe` | the point already in the slot; `len1_maybe == 0` means the stored length had saturated (8 bits), so the walker re-walks that trail to recover its length |
 
-Pushes and pops take the mutex; the emptiness probe walkers run between chunks is a
-relaxed atomic read, so an idle collision queue costs no lock traffic.
+**One queue per inserter, and candidates cross it in runs.**  Collisions are not rare
+events: at `beta = 8` a fair fraction of every probe hits, so the queue carries a fixed
+share of the traffic the shards do (`PROBLEM.md` §8.5, §9).  One queue for the whole
+node, pushed by every inserter and polled by every walker, is what that share cannot
+survive -- so there is one per inserter, its consumers are the walkers of that
+inserter's group, and both sides move up to 64 candidates per lock acquisition (an
+inserter fills a private run and hands it over as soon as it has nothing left to probe;
+a walker takes a run into its resolver and works from that).  The mutex stays: what
+made the single queue costly was that there was one of it, and that its `count` line was
+written millions of times a second, so every walker's poll missed.  Batched and split,
+that line is written thousands of times a second and a poll finds it valid.  The
+emptiness probe a walker runs before taking the lock is a relaxed atomic read, so an idle
+queue still costs no lock traffic at all.
 
 **How a walker retires them.**  A round spends about `2/beta` of its evaluations
 locating collisions, and resolving one point at a time makes each of those cost `vlen`
@@ -306,14 +348,15 @@ resolver would have made, not the lanes spent, so it stays comparable across the
 paths; the idle lanes are the price of the batch and about a third of them are idle.
 
 A step costs a whole `vmixf` however few candidates are in flight, so in the steady
-state a walker stops as soon as the collision queue is empty *and* its batch is not
-full, and leaves the partial batch parked for the next chunk.  **Only the drain
-(§3.3, §4.5 step 7) runs the batch down to the last candidate**, where every one of
-them must be retired whatever it costs.  A parked candidate holds nothing but its own
-two chain indices, so parking it is free.
+state a walker stops as soon as it has nothing more in hand -- its private run empty
+*and* its queue empty -- while its batch is not full, and leaves the partial batch
+parked for the next chunk.  **Only the drain (§3.3, §4.5 step 7) runs the batch down to
+the last candidate**, where every one of them must be retired whatever it costs.  A
+parked candidate holds nothing but its own two chain indices, so parking it is free.
 
 A problem with `vlen == 1` has no vector implementation to batch: its walkers resolve
-one candidate at a time, in `resolve_collision`.
+one candidate at a time, in `resolve_collision`.  They draw from the same private run,
+which lives in the `VecResolver` for both paths.
 
 ### 3.3 Per-thread wind-down state
 
@@ -330,14 +373,17 @@ inserter:  RUNNING -----------------------------------[comm]--> DRAIN --[self]--
 | `RUNNING` | walks chunks, ships DPs, retires collision candidates between chunks | probes everything in its queue |
 | `HOLD` | "stop producing points": acknowledges by writing `HELD` | (not used) |
 | `HELD` | no new points; keeps retiring collision candidates, batch still parked between chunks | (not used) |
-| `DRAIN` | "no candidate will ever be added": empties `coll_q` **and runs its resolver batch down to the last candidate** (§3.2), writes `QUIESCENT`, returns | "no point will ever be delivered": empties its queue, writes `QUIESCENT`, returns |
+| `DRAIN` | "no candidate will ever be added": empties **its own group's** queue and its private run **and runs its resolver batch down to the last candidate** (§3.2), writes `QUIESCENT`, returns | "no point will ever be delivered": empties its queue, writes `QUIESCENT`, returns |
 | `QUIESCENT` | done for this round | done for this round |
 
 A walker reads its state **once per chunk** (`chunk_size` iterations of `vmixf`,
 default 64, plus whatever candidates it retires before the chunk), which is why
 `HELD` exists: until a walker has acknowledged, an empty walker queue is not proof
 that it is idle.  An inserter checks its state **before** re-testing emptiness, so a
-point pushed between the two checks is still probed before it goes quiet.  All state
+point pushed between the two checks is still probed before it goes quiet.  It hands its
+private run of candidates over whenever it has nothing left to probe, so by the time it
+answers `QUIESCENT` that run is already in the queue and the drain has nothing to flush.
+All state
 loads are acquire, all stores release.  Every thread resets itself to `RUNNING` at the
 top of the next round.
 
@@ -355,7 +401,7 @@ comm:      RUNNING -> COLLECTING -> FLUSHING -> WAITING -> DRAINING_INSERTERS ->
 | `FLUSHING` | sending its partial output buffers | nothing is left to send and every `Isend` has completed; the sentinels go out (steps 3, 4) |
 | `WAITING` | taking delivery until every node's sentinel | `n_sentinels == n_nodes`; the inserters are told to `DRAIN` (steps 5, 6) |
 | `DRAINING_INSERTERS` | waiting for the inserters to empty their queues | every inserter is `QUIESCENT`; the walkers are told to `DRAIN` (steps 6, 7) |
-| `DRAINING_WALKERS` | waiting for the walkers to empty the collision queue | every walker is `QUIESCENT` (step 7) |
+| `DRAINING_WALKERS` | waiting for the walkers to empty the collision queues | every walker is `QUIESCENT` (step 7) |
 | `QUIESCENT` | done for this round: `comm_round()` runs the epilogue (§4.6) and returns | |
 
 ### 3.4 Statistics and the golden pair
@@ -367,19 +413,23 @@ comm:      RUNNING -> COLLECTING -> FLUSHING -> WAITING -> DRAINING_INSERTERS ->
   comm thread reads them twice.  During the round, `CommThread::snapshot()` sums the
   arrays of every thread after a `#pragma omp flush`, to build a progress report: it
   sees whatever has reached memory, so a count may lag a little (one bumped once per
-  chunk can sit in a register until the walker's next release store or mutex), which
+  chunk can sit in a register until the walker's next release store, or its next turn on
+  its group's collision-queue mutex), which
   is fine for a report.  Once every worker is `QUIESCENT` the values are exact -- a
   worker's last increment happens-before its `QUIESCENT` store (release), which the
   comm thread loaded with acquire (§4.5, steps 6 and 7) -- and they are summed across
   threads, reduced across nodes, and zeroed by the comm thread (§4.6).
-- The HyperLogLog over the round's collisions is one per node, `SharedContext::hll`:
-  `HLL_REGISTERS == 65 536` `atomic<u8>`.  On every collision a walker calls
-  `SharedContext::found_collision(x0, x1)`: the register is the top 16 bits of the
-  pair's hash, its value the position of the lowest set bit, and a CAS loop raises
-  the register to it and never lowers it (an atomic max).  Relaxed throughout:
-  nobody reads a register before every walker is `QUIESCENT`, when the comm thread
-  copies them out for the `MPI_MAX` reduction and zeroes them; the walkers' release
-  stores of `QUIESCENT` order the registers for its acquire loads.
+- The HyperLogLog over the round's collisions is **one per walker**,
+  `ThreadContext::hll`: `HLL_REGISTERS == 65 536` plain `u8`, written by its owner and
+  nobody else.  On every collision a walker calls `hll_record(hll, x0, x1)`: the register
+  is the top 16 bits of the pair's hash, its value the position of the lowest set bit,
+  raised to it and never lowered.  No atomics and no CAS -- the estimator only ever wants
+  the maximum of each register, and a maximum is associative, so merging the walkers'
+  arrays gives exactly what one shared array under CAS would have held.  The comm thread
+  merges them (`hll_merge`) once every walker is `QUIESCENT`, reduces the result with
+  `MPI_MAX` and zeroes them; the walkers' release stores of `QUIESCENT` order the
+  registers for its acquire loads.  The merge is `HLL_REGISTERS * walkers` byte
+  comparisons once per round, tens of milliseconds against a round of tens of seconds.
 - `SharedContext::set_golden(i, x0, x1)` takes a mutex, keeps the first triple, and
   raises `golden_found` with a release store.  The comm thread polls the flag (acquire)
   every turn of its loop, in every phase of the round, and forwards it as a solution
@@ -401,8 +451,8 @@ comm:      RUNNING -> COLLECTING -> FLUSHING -> WAITING -> DRAINING_INSERTERS ->
    put back at the end (§4.7).  Nothing may `MPI_Bsend` before this, and nothing does.
    The test-vector `MPI_Bcast` (§2.3) asserts every rank iterates the same function;
    rank 0 prints the banner.  Then what the threads share is built, as locals of
-   `run()`: the `SharedContext` -- the round header and golden slot, the collision
-   queue, the zeroed HyperLogLog, and the `ctx` and `shards` tables, sized but not
+   `run()`: the `SharedContext` -- the round header and golden slot, and the `ctx`,
+   `shards` and `coll_q` tables, sized but not
    filled -- and the `CommThread`, thread 0's object: the main thread *is* thread 0 of
    the team to come.  Its constructor posts every receive of the engine: the
    `n_in_buffers` point receives and the end-of-round receive itself, and on rank 0
@@ -413,14 +463,15 @@ comm:      RUNNING -> COLLECTING -> FLUSHING -> WAITING -> DRAINING_INSERTERS ->
    pinned, or is not on its CPU, says so.  **OpenMP barrier**: if any thread of the
    rank is misplaced, thread 0 -- the main thread, the only one allowed to call MPI --
    `MPI_Abort`s the run; nothing has been allocated yet.  **Then** each thread builds
-   its `ThreadContext` into `shared.ctx[tid]` (with the CPU and NUMA node it measured
-   and, for a worker, its SPSC queue), and an inserter also builds its dictionary
-   shard into `shared.shards[tid-1]` (`PcsDict`, `w_shard` slots, zero-filled).
+   its `ThreadContext` into `shared.ctx[tid]` (with the CPU and NUMA node it measured,
+   its group, and for a worker its SPSC queue; a walker's zeroed HyperLogLog too), and
+   an inserter also builds its dictionary shard into `shared.shards[tid-1]` (`PcsDict`,
+   `w_shard` slots, zero-filled) and its collision queue into `shared.coll_q[tid-1]`.
    Allocating after pinning is deliberate: under Linux's first-touch policy a page
    lands on the NUMA node of the CPU that first writes it, so this puts every object
-   on its owner's node.  **OpenMP barrier** publishes both tables; the comm thread
+   on its owner's node.  **OpenMP barrier** publishes the tables; the comm thread
    reads them from its first round on, and on rank 0 prints the measured layout, one
-   line per NUMA node.
+   line per NUMA node and one per cache domain.
 
 ### 4.2 Round start
 
@@ -462,15 +513,17 @@ node is quiescent; its body is the same in every phase (the phase is `ctx[0]->st
 
 Nothing in this loop blocks.
 
-**Walker**, one turn: read `state`; retire up to `coll_per_chunk` collision candidates
-(0 = until the queue is empty and the batch is not full, §3.2); walk one chunk,
+**Walker**, one turn: read `state`; retire up to `coll_per_chunk` candidates from its
+own group's queue (0 = until it has nothing in hand and the batch is not full, §3.2);
+walk one chunk,
 pushing each DP found into its SPSC queue (drop if full)
 and restarting the chain, tallying into `ctr` as it goes; add the chunk's evaluations
 to `ctr`.
 
 **Inserter**, one turn: pop up to 64 DPs, probe each into its shard
-(`PcsDict::pop_insert`), push a `CollisionCandidate` for every hit (drop if full);
-then read `state`; if nothing to do, `cpu_relax()`.
+(`PcsDict::pop_insert`), stage a `CollisionCandidate` for every hit in a private run;
+hand the run to its own queue once there is nothing left to probe, or as soon as it is
+64 long (drop what does not fit); then read `state`; if nothing to do, `cpu_relax()`.
 
 **Controller** (inside `service()` on rank 0): a solution is recorded (first one wins)
 and raises `stop`; a progress report adds its deltas; then, once per round, the round
@@ -492,10 +545,11 @@ comm thread (sender):  node = x % n_nodes
 deliver_local()   <-----------------  comm thread (receiver): poll_incoming()
    |  slot = (x / n_nodes) % inserters_per_node, SPSC
    v
-inserter:  key = x / n_inserters, probe the shard
-   |  hit: CollisionCandidate, mutex
+inserter r:  key = x / n_inserters, probe the shard
+   |  hit: CollisionCandidate, staged in a private run of 64
    v
-coll_q  -->  walker: vlen/2 at a time, walk both trails, locate the collision, test the pair
+coll_q[r]  -->  a walker of group r: takes a run, then vlen/2 at a time,
+                walks both trails, locates the collision, tests the pair
                 |  golden
                 v
           SharedContext::set_golden  -->  comm thread  -->  solution to rank 0
@@ -515,8 +569,8 @@ airtight: no thread declares itself finished while something can still arrive fo
 | 2 | `COLLECTING` | every walker is `HELD`, this turn's `route_walker_queues()` moved nothing, and every walker queue has `head == tail` | phase `FLUSHING` | every DP this node produced this round has been routed (delivered locally or handed to `OutBuffers`).  The `HELD` load is acquire and a walker's last push happens-before its `HELD` store, so the queue test that follows sees it; a `HELD` walker never pushes again |
 | 3, 4 | `FLUSHING` | `outbuf.flush_poll()`: nothing left to send, every `Isend` completed | `outbuf.send_sentinels()`; phase `WAITING` | every DP bound for another node has left this node -- receiving went on throughout, so the peers we waited on could complete their sends too -- and every node (self included) will learn that we are done sending; the sentinel cannot overtake the data it follows |
 | 5, 6 | `WAITING` | `n_sentinels == n_nodes` | `state(INSERTER) := DRAIN`; phase `DRAINING_INSERTERS` | every node has finished sending to us, and everything they sent has been scattered to the inserter queues.  Every node was sent its end-of-round signal before rank 0 could even enter its drain, so nobody is waiting on rank 0 here; it keeps digesting reports so the round's tallies cover what the others produced meanwhile |
-| 6, 7 | `DRAINING_INSERTERS` | every inserter is `QUIESCENT` | `state(WALKER) := DRAIN`; phase `DRAINING_WALKERS` | every DP of the round has been probed; no new collision candidate can appear |
-| 7 | `DRAINING_WALKERS` | every walker is `QUIESCENT` | phase `QUIESCENT`: the epilogue (§4.6), then `comm_round()` returns | the collision queue is empty and every walker's resolver batch is empty: every candidate of the round has been resolved.  Doing this last is what keeps a golden pair found on the very last candidate from being lost |
+| 6, 7 | `DRAINING_INSERTERS` | every inserter is `QUIESCENT` | `state(WALKER) := DRAIN`; phase `DRAINING_WALKERS` | every DP of the round has been probed and every inserter's private run has been handed to its queue (§3.3); no new candidate can appear in any of them |
+| 7 | `DRAINING_WALKERS` | every walker is `QUIESCENT` | phase `QUIESCENT`: the epilogue (§4.6), then `comm_round()` returns | every collision queue is empty, and so is every walker's private run and resolver batch: every candidate of the round has been resolved.  Each queue has at least one walker of its own group to drain it, which is why fewer walkers than inserters is refused at startup (§1).  Doing this last is what keeps a golden pair found on the very last candidate from being lost |
 
 Running the full body in every phase is harmless.  From `FLUSHING` on the walkers are
 held and their queues empty, so the routing pass moves nothing (asserted).  Past
@@ -533,15 +587,15 @@ can enter its own drain.
 ### 4.6 Epilogue
 
 1. Thread 0, at the end of `comm_round()`, once every worker of the node is
-   `QUIESCENT` -- their `ctr` arrays and the node's HyperLogLog are then exact and
+   `QUIESCENT` -- their `ctr` arrays and their HyperLogLogs are then exact and
    nobody writes them (§3.4) -- `CommThread::end_round()`: sum the `n_threads` `ctr`
-   arrays (`snapshot()`), copy the registers out of `SharedContext::hll`,
+   arrays (`snapshot()`), merge the walkers' HyperLogLogs into one (`hll_merge`),
    **`MPI_Reduce` (SUM) of the `N_COUNTERS` words to rank 0**, then **`MPI_Reduce`
    (MAX) of the `HLL_REGISTERS` bytes**.  On rank 0, `controller.end_round()` prints
    the round report from the reduced values and folds them into its all-time `total[]`
    and `hll[]`; it is printing only -- the round count and `stop` were settled when
-   the round was closed (§2.2).  Then thread 0 zeroes every thread's `ctr`, the node's
-   HyperLogLog and its own
+   the round was closed (§2.2).  Then thread 0 zeroes every thread's `ctr`, every
+   walker's HyperLogLog and its own
    `n_sentinels`; nobody touches any of them again before the next round's barrier
    (§4.2, step 3).
 2. **OpenMP barrier**: every thread of the node is back from its round function.
@@ -576,7 +630,7 @@ inserter-queue / collision-queue`).
 | walker -> comm SPSC | yes | `DROP_WALKERQ` |
 | comm -> remote node (`OutBuffers`) | yes | `DROP_OUT` |
 | comm -> inserter SPSC | yes | `DROP_INSERTERQ` |
-| inserter -> walkers (`coll_q`) | yes | `DROP_COLL` |
+| inserter `r` -> its group's walkers (`coll_q[r]`) | yes | `DROP_COLL` |
 | control channel (end-of-round signals, reports, solutions) | **never** | buffered send, buffer sized for the bounded traffic plus slack (§2.2); a full buffer is a fatal error, not a drop |
 | sentinels | **never** | same buffer |
 | collectives | n/a | |
@@ -588,9 +642,10 @@ inserter-queue / collision-queue`).
   quiescent (drain steps 2 through 6).  No round-`r` point is ever probed in round
   `r+1`: nothing is delivered after the last sentinel, and the queues are empty when
   the inserters stop.
-- Every collision candidate of round `r` is resolved by a round-`r` walker before the
-  walkers go quiescent (drain step 7), the ones parked in its resolver batch included;
-  a walker asserts `c.i == round.i` as it starts one.
+- Every collision candidate of round `r` is resolved by a round-`r` walker of the
+  producing inserter's group before the walkers go quiescent (drain step 7) -- the ones
+  in a walker's private run and the ones parked in its resolver batch included; a walker
+  asserts `c.i == round.i` as it starts one.
 - The dictionary is empty at the start of every round (each inserter flushes its
   shard after its round, before the next round's barrier).
 - The controller sends exactly one message per round, the end-of-round signal to every
@@ -612,10 +667,12 @@ inserter-queue / collision-queue`).
 - The only blocking MPI calls (the round-start `Bcast` and the epilogue reductions)
   are reached by a rank only after its drain, i.e. after every node has received the
   end-of-round signal and has confirmed with a sentinel; so every rank reaches them.
-- Inside a node, no thread ever waits on a queue; the only waits are the comm thread
-  spinning on `state` values that the worker threads set for themselves at chunk
-  boundaries, and the two OpenMP barriers per round (§4.2 step 3, §4.6 step 2),
-  which every thread reaches unconditionally once its round function returns.
+- Inside a node, no thread ever waits on a queue: a collision queue's mutex is held
+  only for the length of one run's copy, never across anything that can block.  The only
+  waits are the comm thread spinning on `state` values that the worker threads set for
+  themselves at chunk boundaries, and the two OpenMP barriers per round (§4.2 step 3,
+  §4.6 step 2), which every thread reaches unconditionally once its round function
+  returns.
 
 ## 6. Known windows
 

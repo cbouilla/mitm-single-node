@@ -331,17 +331,18 @@ public:
 	/******************* end-of-round statistics *******************/
 
 	/*
-	 * The round's statistics, once every worker is QUIESCENT: reduce the tallies (SUM) and the
-	 * HyperLogLog (MAX) to rank 0, then zero everything round-scoped.  The reductions block; every rank
-	 * reaches them after its drain (PROTOCOL.md §4.6).
+	 * The round's statistics, once every worker is QUIESCENT: merge the walkers' HyperLogLogs, reduce
+	 * them (MAX) and the tallies (SUM) to rank 0, then zero everything round-scoped.  The reductions
+	 * block; every rank reaches them after its drain (PROTOCOL.md §4.6).
 	 */
 	void end_round()
 	{
 		u64 sum[N_COUNTERS];
 		snapshot(sum);
-		u8 hll[HLL_REGISTERS];
-		for (int k = 0; k < HLL_REGISTERS; k++)
-			hll[k] = shared.hll[k].load(std::memory_order_relaxed);
+		u8 hll[HLL_REGISTERS] = {};
+		for (int t = 0; t < params.n_threads; t++)
+			if (ctx[t]->role == WALKER)
+				hll_merge(hll, ctx[t]->hll.data());
 
 		if (params.rank == 0) {
 			MPI_Reduce(MPI_IN_PLACE, sum, N_COUNTERS, MPI_UINT64_T, MPI_SUM, 0, params.mpi_comm);
@@ -352,11 +353,12 @@ public:
 			MPI_Reduce(hll, NULL, HLL_REGISTERS, MPI_UINT8_T, MPI_MAX, 0, params.mpi_comm);
 		}
 
-		for (int t = 0; t < params.n_threads; t++)
+		for (int t = 0; t < params.n_threads; t++) {
 			for (int k = 0; k < N_COUNTERS; k++)
 				ctx[t]->ctr[k] = 0;
-		for (int k = 0; k < HLL_REGISTERS; k++)
-			shared.hll[k].store(0, std::memory_order_relaxed);
+			for (int k = 0; k < (int) ctx[t]->hll.size(); k++)
+				ctx[t]->hll[k] = 0;
+		}
 		n_sentinels = 0;
 	}
 
@@ -465,9 +467,12 @@ optional<tuple<u64,u64,u64>> run(const ProblemWrapper &wrapper, u64 nbytes_memor
 			role = COMM;
 		else if (tid <= params.inserters_per_node)
 			role = INSERTER;
-		shared.ctx[tid] = std::make_unique<ThreadContext>(role, cpu, numa_node, params);
-		if (role == INSERTER)
+		shared.ctx[tid] = std::make_unique<ThreadContext>(role, cpu, numa_node,
+		                                                 params.thread_group[tid], params);
+		if (role == INSERTER) {
 			shared.shards[tid - 1] = std::make_unique<PcsDict>(params.jbits, params.w_shard);
+			shared.coll_q[tid - 1] = std::make_unique<CollisionQueue>(params.coll_queue_capacity);
+		}
 		ThreadContext &me = *shared.ctx[tid];
 
 		#pragma omp barrier             /* now we can inspect the shared context */

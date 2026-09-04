@@ -203,8 +203,8 @@ public:
 			       "%" PRId64 " inserter-queue / %" PRId64 " collision-queue\n",
 				r[DROP_WALKERQ], r[DROP_OUT], r[DROP_INSERTERQ], r[DROP_COLL]);
 
-		u64 E_i = SharedContext::distinct_collisions_estimation(hll_round);
-		u64 E = SharedContext::distinct_collisions_estimation(hll);
+		u64 E_i = distinct_collisions_estimation(hll_round);
+		u64 E = distinct_collisions_estimation(hll);
 		printf("            #distinct coll (this i / total) %.02f*w / 2^%.2f\n",
 			(double) E_i / params.w, std::log2((double) E ? (double) E : 1.));
 		printf("\n");
@@ -228,6 +228,23 @@ public:
 			params.n_inserters, params.n_walkers);
 		printf("MPI: rank 0 has %d CPUs in its affinity mask over %d NUMA node(s); threads %s\n",
 			params.n_avail_cpu, params.n_numa_nodes, params.bind_threads ? "pinned" : "NOT pinned (--no-bind)");
+		int gmin = params.group_size.empty() ? 0 : *std::min_element(params.group_size.begin(),
+		                                                             params.group_size.end());
+		int gmax = params.group_size.empty() ? 0 : *std::max_element(params.group_size.begin(),
+		                                                             params.group_size.end());
+		if (params.cache_level_used > 0)
+			printf("MPI: %d thread group(s) of %d..%d CPUs over %d L%d domain(s), one inserter each\n",
+				params.n_groups, gmin, gmax, params.n_caches, params.cache_level_used);
+		else
+			printf("MPI: %d thread group(s) of %d..%d CPUs; no cache is shared by several cores,"
+			       " so the mask is one domain\n", params.n_groups, gmin, gmax);
+		if (params.n_numa_nodes != 1) {
+			printf("***** WARNING *****\n");
+			printf("---> rank 0 spans %d NUMA nodes: the engine wants ONE MPI RANK PER NUMA NODE\n",
+				params.n_numa_nodes);
+			printf("---> (mpirun --map-by numa --bind-to numa, or the launcher's equivalent)\n");
+			printf("***** WARNING *****\n");
+		}
 		if (params.bind_threads) {
 			printf("MPI: inserters on CPUs");
 			for (int tid = 1; tid <= params.inserters_per_node; tid++)
@@ -251,7 +268,10 @@ public:
 		fflush(stdout);
 	}
 
-	/* the measured layout, one line per NUMA node: the threads that landed there.  Static like banner() */
+	/*
+	 * The measured layout, one line per NUMA node: the threads that landed there.  Then the plan, one
+	 * line per cache domain, while the groups are few enough to be worth listing.  Static like banner()
+	 */
 	static void placement(const Parameters &params, const SharedContext &shared)
 	{
 		std::vector<int> numa_ids;
@@ -275,6 +295,19 @@ public:
 			}
 			printf("NUMA node %d: %s%d ins + %d walk\n", numa_ids[k], n_comm ? "comm + " : "", n_ins, n_walk);
 		}
+		if (params.cache_level_used > 0 && params.n_groups >= params.n_caches && params.n_groups <= 32)
+			for (int c = 0; c < params.n_caches; c++) {
+				printf("L%d domain %d: groups", params.cache_level_used, c);
+				for (int j = 0; j < params.n_groups; j++)
+					if (params.group_cache[j] == c)
+						printf(" %d(%d cpu)", j, params.group_size[j]);
+				printf("\n");
+			}
+		else if (params.cache_level_used > 0 && params.n_groups <= 32)
+			for (int j = 0; j < params.n_groups; j++)
+				printf("group %d: %d cpu, L%d domains %d-%d\n", j, params.group_size[j],
+					params.cache_level_used, params.group_cache[j],
+					(j + 1 < params.n_groups) ? params.group_cache[j + 1] - 1 : params.n_caches - 1);
 		fflush(stdout);
 	}
 

@@ -76,8 +76,10 @@ public:
 /******************************* the inserter thread **************************/
 
 /*
- * An inserter thread: probes every DP delivered to its queue into its shard and hands each hit to the
- * walkers as a CollisionCandidate.  Wind-down: ctx.state, PROTOCOL.md §3.3.
+ * An inserter thread: probes every DP delivered to its queue into its shard and hands the hits to the
+ * walkers of its own group, over its own collision queue and in runs (PROTOCOL.md §3.2).  A run is
+ * handed over as soon as there is nothing left to probe, so a partial one never waits on the next hit.
+ * Wind-down: ctx.state, PROTOCOL.md §3.3.
  *
  * Not done: software-pipelining the probes (prefetch a fresh point, probe one queued a dozen earlier,
  * so that many misses are outstanding at once).  Measured at about 5% on a laptop with a 256 MB
@@ -88,10 +90,12 @@ inline void inserter_thread(ThreadContext &ctx, const Parameters &params, Shared
 {
 	SPSCQueue &in = *ctx.q;
 	PcsDict &dict = *shared.shards[inserter_index];
-	CollisionQueue &coll_q = shared.coll_q;
+	CollisionQueue &coll_q = *shared.coll_q[inserter_index];
 	u64 *ctr = ctx.ctr;
 	static const size_t BATCH = 64;
 	DP staging[BATCH];
+	CollisionCandidate pending[BATCH];    /* hits waiting for the run to be handed over */
+	size_t n_pending = 0;
 
 	for (;;) {
 		while (not in.empty()) {
@@ -106,10 +110,19 @@ inline void inserter_thread(ThreadContext &ctx, const Parameters &params, Shared
 					continue;
 				}
 				auto [seed1, len1_maybe] = *hit;
-				CollisionCandidate c = {shared.i, p.seed, p.len, key, seed1, len1_maybe};
-				if (not coll_q.push(c))
-					ctr[DROP_COLL] += 1;
+				pending[n_pending] = {shared.i, p.seed, p.len, key, seed1, len1_maybe};
+				n_pending += 1;
+				if (n_pending == BATCH) {
+					ctr[DROP_COLL] += n_pending - coll_q.push_bulk(pending, n_pending);
+					n_pending = 0;
+				}
 			}
+		}
+
+		/* nothing left to probe: the run goes over now, so that the drain never has to flush one (§4.5) */
+		if (n_pending > 0) {
+			ctr[DROP_COLL] += n_pending - coll_q.push_bulk(pending, n_pending);
+			n_pending = 0;
 		}
 
 		/* state first, then emptiness: a point pushed between the two is still probed (PROTOCOL.md §3.3) */

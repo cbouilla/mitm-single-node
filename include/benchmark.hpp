@@ -364,10 +364,11 @@ static void staging_row(const Parameters &params, u64 n_dest, u64 cap, u64 &chec
 
 /*
  * How fast can the walkers of a node stage their own distinguished points, one shared buffer per
- * destination shard?  Prices the producer-side routing of PROBLEM.md §5 before it is built: whatever
- * replaces the funnel has to beat one comm thread's ~250 ns per point at the fan-out it will face,
- * `n_nodes * inserters_per_node` destinations, which is why the sweep is over that.  The last two
- * columns are what one thread spends per point, the number to compare against 250 ns.
+ * destination shard?  Prices the producer-side routing of PROBLEM.md §5 before it is built, at the
+ * fan-out it will face -- `n_nodes * inserters_per_node` destinations, which is why the sweep is over
+ * that.  Two different numbers come out of a row: the *node* rate is what replaces one comm thread's
+ * 4.2 M DP/s, and the last two columns, what one thread spends per point, are the tax on a walker --
+ * read them against the ~670 ns it spends walking a trail to produce the point (PROBLEM.md §9).
  *
  * What it does NOT measure: sealing a full buffer and handing it to the funnel.  The buffers here are
  * circular and are never sent, so a reservation that reaches the end simply wraps; the cache

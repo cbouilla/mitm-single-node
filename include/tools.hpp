@@ -53,17 +53,41 @@ static inline int pin_to_cpu(int cpu)
 }
 
 /*
- * NUMA node (hwloc os_index) of every CPU of `mask`; -1 outside the mask or in no NUMA node.  No
- * topology flag on purpose: RESTRICT_TO_CPUBINDING would defeat the HWLOC_SYNTHETIC test path.
+ * The lowest cache level shared by several CORES, which is what a thread group is built around; 0 when
+ * every cache is private to one core.  Depths run from the machine down to the PUs, so walking them
+ * backwards visits the caches from the smallest up and stops at the first shared one.
  */
-static inline void numa_node_of_cpus(const cpu_set_t &mask, std::vector<int> &numa_node_of_cpu)
+static inline int lowest_shared_cache_level(hwloc_topology_t topo)
+{
+    for (int depth = hwloc_topology_get_depth(topo) - 1; depth >= 0; depth--) {
+        hwloc_obj_t obj = hwloc_get_obj_by_depth(topo, depth, 0);
+        if (obj == NULL || not hwloc_obj_type_is_dcache(obj->type))
+            continue;
+        if (hwloc_get_nbobjs_inside_cpuset_by_type(topo, obj->cpuset, HWLOC_OBJ_CORE) > 1)
+            return (int) obj->attr->cache.depth;
+    }
+    return 0;
+}
+
+/*
+ * NUMA node (hwloc os_index), cache domain and physical core (both a dense index, ascending) of every
+ * CPU of `mask`, from one topology load; -1 outside the mask, or in no such object.  `level` is the
+ * cache level that defines a domain, or 0 to take the lowest one shared by several cores; the level
+ * used is returned.  The core map is what makes SMT siblings visible to the placement.
+ * No topology flag on purpose: RESTRICT_TO_CPUBINDING would defeat the HWLOC_SYNTHETIC test path.
+ */
+static inline int topology_of_cpus(const cpu_set_t &mask, int level, std::vector<int> &numa_node_of_cpu,
+                                   std::vector<int> &cache_of_cpu, std::vector<int> &core_of_cpu)
 {
     numa_node_of_cpu.assign(CPU_SETSIZE, -1);
+    cache_of_cpu.assign(CPU_SETSIZE, -1);
+    core_of_cpu.assign(CPU_SETSIZE, -1);
     hwloc_topology_t topo;
     if (hwloc_topology_init(&topo) != 0)
         err(1, "hwloc_topology_init");
     if (hwloc_topology_load(topo) != 0)
         err(1, "hwloc_topology_load");
+
     hwloc_obj_t node = NULL;
     while ((node = hwloc_get_next_obj_by_type(topo, HWLOC_OBJ_NUMANODE, node)) != NULL) {
         unsigned cpu;
@@ -72,7 +96,45 @@ static inline void numa_node_of_cpus(const cpu_set_t &mask, std::vector<int> &nu
                 numa_node_of_cpu[cpu] = (int) node->os_index;
         hwloc_bitmap_foreach_end();
     }
+
+    hwloc_obj_t core = NULL;
+    int n_core = 0;
+    while ((core = hwloc_get_next_obj_by_type(topo, HWLOC_OBJ_CORE, core)) != NULL) {
+        bool used = false;
+        unsigned cpu;
+        hwloc_bitmap_foreach_begin(cpu, core->cpuset)
+            if (cpu < CPU_SETSIZE && CPU_ISSET(cpu, &mask) && core_of_cpu[cpu] < 0) {
+                core_of_cpu[cpu] = n_core;
+                used = true;
+            }
+        hwloc_bitmap_foreach_end();
+        if (used)
+            n_core += 1;
+    }
+
+    if (level == 0)
+        level = lowest_shared_cache_level(topo);
+    int id = 0;                        /* only domains holding a CPU of the mask are numbered */
+    for (int depth = hwloc_topology_get_depth(topo) - 1; level > 0 && depth >= 0; depth--) {
+        unsigned nobj = hwloc_get_nbobjs_by_depth(topo, depth);
+        for (unsigned k = 0; k < nobj; k++) {
+            hwloc_obj_t obj = hwloc_get_obj_by_depth(topo, depth, k);
+            if (not hwloc_obj_type_is_dcache(obj->type) || (int) obj->attr->cache.depth != level)
+                continue;
+            bool used = false;
+            unsigned cpu;
+            hwloc_bitmap_foreach_begin(cpu, obj->cpuset)
+                if (cpu < CPU_SETSIZE && CPU_ISSET(cpu, &mask) && cache_of_cpu[cpu] < 0) {
+                    cache_of_cpu[cpu] = id;
+                    used = true;
+                }
+            hwloc_bitmap_foreach_end();
+            if (used)
+                id += 1;
+        }
+    }
     hwloc_topology_destroy(topo);
+    return (id > 0) ? level : 0;
 }
 
 

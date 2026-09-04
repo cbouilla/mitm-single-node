@@ -32,8 +32,10 @@ struct CollisionCandidate {
 };
 
 /*
- * Bounded, mutex-protected queue of dictionary hits: inserters push, walkers pop.  Full == the
- * candidate is dropped and the caller tallies it (DROP_COLL).  PROTOCOL.md §3.2.
+ * Bounded, mutex-protected queue of dictionary hits: ONE per inserter, pushed by that inserter and
+ * popped by the walkers of its thread group.  Candidates cross it in runs, never one at a time, so
+ * that the lock and the `count` line are touched once per run.  Full == the run is truncated and the
+ * inserter tallies the rest (DROP_COLL).  PROTOCOL.md §3.2.
  */
 class CollisionQueue {
 	std::mutex mtx;
@@ -51,28 +53,34 @@ public:
 		return count.load(std::memory_order_relaxed) == 0;
 	}
 
-	bool push(const CollisionCandidate &c)
+	/* producer side.  Returns how many of the run fitted; the caller tallies the rest. */
+	size_t push_bulk(const CollisionCandidate *in, size_t n)
 	{
 		std::lock_guard<std::mutex> lock(mtx);
-		if (count.load(std::memory_order_relaxed) == buf.size())
-			return false;                /* full: the caller tallies the drop */
-		buf[tail] = c;
-		if (++tail == buf.size())
-			tail = 0;
-		count.fetch_add(1, std::memory_order_release);
-		return true;
+		size_t room = buf.size() - count.load(std::memory_order_relaxed);
+		size_t k = (room < n) ? room : n;
+		for (size_t t = 0; t < k; t++) {
+			buf[tail] = in[t];
+			if (++tail == buf.size())
+				tail = 0;
+		}
+		count.fetch_add(k, std::memory_order_release);
+		return k;
 	}
 
-	bool pop(CollisionCandidate &c)
+	/* consumer side.  Several walkers of the group may be here at once; the lock is what orders them. */
+	size_t pop_bulk(CollisionCandidate *out, size_t max)
 	{
 		std::lock_guard<std::mutex> lock(mtx);
-		if (count.load(std::memory_order_relaxed) == 0)
-			return false;
-		c = buf[head];
-		if (++head == buf.size())
-			head = 0;
-		count.fetch_sub(1, std::memory_order_release);
-		return true;
+		size_t avail = count.load(std::memory_order_relaxed);
+		size_t k = (avail < max) ? avail : max;
+		for (size_t t = 0; t < k; t++) {
+			out[t] = buf[head];
+			if (++head == buf.size())
+				head = 0;
+		}
+		count.fetch_sub(k, std::memory_order_release);
+		return k;
 	}
 };
 
@@ -108,6 +116,56 @@ enum counter {
 };
 
 
+/******************************** HyperLogLog *********************************/
+
+static constexpr int HLL_REGISTERS = 0x10000;   /* one per value of the top 16 bits of a pair's hash */
+
+/*
+ * How many DISTINCT collisions a round found.  One HyperLogLog per walker, plain `u8`, written by its
+ * owner alone and merged by the comm thread once every walker is quiescent: PROTOCOL.md §3.4.  None of
+ * this is part of the attack -- it is what tells us whether the parameters are any good.
+ */
+
+/* record the collision (x0, x1): raise its register to the pair's rho, never lower it */
+static inline void hll_record(u8 h[HLL_REGISTERS], u64 x0, u64 x1)
+{
+	u64 hash = murmur128(x0, x1);
+	u64 idx = hash >> 48;
+	u8 rho = (u8) ffsll(hash);
+	if (h[idx] < rho)
+		h[idx] = rho;
+}
+
+/* fold `src` into `dst`: the estimate below only ever needs the max of each register */
+static inline void hll_merge(u8 dst[HLL_REGISTERS], const u8 src[HLL_REGISTERS])
+{
+	for (int k = 0; k < HLL_REGISTERS; k++)
+		if (dst[k] < src[k])
+			dst[k] = src[k];
+}
+
+/* the estimate, on merged registers (one round's, or the controller's all-time) */
+static inline u64 distinct_collisions_estimation(const u8 h[HLL_REGISTERS])
+{
+	double acc = 0;
+	double alpha = 0.7213 / (1 + 1.079 / HLL_REGISTERS);
+	for (int i = 0; i < HLL_REGISTERS; i++)
+		acc += std::ldexp(1.0, -(int) h[i]);       /* 2^-h[i]; (1 << h[i]) overflows past 31 */
+	double E = alpha * ((double) HLL_REGISTERS * HLL_REGISTERS) / acc;
+	if (E >= 2.5 * HLL_REGISTERS)
+		return E;
+	// low cardinality, potential correction
+	int V = 0;
+	for (int i = 0; i < HLL_REGISTERS; i++)
+		if (h[i] == 0)
+			V += 1;
+	if (V == 0)
+		return E;
+	else
+		return HLL_REGISTERS * std::log((double) HLL_REGISTERS / V);
+}
+
+
 /******************************** thread state ********************************/
 
 /*
@@ -131,17 +189,20 @@ struct alignas(64) ThreadContext {
 	const int role;                 /* the comm thread dispatches on it */
 	const int cpu;                  /* where the thread runs, asked to the kernel once pinned */
 	const int numa_node;            /* its NUMA node: the one its first touch lands on */
+	const int group;                /* its thread group; a walker's IS the inserter it resolves for (§1) */
 	std::atomic<int> state;         /* PROTOCOL.md §3.3.  Thread 0's is the phase of its round loop */
 	u64 ctr[N_COUNTERS] = {};       /* this thread's alone, plain u64; exact only once it is QUIESCENT (§3.4) */
 	std::unique_ptr<SPSCQueue> q;   /* walker: to the comm thread; inserter: from it; null for the comm thread */
+	std::vector<u8> hll;            /* walker: its own HyperLogLog of the round's collisions; empty otherwise */
 
-	/* built by the thread it describes, once pinned: the queue's buffer is then its first touch (§4.1) */
-	ThreadContext(int role, int cpu, int numa_node, const Parameters &params)
-		: role(role), cpu(cpu), numa_node(numa_node), state(RUNNING)
+	/* built by the thread it describes, once pinned: its buffers are then its first touch (§4.1) */
+	ThreadContext(int role, int cpu, int numa_node, int group, const Parameters &params)
+		: role(role), cpu(cpu), numa_node(numa_node), group(group), state(RUNNING)
 	{
-		if (role == WALKER)
+		if (role == WALKER) {
 			q = std::make_unique<SPSCQueue>(params.walker_queue_capacity);
-		else if (role == INSERTER)
+			hll.assign(HLL_REGISTERS, 0);
+		} else if (role == INSERTER)
 			q = std::make_unique<SPSCQueue>(params.inserter_queue_capacity);
 	}
 };
@@ -149,11 +210,9 @@ struct alignas(64) ThreadContext {
 
 /******************************* shared context *******************************/
 
-static constexpr int HLL_REGISTERS = 0x10000;   /* one per value of the top 16 bits of a pair's hash */
-
 /*
- * What every thread of the node shares.  One per rank, a local of run(), built before the team; ctx
- * and shards are sized here and filled by each thread once it is pinned (PROTOCOL.md §4.1).
+ * What every thread of the node shares.  One per rank, a local of run(); ctx, shards and coll_q are
+ * sized here and filled by each thread once it is pinned (PROTOCOL.md §4.1).
  */
 struct SharedContext {
 	/* the round header: written by the comm thread, read by everyone after an omp barrier */
@@ -167,16 +226,8 @@ struct SharedContext {
 	/* shard r: inserter r (thread 1 + r) alone builds, probes and flushes it */
 	std::vector<std::unique_ptr<PcsDict>> shards;
 
-	/* inserters push, walkers pop */
-	alignas(64) CollisionQueue coll_q;
-
-	/*
-	 * HyperLogLog of this round's collisions, to estimate how many are DISTINCT.  Any walker raises a
-	 * register (CAS max); the comm thread reads them once every walker is QUIESCENT (PROTOCOL.md §3.4).
-	 * C++17: a default-constructed std::atomic is NOT zero, hence the loop in the constructor.
-	 */
-	alignas(64) std::atomic<u8> hll[HLL_REGISTERS];
-	static_assert(std::atomic<u8>::is_always_lock_free, "the HyperLogLog registers must be lock-free");
+	/* queue r: inserter r pushes, the walkers of group r pop (PROTOCOL.md §3.2) */
+	std::vector<std::unique_ptr<CollisionQueue>> coll_q;
 
 	/* the golden pair: any walker writes (the first one wins), the comm thread polls */
 	std::mutex golden_mtx;
@@ -185,10 +236,8 @@ struct SharedContext {
 
 	SharedContext(const Parameters &params)
 		: ctx(params.n_threads), shards(params.inserters_per_node),
-		  coll_q(params.coll_queue_capacity), golden_found(false)
+		  coll_q(params.inserters_per_node), golden_found(false)
 	{
-		for (int k = 0; k < HLL_REGISTERS; k++)
-			hll[k].store(0, std::memory_order_relaxed);
 		golden[0] = golden[1] = golden[2] = 0;
 	}
 
@@ -201,38 +250,6 @@ struct SharedContext {
 		golden[1] = x0;
 		golden[2] = x1;
 		golden_found.store(true, std::memory_order_release);
-	}
-
-	/* record the collision (x0, x1) in the HyperLogLog: raise its register to the pair's rho, never lower it */
-	void found_collision(u64 x0, u64 x1)
-	{
-		u64 h = murmur128(x0, x1);
-		u64 idx = h >> 48;
-		u8 rho = (u8) ffsll(h);
-		u8 cur = hll[idx].load(std::memory_order_relaxed);
-		while (cur < rho && not hll[idx].compare_exchange_weak(cur, rho, std::memory_order_relaxed))
-			;                              /* a failure reloaded cur: go round again */
-	}
-
-	/* the HyperLogLog estimate, on a plain copy of the registers (one round's, or the controller's all-time) */
-	static u64 distinct_collisions_estimation(const u8 h[HLL_REGISTERS])
-	{
-		double acc = 0;
-		double alpha = 0.7213 / (1 + 1.079 / HLL_REGISTERS);
-		for (int i = 0; i < HLL_REGISTERS; i++)
-			acc += std::ldexp(1.0, -(int) h[i]);       /* 2^-h[i]; (1 << h[i]) overflows past 31 */
-		double E = alpha * ((double) HLL_REGISTERS * HLL_REGISTERS) / acc;
-		if (E >= 2.5 * HLL_REGISTERS)
-			return E;
-		// low cardinality, potential correction
-		int V = 0;
-		for (int i = 0; i < HLL_REGISTERS; i++)
-			if (h[i] == 0)
-				V += 1;
-		if (V == 0)
-			return E;
-		else
-			return HLL_REGISTERS * std::log((double) HLL_REGISTERS / V);
 	}
 };
 
