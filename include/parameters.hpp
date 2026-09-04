@@ -18,7 +18,7 @@ enum thread_role {COMM, INSERTER, WALKER};
 
 static constexpr int DP_WORDS = 3;     /* how many u64 per distinguished point on the wire */
 
-struct DP {        /* One distinguished point*/
+struct DP {        /* one distinguished point */
 	u64 seed;      /* the chain index j it was started from */
 	u64 x;         /* the FULL endpoint */
 	u64 len;       /* trail length */
@@ -28,17 +28,14 @@ struct DP {        /* One distinguished point*/
 /********************************** options **********************************/
 
 struct Options {
-	/* the most important option */
 	int inserters_per_node = 1;               /* dictionary shards per node. Users SHOULD set this themselves */
-
-	/* other important options */
 	double theta = -1;                        /* proportion of distinguished points. -1 == auto */
 	bool verbose = true;                      /* print progress information (from rank 0 only) */
 
 	/* --- below this line, the defaults should be just fine */
 
 	/* nodes */
-	MPI_Comm mpi_comm = MPI_COMM_WORLD;
+	MPI_Comm mpi_comm = MPI_COMM_WORLD;       /* one rank per node */
 
 	/* thread layout inside a node */
 	int walkers_per_node = 0;              /* 0 == fill the inherited affinity mask */
@@ -63,7 +60,7 @@ struct Options {
 	int n_in_buffers = 8;                  /* posted MPI_Irecv slots (ANY_SOURCE) */
 
 	/* collision queue */
-	size_t coll_queue_capacity = 8192;
+	size_t coll_queue_capacity = 8192;     /* collision candidates buffered for the walkers */
 	size_t coll_per_chunk = 0;             /* candidates a walker retires per chunk; 0 == drain */
 
 	/* pacing */
@@ -78,14 +75,9 @@ struct Options {
 /********************************* parameters ********************************/
 
 /*
- * Everything the engine needs to know, derived ONCE from the options, the RAM budget
- * and the size of the (wrapped) problem: MPI topology, thread layout and placement
- * (over the NUMA nodes of the affinity mask, from hwloc), dictionary size and
- * difficulty.  Built by run() and never modified afterwards.  Data only: nothing here
- * runs outside the constructor.
- *
- * The user's Options are copied in, so the *resolved* values of walkers_per_node,
- * theta and verbose live here and the caller's object is left alone.
+ * Everything the engine needs, derived once from (Options, RAM budget, n, m) at the top of run() and
+ * const from then on: topology, thread layout and placement, dictionary size, difficulty.  Data only;
+ * the Options are copied in, so their resolved values live here.
  */
 struct Parameters : Options {
 	/* MPI topology.  One rank per node, so `rank` IS the node index. */
@@ -109,27 +101,28 @@ struct Parameters : Options {
 	/* difficulty */
 	bool theta_auto;                       /* theta was chosen from alpha */
 	double auto_theta;                     /* what alpha chooses, whether or not it was used */
-	u64 threshold;                         /* any integer less than this is a DP */
+	u64 threshold;                         /* x is a DP iff x <= threshold */
 	u64 dp_max_it;                         /* how many iterations to find a DP */
 	u64 points_per_version;                /* #DP per version of the function */
 
-	/* n, m are the wrapped problem's: the engine iterates {0,1}^n --> {0,1}^m */
+	/*
+	 * n, m are the wrapped problem's.  Placement (PROTOCOL.md §1): the comm thread on the first CPU of
+	 * the first NUMA node, inserter i and walker s on node i (resp. s) mod n_numa_nodes, next free CPU
+	 * each, so the shards are evenly spread only when inserters_per_node is a multiple of n_numa_nodes.
+	 */
 	Parameters(const Options &o, u64 nbytes_memory, int n, int m)
 		: Options(o), nbytes_memory(nbytes_memory)
 	{
-		/* topology */
 		MPI_Comm_rank(mpi_comm, &rank);
 		MPI_Comm_size(mpi_comm, &n_nodes);
 		verbose = verbose && (rank == 0);
 
-		/* what did the launcher actually give us? */
 		cpu_set_t mask;
 		CPU_ZERO(&mask);
 		if (sched_getaffinity(0, sizeof(mask), &mask) != 0)
 			err(1, "sched_getaffinity");
 		n_avail_cpu = CPU_COUNT(&mask);
 
-		/* thread layout */
 		if (inserters_per_node < 1)
 			errx(1, "MPI: at least one inserter thread per node is required");
 		if (walkers_per_node == 0)
@@ -145,17 +138,6 @@ struct Parameters : Options {
 			warnx("MPI: rank %d has only %d CPUs in its affinity mask for %d threads."
 			      "  Did you forget --bind-to none?", rank, n_avail_cpu, n_threads);
 
-		/*
-		 * Thread placement.  The CPUs of the mask, grouped by NUMA node (nodes in
-		 * numactl -H order, CPUs ascending inside a node).  The comm thread takes the
-		 * first CPU of the first node; inserter i goes to node i mod n_numa_nodes and
-		 * walker s to node s mod n_numa_nodes, each taking the next free CPU of that
-		 * node, or of the next node that still has one.  So the shards -- placed by
-		 * first touch on the node of their inserter -- are evenly spread whenever
-		 * inserters_per_node is a multiple of n_numa_nodes.  When every CPU is taken
-		 * the remaining threads stay unpinned (-1), see the warning above.  On one
-		 * NUMA node this is the k-th thread on the k-th CPU of the mask.
-		 */
 		std::vector<int> numa_node_of_cpu;
 		numa_node_of_cpus(mask, numa_node_of_cpu);
 		std::vector<int> numa_ids;                  /* distinct NUMA nodes of the mask, ascending */
@@ -205,7 +187,6 @@ struct Parameters : Options {
 			}
 		}
 
-		/* dictionary */
 		if (nbytes_memory == 0)
 			errx(1, "the RAM budget per node must be given (and nonzero)");
 		/* 8-byte slots, and a whole number of them per shard */
@@ -218,7 +199,6 @@ struct Parameters : Options {
 		w_shard = w / n_inserters;
 		jbits = std::log2(10 * w) + 8;
 
-		/* difficulty */
 		auto_theta = alpha * std::sqrt(std::ldexp((double) w, -n));
 		theta_auto = (theta < 0);
 		if (theta_auto)

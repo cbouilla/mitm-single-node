@@ -15,24 +15,19 @@
 namespace mitm {
 
 /*
- * Turns a collision problem into one random function: iterate x -> f(i ^ x).
- * Works when |Range| >= |Domain| in the input problem.
- *
- * INCOMPLETE, and known to be so since before the single-engine refactor -- it used
- * to carry a commented-out `assert(0); // not ready yet`.  For some seeds the search
- * plateaus and never retires the golden pair, while the claw wrappers below converge
- * normally.  Verified to behave identically on the deleted sequential engine, so it
- * is the wrapper and not the engine: `mix()` is a plain xor, so every version of the
- * function has the same collision set (unlike the claw wrappers, whose choose() also
- * re-randomizes WHICH of f/g is applied), and mix_good_pair() hands the pair to
- * is_good_pair() in arrival order rather than normalizing it the way swapmix() does.
+ * A collision problem as one random function: x -> f(i ^ x).  Needs |Range| >= |Domain|.
+ * INCOMPLETE (CLAUDE.md, Gotchas): for some seeds the search plateaus and never retires the golden
+ * pair.  Suspected: mix() is a plain xor, so every version i has the same collision set, and
+ * mix_good_pair() does not normalise the pair's order the way swapmix() does.
  */
 template <class Problem>
 class CollisionWrapper {
 public:
     const Problem &pb;
-    const int n, m;
-    const u64 in_mask, out_mask;
+    const int n;                    /* domain bits */
+    const int m;                    /* range bits */
+    const u64 in_mask;              /* the low n bits */
+    const u64 out_mask;             /* the low m bits */
     static constexpr int vlen = Problem::vlen;
 
 
@@ -42,7 +37,7 @@ public:
             "problem not derived from mitm::AbstractCollisionProblem");
         assert(m <= 64);
 
-        /* check vmixf against mixf, which also exercises the problem's vf() */
+        /* self-test: vmixf agrees with mixf */
         PRNG vprng;
         u64 i = vprng.rand() & out_mask;
         u64 x[vlen] __attribute__ ((aligned(sizeof(u64) * vlen)));
@@ -68,7 +63,7 @@ public:
 
     void vmixf(u64 i, u64 x[], u64 r[]) const
     {
-        // careful: vlen can be more than one SIMD vector
+        /* careful: vlen can be more than one SIMD vector */
         u64 y[vlen] __attribute__ ((aligned(sizeof(u64) * vlen)));
         for (int j = 0; j < vlen; j++)
             y[j] = mix(i, x[j]);
@@ -88,14 +83,15 @@ public:
 
 /****************************************************************************************/
 
-// code deduplication could be achieved with the CRTP...
-
 template <class Problem>
 class EqualSizeClawWrapper {
 public:
     const Problem &pb;
-    const int n, m;
-    const u64 in_mask, out_mask, choice_mask;
+    const int n;                    /* domain bits */
+    const int m;                    /* range bits */
+    const u64 in_mask;              /* the low n bits */
+    const u64 out_mask;             /* the low m bits */
+    const u64 choice_mask;          /* the bit of the mixed value that picks f or g */
     static constexpr int vlen = Problem::vlen;
 
     EqualSizeClawWrapper(const Problem& pb)
@@ -106,7 +102,7 @@ public:
         assert(m <= 64);
         assert(pb.n == pb.m);
 
-        /* check vmixf */
+        /* self-test: vmixf agrees with mixf */
         PRNG vprng;
         u64 i = vprng.rand() & out_mask;
         u64 x[vlen] __attribute__ ((aligned(sizeof(u64) * vlen)));
@@ -126,8 +122,6 @@ public:
 
     u64 mix(u64 i, u64 x) const
     {
-        //u64 z = (i ^ (x * 0xc4ceb9fe1a85ec53ull)) * 0xc6a4a7935bd1e995LLU;
-        // return z & in_mask;
         return i ^ x;
     }
 
@@ -142,7 +136,7 @@ public:
 
     void vmixf(u64 i, u64 x[], u64 r[]) const
     {
-        // careful: vlen can be more than one SIMD vector
+        /* careful: vlen can be more than one SIMD vector */
         u64 y[vlen] __attribute__ ((aligned(sizeof(u64) * vlen)));
         bool choices[vlen];
         for (int j = 0; j < vlen; j++) {
@@ -178,12 +172,15 @@ template <class Problem>
 class LargerRangeClawWrapper {
 public:
     const Problem &pb;
-    const int n, m;
-    const u64 in_mask, out_mask;
+    const int n;                    /* domain bits: pb.n + 1, the choice bit included */
+    const int m;                    /* range bits */
+    const u64 in_mask;              /* the low pb.n bits */
+    const u64 out_mask;             /* the low m bits */
     static constexpr int vlen = Problem::vlen;
-    u64 choice_mask;
+    u64 choice_mask;                /* the bit of the mixed value that picks f or g */
 
-    LargerRangeClawWrapper(const Problem& pb) : pb(pb), n(pb.n + 1), m(pb.m), in_mask(make_mask(pb.n)), out_mask(make_mask(pb.m))
+    LargerRangeClawWrapper(const Problem& pb)
+        : pb(pb), n(pb.n + 1), m(pb.m), in_mask(make_mask(pb.n)), out_mask(make_mask(pb.m))
     {
         static_assert(std::is_base_of<AbstractClawProblem, Problem>::value,
             "problem not derived from mitm::AbstractClawProblem");
@@ -191,7 +188,7 @@ public:
         assert(n <= m);
         choice_mask = 1ull << n;
 
-        /* check vmixf */
+        /* self-test: vmixf agrees with mixf */
         PRNG vprng;
         u64 i = vprng.rand() & out_mask;
         u64 x[vlen] __attribute__ ((aligned(sizeof(u64) * vlen)));
@@ -231,7 +228,7 @@ public:
 
     void vmixf(u64 i, u64 x[], u64 r[]) const
     {
-        // careful: vlen can be more than one SIMD vector
+        /* careful: vlen can be more than one SIMD vector */
         u64 y[vlen] __attribute__ ((aligned(sizeof(u64) * vlen)));
         bool choice[vlen];
         for (int j = 0; j < vlen; j++) {
@@ -285,7 +282,6 @@ optional<pair<u64, u64>> collision_search(const Problem& pb, u64 nbytes_memory, 
     u64 x0 = wrapper.mix(i, x);
     u64 x1 = wrapper.mix(i, y);
 
-    /* quality control */
     assert(x0 != x1);
     assert(pb.f(x0) == pb.f(x1));
     assert(pb.is_good_pair(x0, x1));
@@ -307,10 +303,7 @@ optional<pair<u64, u64>> claw_search(const Problem& pb, u64 nbytes_memory, const
     optional<tuple<u64,u64,u64>> claw;
     u64 x0, x1;
 
-    /*
-     * The two wrappers differ only in how they fold f and g into one function, but
-     * they are distinct types, so the branch has to carry the whole search.
-     */
+    /* distinct wrapper types, so each branch carries the whole search */
     if (pb.n == pb.m) {
         if (verbose)
             printf("  - using |Domain| == |Range| mode.  Expecting 1.8*n/w rounds.\n");
@@ -336,7 +329,6 @@ optional<pair<u64, u64>> claw_search(const Problem& pb, u64 nbytes_memory, const
     if (not claw)
         return nullopt;
 
-    /* quality control */
     assert((x0 & make_mask(pb.n)) == x0);
     assert((x1 & make_mask(pb.n)) == x1);
     assert(pb.f(x0) == pb.g(x1));

@@ -8,26 +8,19 @@
 namespace mitm {
 
 /*
- * Single-producer / single-consumer bounded queue of distinguished points
- * (Lamport 1983), wait-free on both sides.  No mutex, no CAS: the producer owns
- * `tail`, the consumer owns `head`, and each keeps a private cached copy of the
- * other's index so that the common path never reads the other side's cache line.
- *
- * Capacity is rounded up to a power of two so that wrapping is a mask.
- *
- * One instance sits between each walker thread and the comm thread, and between
- * the comm thread and each inserter thread.
+ * Lamport's single-producer / single-consumer ring of DPs: no mutex, no CAS, each side owns one index
+ * and caches the other's (PROTOCOL.md §3.1).  Capacity rounds up to a power of two.  One between each
+ * walker and the comm thread, one between the comm thread and each inserter.
  */
 class SPSCQueue {
 public:
-	/* each index sits alone in its own cache line.  Public so a third party (the
-	   comm thread, at end of round) can test head == tail without an accessor. */
+	/* public: the comm thread tests head == tail at the end of a round, without an accessor */
 	alignas(64) std::atomic<size_t> head;      /* written by the consumer only */
 	alignas(64) std::atomic<size_t> tail;      /* written by the producer only */
 
 private:
-	size_t capacity;
-	size_t mask;
+	size_t capacity;                           /* a power of two */
+	size_t mask;                               /* capacity - 1 */
 	std::vector<DP> buf;
 
 	alignas(64) size_t cached_head;            /* producer-private copy of head */
@@ -42,8 +35,6 @@ private:
 	}
 
 public:
-	/* init order follows declaration order: head/tail, then capacity (mask and buf
-	   depend on it), then the private caches */
 	SPSCQueue(size_t requested) : head(0), tail(0), capacity(round_up_pow2(requested)),
 	                              mask(capacity - 1), buf(capacity),
 	                              cached_head(0), cached_tail(0)

@@ -10,12 +10,8 @@
 #include "parameters.hpp"
 
 /*
- * Boilerplate shared by every driver here: the command line is the same for all of
- * them (only the problem changes), and so is the MPI startup sequence.
- *
- * This is part of the examples, NOT of the library in ../include.  Nothing in the
- * library depends on it, and nothing the library requires is checked here: a driver
- * of your own can skip all of this and call claw_search() directly.
+ * The command line and the MPI startup shared by the drivers.  Part of the examples, not of the
+ * library: nothing in ../include depends on it, and a driver of your own may skip it.
  */
 
 namespace mitm {
@@ -106,10 +102,8 @@ static void process_command_line_options(int argc, char **argv, Options &opts,
 }
 
 /*
- * Everything a driver does before it can build its problem: start MPI with the
- * threading level the engine requires, read the command line, decide who prints, and
- * make sure every rank uses the same seed -- otherwise the ranks would not even be
- * iterating the same function.
+ * MPI_Init_thread(FUNNELED), the command line, verbose on rank 0 only, and one seed for every rank
+ * (drawn by rank 0 and broadcast, if none was given).
  */
 static void init(int argc, char **argv, Options &opts, u64 &nbytes_memory, int &n, u64 &seed)
 {
@@ -120,7 +114,6 @@ static void init(int argc, char **argv, Options &opts, u64 &nbytes_memory, int &
 
 	process_command_line_options(argc, argv, opts, nbytes_memory, n, seed);
 
-	/* the drivers themselves print from rank 0 only */
 	int rank;
 	MPI_Comm_rank(MPI_COMM_WORLD, &rank);
 	opts.verbose = opts.verbose && (rank == 0);

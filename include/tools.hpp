@@ -36,8 +36,7 @@ static inline void cpu_relax()
 #endif
 }
 
-/* pin the calling thread to `cpu`.  Returns cpu, or -1 on failure (or if cpu < 0) with
-   errno set -- pthread_setaffinity_np returns the error instead -- so the caller can warn(). */
+/* pin the calling thread to `cpu`.  Returns cpu, or -1 with errno set: a failure, or cpu < 0 */
 static inline int pin_to_cpu(int cpu)
 {
     if (cpu < 0)
@@ -54,12 +53,8 @@ static inline int pin_to_cpu(int cpu)
 }
 
 /*
- * NUMA node of every CPU of `mask`, as hwloc's os_index (the node number of numactl -H):
- * numa_node_of_cpu[cpu], -1 for a CPU outside the mask or in no NUMA node.  The topology is
- * whatever hwloc sees: the machine minus what the cgroup forbids, or what HWLOC_SYNTHETIC /
- * HWLOC_XMLFILE describe (the test path).  The mask is intersected here, so NO topology flag
- * is set: RESTRICT_TO_CPUBINDING / THISSYSTEM_ALLOWED_RESOURCES would defeat the synthetic
- * test.  A CPU listed by several NUMA nodes goes to the first one hwloc lists.
+ * NUMA node (hwloc os_index) of every CPU of `mask`; -1 outside the mask or in no NUMA node.  No
+ * topology flag on purpose: RESTRICT_TO_CPUBINDING would defeat the HWLOC_SYNTHETIC test path.
  */
 static inline void numa_node_of_cpus(const cpu_set_t &mask, std::vector<int> &numa_node_of_cpu)
 {
@@ -81,12 +76,14 @@ static inline void numa_node_of_cpus(const cpu_set_t &mask, std::vector<int> &nu
 }
 
 
+/* the low n bits; all 64 for n >= 64 */
 u64 make_mask(int n)
 {
     return (n >= 64) ? 0xffffffffffffffffull : (1ull << n) - 1;
 }
 
-double wtime() /* with inline it doesn't violate one definition rule */
+/* wall-clock seconds */
+double wtime()
 {
 
   auto clock = std::chrono::high_resolution_clock::now();
@@ -95,7 +92,7 @@ double wtime() /* with inline it doesn't violate one definition rule */
   return seconds;
 }
 
-// murmur64 hash functions, tailorized for 64-bit ints / Cf. Daniel Lemire
+/* murmur64 hash, tailored for 64-bit ints.  Cf. Daniel Lemire */
 u64 murmur64(u64 h)
 {
     h ^= h >> 33;
@@ -106,15 +103,16 @@ u64 murmur64(u64 h)
     return h;
 }
 
+/* one 64-bit hash of a pair, for the HyperLogLog */
 u64 murmur128(u64 x, u64 y)
 {
     x ^= x >> 33;
-    x *= 0xff51afd7ed558ccdull; 
+    x *= 0xff51afd7ed558ccdull;
     x ^= x >> 33;
     x *= 0xc4ceb9fe1a85ec53ull;
     x ^= x >> 33;
 
-    y *= 0xc6a4a7935bd1e995LLU; 
+    y *= 0xc6a4a7935bd1e995LLU;
     y ^= y >> 47;
     y *= 0xc6a4a7935bd1e995LLU;
     y ^= x;
@@ -126,7 +124,12 @@ u64 murmur128(u64 x, u64 y)
 /* deterministic RNG based on TRIVIUM */
 class PRNG {
 private:
-    u64 s11, s12, s21, s22, s31, s32 = 1;   /* internal state */
+    u64 s11;                    /* TRIVIUM's 93-bit register: low word ... */
+    u64 s12;                    /* ... and high word */
+    u64 s21;                    /* the 84-bit register: low word ... */
+    u64 s22;                    /* ... and high word */
+    u64 s31;                    /* the 111-bit register: low word ... */
+    u64 s32 = 1;                /* ... and high word */
 
     void setseed()
     {
@@ -141,7 +144,8 @@ private:
     }
 
 public:
-    const u64 seed, seq;
+    const u64 seed;             /* the key */
+    const u64 seq;              /* the IV: another stream from the same seed */
 
     static u64 read_urandom()
     {
@@ -193,7 +197,7 @@ public:
     PRNG() : seed(read_urandom()), seq(0) { setseed(); }
 };
 
-/* represent n in 4 bytes */
+/* n as a short human string ("1.5G"): at most 7 characters plus the NUL, so an 8-byte target */
 void human_format(u64 n, char *target)
 {
     if (n < 1000) {
@@ -218,6 +222,7 @@ void human_format(u64 n, char *target)
     }
 }
 
+/* the inverse of human_format: "4G" -> 4000000000, a bare number as is */
 u64 human_parse(const std::string &_h)
 {
     std::string h(_h);

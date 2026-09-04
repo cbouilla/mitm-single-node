@@ -7,22 +7,14 @@
 
 namespace mitm {
 /*
- * Provides a function f : {0, 1}^n -> {0, 1}^m and an optional predicate P.
- *
- * The goal is to find x != y s.t. f(x) == f(y) and P(x, y).
- *
- * The problem instance can contain extra data, e.g. if the goal consists
- * in finding H(prefix || x) == H(prefix || y) with x != y, then the Problem
- * could contain prefix.
- *
- * Derive from this and provide f().  There is no default implementation to inherit:
- * these declarations describe the interface the engine expects, and a missing member
- * is a compile or link error rather than a function that quietly returns nothing.
+ * A collision problem: f : {0, 1}^n -> {0, 1}^m and a predicate on the pair.  The goal is x != y with
+ * f(x) == f(y) and is_good_pair(x, y).  Derive and provide f(); nothing here is defined, on purpose: a
+ * missing member is a compile or link error rather than a function that quietly returns 0.
  */
 class AbstractCollisionProblem {
 public:
 	int n;           /* size of the domain (input), in bits */
-	int m;           /* size of the range  (output, in bits */
+	int m;           /* size of the range (output), in bits */
 	static constexpr int vlen = 1;       /* vector width of the vector implementation */
 
 	/* f : {0, 1}^n ---> {0, 1}^m */
@@ -31,19 +23,13 @@ public:
 	/* assuming that f(x0) == f(x1) and x0 != x1, is (x0, x1) an acceptable outcome? */
 	bool is_good_pair(u64 x0, u64 x1) const;
 
-	/*
-	 * ONLY if a vectorized implementation is available: set vlen to its width and
-	 * provide this, without changing its behavior.  With vlen == 1 the engine calls
-	 * f() directly and this is never needed.
-	 */
+	/* only with vlen > 1: f() on vlen inputs at once, same results */
 	void vf(const u64 x[], u64 y[]) const;
 };
 
 /*
- * Provides two functions f, g : {0, 1}^n -> {0, 1}^n and an optional predicate P.
- *
- * The goal is to find x, y s.t. f(x) == g(y) and P(x, y).
- *
+ * A claw problem: f, g : {0, 1}^n -> {0, 1}^m and a predicate on the pair.  The goal is x, y with
+ * f(x) == g(y) and is_good_pair(x, y).  Same rules as above.
  */
 class AbstractClawProblem {
 public:
@@ -58,11 +44,7 @@ public:
 	/* assuming that f(x0) == g(x1), is (x0, x1) an acceptable outcome? */
 	bool is_good_pair(u64 x0, u64 x1) const;
 
-	/*
-	 * ONLY if a vectorized implementation is available: set vlen to its width and
-	 * provide this, without changing its behavior.  With vlen == 1 the engine calls
-	 * f() / g() directly and this is never needed.
-	 */
+	/* only with vlen > 1: f() where choice[j] is set, g() elsewhere, same results */
 	void vfg(const u64 x[], const bool choice[], u64 y[]) const;
 };
 }

@@ -8,13 +8,14 @@
 #include "parameters.hpp"
 
 /*
- * How fast do a problem's f / g (and vfg) iterate, per rank and across ranks?  A
- * standalone utility for the *_bench drivers.  It allocates nothing, so it needs no
- * RAM budget: only the communicator and the shard count, taken from the Options.
+ * How fast do a problem's f / g (and vfg) iterate, per rank and over the ranks?  For the *_bench
+ * drivers; needs no RAM budget, only the Options.
  */
 
 namespace mitm {
 
+/* the rate of N * vlen evaluations since `start`: min, max, mean and std over the ranks, printed by
+   rank 0.  Collective */
 static void display_stats(u64 N, double start, int vlen, MPI_Comm comm, int rank, int n_nodes)
 {
 	double rate = vlen * N / (wtime() - start);
@@ -39,7 +40,7 @@ static void display_stats(u64 N, double start, int vlen, MPI_Comm comm, int rank
 	}
 }
 
-/* try to iterate for 1s. Return #it/s */
+/* iterate f / g 2^26 times, then vfg 2^20 times if vlen > 1, on every rank, and print the rates.  Collective */
 template<typename Problem>
 void benchmark(const Problem& pb, const Options &opts)
 {

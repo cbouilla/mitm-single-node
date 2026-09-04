@@ -37,7 +37,7 @@ static inline void v32desinterleave(v64 x, v64 y, v32 *fst, v32 *snd)
     *snd = (v32) _mm512_permutex2var_epi32((__m512i) x, idx_snd, (__m512i) y);
 }
 
-// [a,b,c,d,e,f,g,h,i,j,k,l,m,n,o,p], [q,r,s,t,u,v,w,x,y,z,aa,bb,cc,dd,ee,ff] ---> [a, q, b, r, ...], [..., o, ee, p, ff]
+// [a,b,c,d,e,f,g,h,i,j,k,l,m,n,o,p], [q,r,s,t,u,v,w,x,y,z,aa,bb,cc,dd,ee,ff] ---> [a,q,b,r,...], [...,o,ee,p,ff]
 static inline void v32interleave(v32 lo, v32 hi, v64 mask, v64 *fst, v64 *snd) 
 { 
     const __m512i idx_fst = (__m512i) (v32) {0, 16, 1, 17, 2, 18, 3, 19, 4, 20, 5, 21, 6, 22, 7, 23};
@@ -81,7 +81,7 @@ static inline void v32desinterleave(v64 x, v64 y, v32 *fst, v32 *snd)
 static inline void v32interleave(v32 lo, v32 hi, v64 mask, v64 *fst, v64 *snd) 
 { 
     __m256i u = _mm256_unpacklo_epi32((__m256i) lo, (__m256i) hi);  // [a, i, b, j, e, m, f, n]
-    __m256i v = _mm256_unpackhi_epi32((__m256i) lo, (__m256i) hi);  // [c, k, d, k, g, o, h, p]
+    __m256i v = _mm256_unpackhi_epi32((__m256i) lo, (__m256i) hi);  // [c, k, d, l, g, o, h, p]
     __m256i x = _mm256_permute2x128_si256(u, v, 0x20);
     __m256i y = _mm256_permute2x128_si256(u, v, 0x31);
     *fst = (v64) x & mask;
