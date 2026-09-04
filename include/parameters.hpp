@@ -61,7 +61,8 @@ struct Options {
 
 	/* collision queue */
 	size_t coll_queue_capacity = 8192;     /* collision candidates buffered for the walkers */
-	size_t coll_per_chunk = 0;             /* candidates a walker retires per chunk; 0 == drain */
+	size_t coll_per_chunk = 0;             /* candidates a walker retires per chunk; 0 == until its
+	                                          batch is not full and the queue is empty */
 
 	/* pacing */
 	double ping_delay = 0.1;               /* max seconds between reports to the controller */

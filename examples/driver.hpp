@@ -34,7 +34,7 @@ static void usage(const char *argv0)
 	printf("  --walker-queue N     DPs buffered between a walker and the comm thread\n");
 	printf("  --inserter-queue N   DPs buffered between the comm thread and an inserter\n");
 	printf("  --coll-queue N       collision candidates buffered for the walkers\n");
-	printf("  --coll-per-chunk N   candidates a walker retires per chunk.  0 == drain\n");
+	printf("  --coll-per-chunk N   candidates a walker retires per chunk.  0 == until its batch stops filling\n");
 	printf("  --buffer N           DPs per node-to-node message\n");
 	printf("  --in-buffers N       posted MPI_Irecv slots\n");
 	printf("  --chunk N            trail steps between queue / phase checks\n");

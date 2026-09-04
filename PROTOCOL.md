@@ -160,7 +160,7 @@ alike.
 | `N_COLLISIONS` | collisions located | walkers |
 | `COLLIDING_LEN_MIN` | sum of the shorter trail length of each colliding pair | walkers |
 | `COLLIDING_LEN_MAX` | ... and of the longer one | walkers |
-| `BAD_DP` | trail gave up before reaching a distinguished point | walkers |
+| `BAD_DP` | trail gave up before a distinguished point, walking or re-walked to be measured (§3.2) | walkers |
 | `BAD_COLLISION` | the two trails "collide" on the same value | walkers |
 | `BAD_WALK_ROBINHOOD` | one trail is a suffix of the other | walkers |
 | `BAD_WALK_NONCOLLIDING` | dictionary false positive: the trails never meet | walkers |
@@ -268,10 +268,40 @@ of a round (§4.5, step 2).
 | `i` | function version; `service_collision` asserts it equals the current round's |
 | `seed0`, `len0` | the incoming point's chain index and trail length |
 | `end` | the shared endpoint, as the dictionary key `x / n_inserters` |
-| `seed1`, `len1_maybe` | the point already in the slot; `len1_maybe == 0` means the stored length had saturated (8 bits), so the walker re-walks that trail (`walk_nolen1`) |
+| `seed1`, `len1_maybe` | the point already in the slot; `len1_maybe == 0` means the stored length had saturated (8 bits), so the walker re-walks that trail to recover its length |
 
 Pushes and pops take the mutex; the emptiness probe walkers run between chunks is a
 relaxed atomic read, so an idle collision queue costs no lock traffic.
+
+**How a walker retires them.**  A round spends about `2/beta` of its evaluations
+locating collisions, and resolving one point at a time makes each of those cost `vlen`
+times what a walked one does -- most of a walker's time, once the dictionary fills.  So
+a walker with `vlen > 1` keeps `vlen/2` candidates in flight in a `VecResolver` and
+steps them all with a single `vmixf`.  A candidate walks its two chains through three
+phases, one lane per chain that is moving:
+
+| phase | lanes | what it does |
+|---|---|---|
+| `MEASURE` | 1 | only when `len1_maybe == 0`: re-walk chain 1 to its distinguished point to learn its length, chain 0 parked at its start.  Gives up after `dp_max_it` steps (`BAD_DP`), and abandons the candidate if the endpoint is not the key the dictionary hit on (`BAD_WALK_NONCOLLIDING`) |
+| `ALIGN` | 1 | step the longer chain until both are the same distance from their shared endpoint; the other chain stays parked at its start and costs no lane |
+| `MARCH` | 2 | step both and compare, until they meet (the collision) or the shorter trail runs out (`BAD_WALK_NONCOLLIDING`).  Equal points on entry mean one trail is a suffix of the other (`BAD_WALK_ROBINHOOD`) |
+
+`MEASURE` and `ALIGN` hold one lane and `MARCH` two, so `vlen/2` candidates never ask
+for more than `vlen` lanes and the lane pool cannot run dry.  Recovering an unknown
+length by re-walking the trail rather than recording it costs a few evaluations and
+bounds what a lane needs to hold.  `N_EVAL` counts the evaluations a one-at-a-time
+resolver would have made, not the lanes spent, so it stays comparable across the two
+paths; the idle lanes are the price of the batch and about a third of them are idle.
+
+A step costs a whole `vmixf` however few candidates are in flight, so in the steady
+state a walker stops as soon as the collision queue is empty *and* its batch is not
+full, and leaves the partial batch parked for the next chunk.  **Only the drain
+(§3.3, §4.5 step 7) runs the batch down to the last candidate**, where every one of
+them must be retired whatever it costs.  A parked candidate holds nothing but its own
+two chain indices, so parking it is free.
+
+A problem with `vlen == 1` has no vector implementation to batch: its walkers resolve
+one candidate at a time, in `resolve_collision`.
 
 ### 3.3 Per-thread wind-down state
 
@@ -287,8 +317,8 @@ inserter:  RUNNING -----------------------------------[comm]--> DRAIN --[self]--
 |---|---|---|
 | `RUNNING` | walks chunks, ships DPs, retires collision candidates between chunks | probes everything in its queue |
 | `HOLD` | "stop producing points": acknowledges by writing `HELD` | (not used) |
-| `HELD` | no new points; keeps retiring collision candidates | (not used) |
-| `DRAIN` | "no candidate will ever be added": empties `coll_q`, writes `QUIESCENT`, returns | "no point will ever be delivered": empties its queue, writes `QUIESCENT`, returns |
+| `HELD` | no new points; keeps retiring collision candidates, batch still parked between chunks | (not used) |
+| `DRAIN` | "no candidate will ever be added": empties `coll_q` **and runs its resolver batch down to the last candidate** (§3.2), writes `QUIESCENT`, returns | "no point will ever be delivered": empties its queue, writes `QUIESCENT`, returns |
 | `QUIESCENT` | done for this round | done for this round |
 
 A walker reads its state **once per chunk** (`chunk_size` iterations of `vmixf`,
@@ -419,7 +449,8 @@ node is quiescent; its body is the same in every phase (the phase is `ctx[0]->st
 Nothing in this loop blocks.
 
 **Walker**, one turn: read `state`; retire up to `coll_per_chunk` collision candidates
-(0 = all); walk one chunk, pushing each DP found into its SPSC queue (drop if full)
+(0 = until the queue is empty and the batch is not full, §3.2); walk one chunk,
+pushing each DP found into its SPSC queue (drop if full)
 and restarting the chain, tallying into `ctr` as it goes; add the chunk's evaluations
 to `ctr`.
 
@@ -450,7 +481,7 @@ deliver_local()   <-----------------  comm thread (receiver): poll_incoming()
 inserter:  key = x / n_inserters, probe the shard
    |  hit: CollisionCandidate, mutex
    v
-coll_q  -->  walker: walk both trails, locate the collision, test the pair
+coll_q  -->  walker: vlen/2 at a time, walk both trails, locate the collision, test the pair
                 |  golden
                 v
           SharedContext::set_golden  -->  comm thread  -->  solution to rank 0
@@ -471,7 +502,7 @@ airtight: no thread declares itself finished while something can still arrive fo
 | 3, 4 | `FLUSHING` | `outbuf.flush_poll()`: nothing left to send, every `Isend` completed | `outbuf.send_sentinels()`; phase `WAITING` | every DP bound for another node has left this node -- receiving went on throughout, so the peers we waited on could complete their sends too -- and every node (self included) will learn that we are done sending; the sentinel cannot overtake the data it follows |
 | 5, 6 | `WAITING` | `n_sentinels == n_nodes` | `state(INSERTER) := DRAIN`; phase `DRAINING_INSERTERS` | every node has finished sending to us, and everything they sent has been scattered to the inserter queues.  Every node was sent its end-of-round signal before rank 0 could even enter its drain, so nobody is waiting on rank 0 here; it keeps digesting reports so the round's tallies cover what the others produced meanwhile |
 | 6, 7 | `DRAINING_INSERTERS` | every inserter is `QUIESCENT` | `state(WALKER) := DRAIN`; phase `DRAINING_WALKERS` | every DP of the round has been probed; no new collision candidate can appear |
-| 7 | `DRAINING_WALKERS` | every walker is `QUIESCENT` | phase `QUIESCENT`: the epilogue (§4.6), then `comm_round()` returns | the collision queue is empty; every candidate of the round has been resolved.  Doing this last is what keeps a golden pair found on the very last candidate from being lost |
+| 7 | `DRAINING_WALKERS` | every walker is `QUIESCENT` | phase `QUIESCENT`: the epilogue (§4.6), then `comm_round()` returns | the collision queue is empty and every walker's resolver batch is empty: every candidate of the round has been resolved.  Doing this last is what keeps a golden pair found on the very last candidate from being lost |
 
 Running the full body in every phase is harmless.  From `FLUSHING` on the walkers are
 held and their queues empty, so the routing pass moves nothing (asserted).  Past
@@ -544,7 +575,8 @@ inserter-queue / collision-queue`).
   `r+1`: nothing is delivered after the last sentinel, and the queues are empty when
   the inserters stop.
 - Every collision candidate of round `r` is resolved by a round-`r` walker before the
-  walkers go quiescent (drain step 7); `service_collision` asserts `c.i == round.i`.
+  walkers go quiescent (drain step 7), the ones parked in its resolver batch included;
+  a walker asserts `c.i == round.i` as it starts one.
 - The dictionary is empty at the start of every round (each inserter flushes its
   shard after its round, before the next round's barrier).
 - The controller sends exactly one message per round, the end-of-round signal to every

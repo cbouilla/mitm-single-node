@@ -23,12 +23,12 @@ class PcsDict;   /* inserter.hpp; complete in run(), where the one SharedContext
 /****************************** collision queue *******************************/
 
 struct CollisionCandidate {
-	u64 i;                  /* mixing function version; service_collision asserts it is the round's */
+	u64 i;                  /* mixing function version; a walker asserts it is the round's */
 	u64 seed0;              /* the incoming point: its chain index, ... */
 	u64 len0;               /* ... its trail length, ... */
 	u64 end;                /* ... and its endpoint as the dictionary key, x / n_inserters */
 	u64 seed1;              /* the point that was in the slot: its chain index, ... */
-	u64 len1_maybe;         /* ... and its length; 0 == saturated in the dictionary, walk_nolen1 re-walks it */
+	u64 len1_maybe;         /* ... and its length; 0 == saturated in the dictionary, the walker re-walks it */
 };
 
 /*
@@ -92,7 +92,7 @@ enum counter {
 	N_COLLISIONS,           /* collisions located */
 	COLLIDING_LEN_MIN,      /* sum of the shorter length of each colliding pair */
 	COLLIDING_LEN_MAX,      /* ... and of the longer one */
-	BAD_DP,                 /* trail gave up before reaching a distinguished point */
+	BAD_DP,                 /* trail gave up before a distinguished point, walking or re-walked to be measured */
 	BAD_COLLISION,          /* the two trails "collide" on the same value */
 	BAD_WALK_ROBINHOOD,     /* one trail is a suffix of the other */
 	BAD_WALK_NONCOLLIDING,  /* dictionary false positive: the trails never meet */
