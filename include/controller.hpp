@@ -174,11 +174,28 @@ public:
 				printf(" (x%.2f & x%.2f colliding)",
 					(double) r[COLLIDING_LEN_MIN] / r[N_COLLISIONS] / avglen,
 					(double) r[COLLIDING_LEN_MAX] / r[N_COLLISIONS] / avglen);
+			/* BAD_PROBE is an inserter-side counter: its denominator is the probes retired, not the
+			   DPs found.  The other four are walker-side, where ndp is right. */
 			printf(".  %.2f%% probe failure.  %.2f%% walk-robinhood.  %.2f%% walk-noncolliding.  "
 			       "%.2f%% same-value.  %.2f%% DP failure\n",
-				100. * r[BAD_PROBE] / ndp, 100. * r[BAD_WALK_ROBINHOOD] / ndp,
+				r[N_PROBE] ? 100. * r[BAD_PROBE] / r[N_PROBE] : 0., 100. * r[BAD_WALK_ROBINHOOD] / ndp,
 				100. * r[BAD_WALK_NONCOLLIDING] / ndp, 100. * r[BAD_COLLISION] / ndp,
 				100. * r[BAD_DP] / ndp);
+
+			/*
+			 * What the round actually routed.  A round closes on points *found* (service(), against
+			 * points_per_version), so a run whose queues overflow burns rounds against a nearly empty
+			 * dictionary and still reports them complete: the DPs that reached a shard, and the share of
+			 * those found, is the number to read.  PROBLEM.md §2: it is the attack's speed, one for one.
+			 */
+			char hoff[8], hins[8], hprobe[8];
+			human_format((double) ndp / delta, hoff);
+			human_format((double) r[N_PROBE] / delta, hins);
+			human_format((double) r[N_PROBE] / params.n_inserters / delta, hprobe);
+			printf("            ROUTED  %s DP/s found --> %s DP/s inserted (%.2f%% reached a shard,"
+			       " %s probe/s per inserter).  dict load %.2f/slot\n",
+				hoff, hins, 100. * r[N_PROBE] / ndp, hprobe,
+				(double) r[N_PROBE] / params.w);
 		}
 
 		if (r[DROP_WALKERQ] | r[DROP_OUT] | r[DROP_INSERTERQ] | r[DROP_COLL])

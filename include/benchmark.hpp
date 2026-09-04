@@ -4,8 +4,11 @@
 #include <mpi.h>
 #include <cmath>
 
+#include <omp.h>
+
 #include "tools.hpp"
 #include "parameters.hpp"
+#include "inserter.hpp"
 
 /*
  * How fast do a problem's f / g (and vfg) iterate, per rank and over the ranks?  For the *_bench
@@ -98,6 +101,81 @@ void benchmark(const Problem& pb, const Options &opts)
 		if (rank == 0)
 			printf("  checksum %016" PRIx64 "\n", check);
 	}
+}
+
+
+/*
+ * How fast can an inserter probe its shard, with nothing else running?  R_p has only ever been
+ * measured through the whole pipeline, tangled up with the queues and the router (PROBLEM.md §6).
+ * This is the shard alone, at the size and the placement the engine would give it: the rank's
+ * `inserters_per_node` threads, pinned exactly where Parameters puts them, each hammering its own
+ * PcsDict with pseudo-random endpoints.  The rate is reported per quarter-`w` batch, because the
+ * probe's cost depends on how full the shard is: a round starts empty and ends at `beta`
+ * insertions per slot.  Rank-local, no MPI, no walkers, no comm thread.
+ */
+template<typename Problem>
+void probe_benchmark(const Problem& pb, const Options &opts, u64 nbytes_memory)
+{
+	int rank;
+	MPI_Comm_rank(opts.mpi_comm, &rank);
+	Parameters params(opts, nbytes_memory, pb.n, pb.m);
+	if (rank != 0)
+		return;                     /* every rank is doing the same thing; one of them reports */
+
+	int I = params.inserters_per_node;
+	char hw[8], hws[8];
+	human_format(params.w, hw);
+	human_format(params.w_shard, hws);
+	printf("Benchmarking dictionary probes: %d shard(s) of %s slots (%s total, %.1f MB each)\n",
+	       I, hws, hw, params.w_shard * sizeof(u64) / 1e6);
+
+	u64 batch = params.w_shard / 4;                   /* probes per timed batch, per shard */
+	int n_batches = std::max(1, (int) (4 * params.beta));   /* --beta bounds the run: it is long */
+	u64 key_range = std::ldexp(1., pb.n) / params.n_inserters;
+	std::vector<double> rate(n_batches * I);
+	std::vector<u64> hits(I, 0);
+
+#pragma omp parallel num_threads(I)
+	{
+		int tid = omp_get_thread_num();
+		if (params.bind_threads && pin_to_cpu(params.thread_cpu[1 + tid]) < 0)
+			warn("probe_benchmark: cannot pin thread %d to CPU %d", tid, params.thread_cpu[1 + tid]);
+		PcsDict dict(params.jbits, params.w_shard);   /* zero-filled here: NUMA first touch */
+		u64 nhit = 0;
+		u64 i = 0;
+		for (int b = 0; b < n_batches; b++) {
+#pragma omp barrier
+			double start = wtime();
+			for (u64 k = 0; k < batch; k++, i++) {
+				u64 end = murmur64(i * 0x9e3779b97f4a7c15ull + tid) % key_range;
+				if (dict.pop_insert(end, i, 42))
+					nhit += 1;
+			}
+			rate[b * I + tid] = batch / (wtime() - start);
+		}
+		hits[tid] = nhit;
+	}
+
+	for (int b = 0; b < n_batches; b++) {
+		double sum = 0, min = rate[b * I], max = rate[b * I];
+		for (int t = 0; t < I; t++) {
+			sum += rate[b * I + t];
+			min = std::min(min, rate[b * I + t]);
+			max = std::max(max, rate[b * I + t]);
+		}
+		char havg[8], hmin[8], hmax[8], hsum[8];
+		human_format(sum / I, havg);
+		human_format(min, hmin);
+		human_format(max, hmax);
+		human_format(sum, hsum);
+		printf("  load %.2f -> %.2f/slot: %s probe/s per shard (min %s, max %s), %s over the node\n",
+		       0.25 * b, 0.25 * (b + 1), havg, hmin, hmax, hsum);
+	}
+	u64 total_hits = 0;
+	for (int t = 0; t < I; t++)
+		total_hits += hits[t];
+	printf("  %" PRIu64 " hits in %" PRIu64 " probes (%.2f%%)\n", total_hits,
+	       (u64) n_batches * batch * I, 100. * total_hits / ((double) n_batches * batch * I));
 }
 
 }

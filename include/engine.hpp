@@ -60,6 +60,8 @@ public:
 		  in_done_idx(params.n_in_buffers), in_done_st(params.n_in_buffers),
 		  controller(params)
 	{
+		bucket.resize((size_t) params.inserters_per_node * BUCKET_CAP);
+		bucket_n.assign(params.inserters_per_node, 0);
 		for (int k = 0; k < params.n_in_buffers; k++) {
 			in_data[k].resize(in_cap);
 			MPI_Irecv(in_data[k].data(), in_cap, MPI_UINT64_T, MPI_ANY_SOURCE, TAG_POINTS,
@@ -70,12 +72,43 @@ public:
 
 	/******************* routing *******************/
 
-	/* hand a point to the inserter thread that owns its shard, on this node */
+	/*
+	 * A point is staged in its destination shard's bucket and handed to the inserter in runs, never
+	 * one at a time: a push per point is one release store on a line the consumer is spinning on, and
+	 * one sweep of the walker queues scatters over every shard of the node, so each ring's lines
+	 * ping-pong between the two cores once per point (PROBLEM.md §3, §5.C).  A bucket never outlives
+	 * the call that filled it -- route_walker_queues() and poll_incoming() both flush before
+	 * returning -- so the drain of PROTOCOL.md §4.5 sees exactly what it did before.
+	 */
+	static constexpr size_t BUCKET_CAP = 128;             /* points staged per shard */
+	std::vector<DP> bucket;                               /* inserters_per_node runs of BUCKET_CAP */
+	std::vector<size_t> bucket_n;                         /* points staged for each shard */
+
+	/* hand shard `slot`'s staged run to its inserter, dropping whatever did not fit */
+	void flush_bucket(int slot)
+	{
+		size_t n = bucket_n[slot];
+		if (n == 0)
+			return;
+		size_t k = ctx[1 + slot]->q->push_bulk(&bucket[slot * BUCKET_CAP], n);   /* inserter `slot` is thread 1 + slot */
+		ctx[0]->ctr[DROP_INSERTERQ] += n - k;
+		bucket_n[slot] = 0;
+	}
+
+	void flush_local()
+	{
+		for (int slot = 0; slot < params.inserters_per_node; slot++)
+			flush_bucket(slot);
+	}
+
+	/* stage a point for the inserter thread that owns its shard, on this node */
 	void deliver_local(const DP &p)
 	{
 		int slot = (int) ((p.x / params.n_nodes) % params.inserters_per_node);
-		if (not ctx[1 + slot]->q->push(p))                /* inserter `slot` is thread 1 + slot */
-			ctx[0]->ctr[DROP_INSERTERQ] += 1;
+		if (bucket_n[slot] == BUCKET_CAP)
+			flush_bucket(slot);
+		bucket[slot * BUCKET_CAP + bucket_n[slot]] = p;
+		bucket_n[slot] += 1;
 	}
 
 	/* pull whatever the walker threads have produced and route it */
@@ -96,6 +129,7 @@ public:
 					ctx[0]->ctr[DROP_OUT] += 1;
 			}
 		}
+		flush_local();
 		return moved;
 	}
 
@@ -122,6 +156,7 @@ public:
 			MPI_Irecv(in_data[k].data(), in_cap, MPI_UINT64_T, MPI_ANY_SOURCE, TAG_POINTS,
 			          params.mpi_comm, &in_req[k]);
 		}
+		flush_local();
 	}
 
 	/*

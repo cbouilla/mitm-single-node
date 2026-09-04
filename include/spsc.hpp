@@ -54,6 +54,29 @@ public:
 		return true;
 	}
 
+	/*
+	 * producer side.  Push a whole run of items with ONE tail.store, into contiguous slots: the
+	 * consumer's `empty()` spin re-reads `tail` on every store, so a store per point makes the ring
+	 * line ping-pong between the two cores once per point (PROBLEM.md §3).  Returns how many were
+	 * pushed; the caller drops the rest.
+	 */
+	size_t push_bulk(const DP *in, size_t n)
+	{
+		size_t t = tail.load(std::memory_order_relaxed);
+		size_t free = capacity - (t - cached_head);
+		if (free < n) {
+			cached_head = head.load(std::memory_order_acquire);
+			free = capacity - (t - cached_head);
+			if (free == 0)
+				return 0;                     /* really full */
+		}
+		size_t k = (free < n) ? free : n;
+		for (size_t i = 0; i < k; i++)
+			buf[(t + i) & mask] = in[i];
+		tail.store(t + k, std::memory_order_release);
+		return k;
+	}
+
 	/* consumer side */
 	bool pop(DP &x)
 	{

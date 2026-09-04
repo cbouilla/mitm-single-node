@@ -223,7 +223,7 @@ startup.  The per-round ones are reached only after every node has finished its 
 | channel | producer | consumer | type | capacity (`Options`) | when full |
 |---|---|---|---|---|---|
 | `shared.ctx[R+1+w]->q` | walker `w` | comm | `SPSCQueue` of `DP` | `walker_queue_capacity` (1024) | walker drops the DP, tallies `DROP_WALKERQ` |
-| `shared.ctx[1+r]->q` | comm | inserter `r` | `SPSCQueue` of `DP` | `inserter_queue_capacity` (4096) | comm drops the DP, tallies `DROP_INSERTERQ` |
+| `shared.ctx[1+r]->q` | comm | inserter `r` | `SPSCQueue` of `DP`, filled from a per-shard bucket (§3.1) | `inserter_queue_capacity` (4096) | comm drops the points of the run that did not fit, tallies `DROP_INSERTERQ` |
 | `shared.coll_q` | every inserter | every walker | `CollisionQueue` (mutex, bounded) | `coll_queue_capacity` (8192) | inserter drops the candidate, tallies `DROP_COLL` |
 | `ThreadContext::state` | comm and the thread itself (thread 0's: itself alone) | the other side | `atomic<int>` | | see §3.3 |
 | `ThreadContext::ctr` | the thread (the comm thread's own drops in `ctx[0]`) | comm | plain `u64[N_COUNTERS]`, no atomics, see §3.4 | | |
@@ -257,6 +257,18 @@ release store of the owned index.  The comm thread drains walker queues in batch
 64 (`pop_bulk`); inserters drain theirs in batches of 64 as well.  `head` and `tail`
 are public so that the comm thread can test `head == tail` from outside at the end
 of a round (§4.5, step 2).
+
+An inserter queue is filled in **runs**, not point by point.  The comm thread stages
+each local point in a bucket of `CommThread::BUCKET_CAP` (128) per shard and calls
+`push_bulk` -- one release store, contiguous slots -- when a bucket fills or when the
+call that filled it returns.  One sweep of the walker queues scatters over every shard
+of the node, so a push per point would make each ring's lines ping-pong between the
+producer and the consumer once per point; a run of `k` costs one store for `k` points.
+`push_bulk` pushes a prefix and reports how many fit, so a full queue still drops the
+tail of the run rather than blocking.  **The buckets never outlive the call that filled
+them**: `route_walker_queues()` and `poll_incoming()` each flush every bucket before
+returning, so no point is held across a turn of the comm loop and the drain (§4.5) is
+unchanged -- the phase tests of steps 2 and 6 see exactly what they saw before.
 
 ### 3.2 The collision queue
 
@@ -429,9 +441,11 @@ node is quiescent; its body is the same in every phase (the phase is `ctx[0]->st
 §3.3), and only the exit test at the end of a turn depends on it:
 
 1. `route_walker_queues()`: pop up to 64 DPs from each walker queue; local points go
-   to `deliver_local()`, remote ones to `outbuf.push()`.
+   to `deliver_local()`, which stages them per shard (§3.1), remote ones to
+   `outbuf.push()`.  Every bucket is flushed before the call returns.
 2. `poll_incoming()`: `MPI_Testsome` on the receive pool; scatter completed buffers to
-   the inserter queues, count sentinels, repost.
+   the inserter queues through the same per-shard buckets, count sentinels, repost,
+   flush the buckets.
 3. `service_control()`: `MPI_Test` the end-of-round receive; if it completed, set
    `round_over` (and repost it for the next round).  On rank 0, then
    `controller.service()`: drain the solution receive (the first solution is kept and
