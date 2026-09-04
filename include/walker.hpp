@@ -283,9 +283,9 @@ struct alignas(sizeof(u64) * ProblemWrapper::vlen) VecResolver {
 	 * Both trail lengths are known: step the longer chain down to the shorter one's length.  The chain
 	 * that does not move stays parked at its start and costs no lane until the march.
 	 */
-	void begin_align(int s, u64 ctr[])
+	void begin_align(int s, int held, u64 ctr[])
 	{
-		int held = (lane0[s] >= 0) ? lane0[s] : lane1[s];   /* fill() and MEASURE leave exactly one */
+		assert(held >= 0);                                 /* fill() and MEASURE each hold exactly one */
 		lane0[s] = -1;
 		lane1[s] = -1;
 		if (len0[s] == len1[s]) {
@@ -341,7 +341,7 @@ struct alignas(sizeof(u64) * ProblemWrapper::vlen) VecResolver {
 				lane1[s] = -1;
 				x[l] = start0[s];
 				phase[s] = SLOT_ALIGN;
-				begin_align(s, ctr);       /* it picks the chain that has to move, or marches at once */
+				begin_align(s, l, ctr);    /* it picks the chain that has to move, or marches at once */
 			}
 		}
 		return started;
@@ -364,7 +364,7 @@ struct alignas(sizeof(u64) * ProblemWrapper::vlen) VecResolver {
 				ctr[N_EVAL] += 1;
 				if (is_distinguished_point(x[l], params.threshold)) {
 					if (x[l] / params.n_inserters == end0[s]) {
-						begin_align(s, ctr);
+						begin_align(s, l, ctr);
 					} else {
 						ctr[BAD_WALK_NONCOLLIDING] += 1;   /* not the trail the dictionary meant */
 						release(s);

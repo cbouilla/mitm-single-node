@@ -40,31 +40,34 @@ static void display_stats(u64 N, double start, int vlen, MPI_Comm comm, int rank
 	}
 }
 
-/* iterate f / g 2^26 times, then vfg 2^20 times if vlen > 1, on every rank, and print the rates.  Collective */
+/*
+ * Iterate f / g 2^26 times, then vfg 2^20 times if vlen > 1, on every rank, and print the rates.
+ * Both loops walk ONE dependent chain per lane, the shape a trail and a collision resolution both
+ * have, so that the two rates can be divided: what that ratio is worth is how much a walker gains by
+ * batching its resolutions (PROTOCOL.md §3.2).  Each loop's last value is printed, and that is the
+ * only reason it survives -O3: nothing else here is observable.  Collective
+ */
 template<typename Problem>
 void benchmark(const Problem& pb, const Options &opts)
 {
 	int rank, n_nodes;
 	MPI_Comm_rank(opts.mpi_comm, &rank);
 	MPI_Comm_size(opts.mpi_comm, &n_nodes);
-	int n_inserters = n_nodes * opts.inserters_per_node;
 
 	if (rank == 0)
 		printf("Benchmarking scalar implementation (using %d processes)\n", n_nodes);
 
 	MPI_Barrier(opts.mpi_comm);
 
+	u64 mask = make_mask(pb.n);
 	u64 N = 1ull << 26;
+	u64 x1 = 1;
 	double start = wtime();
-	u64 count = 0;
-	for (u64 x = 0; x < N; x++) {
-		u64 z = (x & 1) ? pb.f(x) : pb.g(x);
-		u64 hash = (z * 0xdeadbeef) % 0x7fffffff;
-		int target = ((int) hash) % n_inserters;
-		if (target == 0)
-			count += 1;
-	}
+	for (u64 i = 0; i < N; i++)
+		x1 = ((i & 1) ? pb.f(x1) : pb.g(x1)) & mask;
 	display_stats(N, start, 1, opts.mpi_comm, rank, n_nodes);
+	if (rank == 0)
+		printf("  checksum %016" PRIx64 "\n", x1);
 
 	constexpr int vlen = Problem::vlen;
 	if constexpr (vlen > 1) {
@@ -82,7 +85,6 @@ void benchmark(const Problem& pb, const Options &opts)
 		MPI_Barrier(opts.mpi_comm);
 
 		double start = wtime();
-		u64 mask = make_mask(pb.n);
 		u64 N = 1ull << 20;
 		for (u64 i = 0; i < N; i++) {
 			pb.vfg(x, choice, z);
@@ -90,6 +92,11 @@ void benchmark(const Problem& pb, const Options &opts)
 				x[j] = z[j] & mask;
 		}
 		display_stats(N, start, vlen, opts.mpi_comm, rank, n_nodes);
+		u64 check = 0;
+		for (int j = 0; j < vlen; j++)
+			check ^= x[j];
+		if (rank == 0)
+			printf("  checksum %016" PRIx64 "\n", check);
 	}
 }
 
