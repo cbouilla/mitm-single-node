@@ -13,22 +13,6 @@
 
 namespace mitm {
 
-/*
- * There is exactly one engine, and it is MPI + OpenMP.
- *
- * Topology: ONE rank per node, MPI_THREAD_FUNNELED.  Inside a rank,
- *     thread 0      == comm (and, on rank 0, the controller),
- *     threads 1..R  == inserters, one dictionary shard each,
- *     the rest      == walkers, which walk trails and resolve collisions.
- * A single rank with one walker and one inserter is the degenerate "sequential" case.
- */
-
-/*
- * Message tags.  TAG_POINTS carries bulk DPs and the end-of-round sentinels between
- * any two nodes; the other three are the control channel: the end-of-round signal goes
- * from rank 0 to every node, reports and solutions from a node to rank 0.  One tag per
- * message kind, so a message is told apart by its envelope and never by its length.
- */
 enum tags {TAG_POINTS, TAG_END_ROUND, TAG_REPORT, TAG_SOLUTION};
 enum thread_role {COMM, INSERTER, WALKER};
 
@@ -95,9 +79,10 @@ struct Options {
 
 /*
  * Everything the engine needs to know, derived ONCE from the options, the RAM budget
- * and the size of the (wrapped) problem: MPI topology, thread layout and placement,
- * dictionary size and difficulty.  Built by run() and never modified
- * afterwards.  Data only: nothing here runs outside the constructor.
+ * and the size of the (wrapped) problem: MPI topology, thread layout and placement
+ * (over the NUMA nodes of the affinity mask, from hwloc), dictionary size and
+ * difficulty.  Built by run() and never modified afterwards.  Data only: nothing here
+ * runs outside the constructor.
  *
  * The user's Options are copied in, so the *resolved* values of walkers_per_node,
  * theta and verbose live here and the caller's object is left alone.
@@ -111,6 +96,8 @@ struct Parameters : Options {
 	int n_threads;                         /* 1 + walkers_per_node + inserters_per_node */
 	int n_walkers;                         /* total walker threads, all nodes */
 	int n_inserters;                       /* total dictionary shards, all nodes */
+	int n_avail_cpu;                       /* CPUs in the rank's inherited affinity mask */
+	int n_numa_nodes;                      /* NUMA nodes with at least one CPU in the mask */
 	std::vector<int> thread_cpu;           /* CPU for each thread, in tid order; -1 == do not pin */
 
 	/* dictionary */
@@ -140,7 +127,7 @@ struct Parameters : Options {
 		CPU_ZERO(&mask);
 		if (sched_getaffinity(0, sizeof(mask), &mask) != 0)
 			err(1, "sched_getaffinity");
-		int n_avail_cpu = CPU_COUNT(&mask);
+		n_avail_cpu = CPU_COUNT(&mask);
 
 		/* thread layout */
 		if (inserters_per_node < 1)
@@ -158,13 +145,64 @@ struct Parameters : Options {
 			warnx("MPI: rank %d has only %d CPUs in its affinity mask for %d threads."
 			      "  Did you forget --bind-to none?", rank, n_avail_cpu, n_threads);
 
-		/* thread placement: the k-th thread goes to the k-th CPU of the mask */
+		/*
+		 * Thread placement.  The CPUs of the mask, grouped by NUMA node (nodes in
+		 * numactl -H order, CPUs ascending inside a node).  The comm thread takes the
+		 * first CPU of the first node; inserter i goes to node i mod n_numa_nodes and
+		 * walker s to node s mod n_numa_nodes, each taking the next free CPU of that
+		 * node, or of the next node that still has one.  So the shards -- placed by
+		 * first touch on the node of their inserter -- are evenly spread whenever
+		 * inserters_per_node is a multiple of n_numa_nodes.  When every CPU is taken
+		 * the remaining threads stay unpinned (-1), see the warning above.  On one
+		 * NUMA node this is the k-th thread on the k-th CPU of the mask.
+		 */
+		std::vector<int> numa_node_of_cpu;
+		numa_node_of_cpus(mask, numa_node_of_cpu);
+		std::vector<int> numa_ids;                  /* distinct NUMA nodes of the mask, ascending */
+		for (int cpu = 0; cpu < CPU_SETSIZE; cpu++) {
+			if (!CPU_ISSET(cpu, &mask))
+				continue;
+			int id = numa_node_of_cpu[cpu];
+			if (id < 0 && bind_threads)
+				errx(1, "MPI: rank %d: CPU %d of the affinity mask is in no NUMA node hwloc knows"
+				        " (use --no-bind)", rank, cpu);
+			if (id >= 0 && std::find(numa_ids.begin(), numa_ids.end(), id) == numa_ids.end())
+				numa_ids.push_back(id);
+		}
+		std::sort(numa_ids.begin(), numa_ids.end());
+		n_numa_nodes = numa_ids.size();
+		if (rank == 0 && n_numa_nodes > 1 && inserters_per_node % n_numa_nodes != 0)
+			warnx("MPI: %d shards per node over %d NUMA nodes is not a multiple:"
+			      " the dictionary is unevenly spread", inserters_per_node, n_numa_nodes);
+		if (bind_threads && n_avail_cpu < 1 + inserters_per_node)
+			errx(1, "MPI: rank %d: %d CPUs in the affinity mask cannot pin the comm thread and %d shards"
+			        " (use --no-bind, or fewer shards)", rank, n_avail_cpu, inserters_per_node);
+
+		std::vector<std::vector<int>> cpus(n_numa_nodes);   /* the mask's CPUs of each NUMA node */
+		for (int cpu = 0; cpu < CPU_SETSIZE; cpu++)
+			if (CPU_ISSET(cpu, &mask) && numa_node_of_cpu[cpu] >= 0) {
+				int k = std::find(numa_ids.begin(), numa_ids.end(), numa_node_of_cpu[cpu]) - numa_ids.begin();
+				cpus[k].push_back(cpu);
+			}
+		std::vector<size_t> next(n_numa_nodes, 0);          /* cpus[k][next[k]]: node k's next free CPU */
 		thread_cpu.assign(n_threads, -1);
 		if (bind_threads) {
-			int k = 0;
-			for (int cpu = 0; cpu < CPU_SETSIZE && k < n_threads; cpu++)
-				if (CPU_ISSET(cpu, &mask))
-					thread_cpu[k++] = cpu;
+			for (int tid = 0; tid < n_threads; tid++) {
+				int k = 0;
+				if (tid >= 1 && tid <= inserters_per_node)
+					k = (tid - 1) % n_numa_nodes;
+				else if (tid > inserters_per_node)
+					k = (tid - 1 - inserters_per_node) % n_numa_nodes;
+				int tries = 0;
+				while (tries < n_numa_nodes && next[k] == cpus[k].size()) {
+					k = (k + 1) % n_numa_nodes;
+					tries++;
+				}
+				if (tries == n_numa_nodes)
+					break;                              /* every CPU of the mask is taken */
+				thread_cpu[tid] = cpus[k][next[k]];
+				next[k]++;
+			}
 		}
 
 		/* dictionary */

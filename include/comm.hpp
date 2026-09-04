@@ -187,6 +187,8 @@ enum thread_state {
  */
 struct alignas(64) ThreadContext {
 	const int role;                 /* the comm thread dispatches on it */
+	const int cpu;                  /* where the thread runs, asked to the kernel once pinned */
+	const int numa_node;            /* its NUMA node: the one its first touch lands on */
 
 	/* see thread_state above: the comm thread asks, the thread answers.  Thread 0's
 	   holds the phase of its own round loop, which nobody else reads. */
@@ -205,9 +207,11 @@ struct alignas(64) ThreadContext {
 
 	/* Built by the thread it describes, once that thread is pinned (see run() in
 	   engine.hpp): the queue's buffer is then that thread's first touch, which is
-	   what places it on its NUMA node. */
-	ThreadContext(int role, const Parameters &params)
-		: role(role), state(RUNNING)
+	   what places it on its NUMA node.  `cpu` and `numa_node` are what the kernel
+	   answered after pinning; with --no-bind, only where the thread happened to be.
+	   Shard r's NUMA node is ctx[1 + r]->numa_node. */
+	ThreadContext(int role, int cpu, int numa_node, const Parameters &params)
+		: role(role), cpu(cpu), numa_node(numa_node), state(RUNNING)
 	{
 		if (role == WALKER)
 			q = std::make_unique<SPSCQueue>(params.walker_queue_capacity);

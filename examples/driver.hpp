@@ -32,8 +32,8 @@ static void usage(const char *argv0)
 	printf("  --nrounds R      give up after R versions of the function\n");
 	printf("\n");
 	printf("  --walkers-per-node W     default: fill the affinity mask\n");
-	printf("  --inserters-per-node I   dictionary shards per node.  Default: 1\n");
-	printf("  --no-bind                do not pin threads to CPUs\n");
+	printf("  --inserters-per-node I   dictionary shards per node, spread over its NUMA nodes.  Default: 1\n");
+	printf("  --no-bind                do not pin threads to CPUs (no NUMA placement)\n");
 	printf("\n");
 	printf("  --walker-queue N     DPs buffered between a walker and the comm thread\n");
 	printf("  --inserter-queue N   DPs buffered between the comm thread and an inserter\n");

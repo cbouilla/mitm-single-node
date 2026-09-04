@@ -2,6 +2,8 @@
 #define MITM_CONTROLLER
 
 #include <cmath>
+#include <algorithm>
+#include <vector>
 #include <mpi.h>
 
 #include "parameters.hpp"
@@ -234,6 +236,14 @@ public:
 			params.n_nodes, params.inserters_per_node, params.walkers_per_node, params.n_threads);
 		printf("MPI: %d dictionary shards, %d walker threads in total\n",
 			params.n_inserters, params.n_walkers);
+		printf("MPI: rank 0 has %d CPUs in its affinity mask over %d NUMA node(s); threads %s\n",
+			params.n_avail_cpu, params.n_numa_nodes, params.bind_threads ? "pinned" : "NOT pinned (--no-bind)");
+		if (params.bind_threads) {
+			printf("MPI: inserters on CPUs");
+			for (int tid = 1; tid <= params.inserters_per_node; tid++)
+				printf(" %d", params.thread_cpu[tid]);
+			printf("\n");
+		}
 		printf("RAM per node == %sB buffers + dict.  Total dict == %sB (2^%.2f slots)\n",
 			hbuf, hdict, std::log2((double) params.w));
 		printf("Generating %.1f*w = %" PRIu64 " = 2^%0.2f distinguished points / version\n",
@@ -247,6 +257,37 @@ public:
 			printf("***** WARNING *****\n***** WARNING *****\n***** WARNING *****\n");
 			printf("---> zero difficulty (use the naive technique!)\n");
 			printf("***** WARNING *****\n***** WARNING *****\n***** WARNING *****\n");
+		}
+		fflush(stdout);
+	}
+
+	/*
+	 * The measured layout, once the team is up: each thread's NUMA node as the kernel
+	 * reported it after pinning (ThreadContext::numa_node), one line per NUMA node.
+	 * Static like banner(); thread 0 of rank 0 calls it from run().
+	 */
+	static void placement(const Parameters &params, const SharedContext &shared)
+	{
+		std::vector<int> numa_ids;
+		for (int tid = 0; tid < params.n_threads; tid++) {
+			int id = shared.ctx[tid]->numa_node;
+			if (std::find(numa_ids.begin(), numa_ids.end(), id) == numa_ids.end())
+				numa_ids.push_back(id);
+		}
+		std::sort(numa_ids.begin(), numa_ids.end());
+		for (size_t k = 0; k < numa_ids.size(); k++) {
+			int n_comm = 0, n_ins = 0, n_walk = 0;
+			for (int tid = 0; tid < params.n_threads; tid++) {
+				if (shared.ctx[tid]->numa_node != numa_ids[k])
+					continue;
+				if (shared.ctx[tid]->role == COMM)
+					n_comm++;
+				else if (shared.ctx[tid]->role == INSERTER)
+					n_ins++;
+				else
+					n_walk++;
+			}
+			printf("NUMA node %d: %s%d ins + %d walk\n", numa_ids[k], n_comm ? "comm + " : "", n_ins, n_walk);
 		}
 		fflush(stdout);
 	}

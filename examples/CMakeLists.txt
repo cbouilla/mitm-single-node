@@ -2,7 +2,7 @@
 function(mitm_example name)
     add_executable(${name} ${name}.cpp ${ARGN})
     target_include_directories(${name} PRIVATE ../include)
-    target_link_libraries(${name} PRIVATE MPI::MPI_CXX OpenMP::OpenMP_CXX Threads::Threads)
+    target_link_libraries(${name} PRIVATE MPI::MPI_CXX OpenMP::OpenMP_CXX Threads::Threads hwloc::hwloc)
 endfunction()
 
 

@@ -45,8 +45,9 @@ public:
 	/*
 	 * Between two rounds, by the owner alone.  Placement is settled by then, so any
 	 * thread could help; those on the shard's NUMA node should (the flush is
-	 * bandwidth-bound and worth sharing when the inserters are few).  That needs a
-	 * topology the engine does not know today -- future work.
+	 * bandwidth-bound and worth sharing when the inserters are few).  Which threads
+	 * share the shard's NUMA node is known (ThreadContext::numa_node); the collective
+	 * flush itself is future work.
 	 */
 	void flush()
 	{

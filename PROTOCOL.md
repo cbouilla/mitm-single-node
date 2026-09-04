@@ -24,6 +24,17 @@ walkers_per_node` threads, laid out by thread id:
 (`R == inserters_per_node`.)  MPI is initialised with `MPI_THREAD_FUNNELED`
 and **only thread 0 ever calls MPI** (its code is the `CommThread` class); the
 workers never see an `MPI_` symbol.
+
+**Placement.**  `Parameters` pins every thread to a CPU of the rank's affinity mask
+(`thread_cpu[tid]`), chosen from the hwloc topology: the comm thread takes the first
+CPU of the first NUMA node; inserter `i` goes to NUMA node `i mod n_numa_nodes` and
+walker `s` to NUMA node `s mod n_numa_nodes`, each taking the next free CPU of that
+node, or of the next node that still has one.  The dictionary shards, placed by first
+touch on their inserter's node (§4.1), are thus evenly spread over the NUMA nodes
+whenever `inserters_per_node` is a multiple of their count; rank 0 warns otherwise.
+`--no-bind` (`Options::bind_threads == false`) leaves every thread unpinned.  Once
+pinned, each thread records the CPU and NUMA node the kernel reports
+(`ThreadContext::cpu`, `numa_node`).
 Worker threads communicate with thread 0 through per-thread
 Single-Producer-Single-Consumer (SPSC) queues, one `state` atomic each and their
 plain-`u64` tallies (all three in their `ThreadContext`; thread 0's own `state` is the
@@ -343,8 +354,9 @@ comm:      RUNNING -> COLLECTING -> FLUSHING -> WAITING -> DRAINING_INSERTERS ->
 1. The driver calls `MPI_Init_thread(MPI_THREAD_FUNNELED)`; `run()` refuses a lower
    level.  Every rank must use the same PRNG seed (the driver broadcasts it).
 2. `run()`, on the main thread: `Parameters` is built on every rank from identical
-   inputs (rank and size come from `MPI_Comm_rank/size`).  Then the engine's
-   `MPI_Bsend` buffer (§2.2) is attached, as a local of `run()`: MPI has one per
+   inputs (rank and size come from `MPI_Comm_rank/size`); it loads the hwloc topology
+   once, to lay out `thread_cpu` over the NUMA nodes of the affinity mask (§1).  Then
+   the engine's `MPI_Bsend` buffer (§2.2) is attached, as a local of `run()`: MPI has one per
    process, so whatever the caller had attached is detached first --
    `MPI_Buffer_detach` waits for that buffer's pending sends -- and remembered, to be
    put back at the end (§4.7).  Nothing may `MPI_Bsend` before this, and nothing does.
@@ -357,14 +369,19 @@ comm:      RUNNING -> COLLECTING -> FLUSHING -> WAITING -> DRAINING_INSERTERS ->
    `n_in_buffers` point receives and the end-of-round receive itself, and on rank 0
    the `Controller` it holds posts the report and solution receives.  Nothing big is
    allocated before the team exists: the MPI buffers are a few tens of kB.
-3. The OpenMP team starts.  Each thread pins itself to `thread_cpu[tid]`, **then**
-   builds its `ThreadContext` into `shared.ctx[tid]` (for a worker, with its SPSC
-   queue), and an inserter also builds its dictionary shard into
-   `shared.shards[tid-1]` (`PcsDict`, `w_shard` slots, zero-filled).  Allocating
-   after pinning is deliberate: under Linux's first-touch policy a page lands on the
-   NUMA node of the CPU that first writes it, so this puts every object on its
-   owner's node.  **OpenMP barrier** publishes both tables; the comm thread reads
-   them from its first round on.
+3. The OpenMP team starts.  Each thread pins itself to `thread_cpu[tid]` and asks the
+   kernel (`getcpu`) which CPU and NUMA node it is on; a thread that could not be
+   pinned, or is not on its CPU, says so.  **OpenMP barrier**: if any thread of the
+   rank is misplaced, thread 0 -- the main thread, the only one allowed to call MPI --
+   `MPI_Abort`s the run; nothing has been allocated yet.  **Then** each thread builds
+   its `ThreadContext` into `shared.ctx[tid]` (with the CPU and NUMA node it measured
+   and, for a worker, its SPSC queue), and an inserter also builds its dictionary
+   shard into `shared.shards[tid-1]` (`PcsDict`, `w_shard` slots, zero-filled).
+   Allocating after pinning is deliberate: under Linux's first-touch policy a page
+   lands on the NUMA node of the CPU that first writes it, so this puts every object
+   on its owner's node.  **OpenMP barrier** publishes both tables; the comm thread
+   reads them from its first round on, and on rank 0 prints the measured layout, one
+   line per NUMA node.
 
 ### 4.2 Round start
 

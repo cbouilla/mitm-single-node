@@ -19,8 +19,10 @@ engine to fall back on.
 cmake -S . -B build && make -C build
 ```
 
-Requires **MPI**, **OpenMP** and **OpenSSL** (headers; the DES example checks itself
-against it).  Binaries land in `build/examples/`.
+Requires **MPI**, **OpenMP**, **OpenSSL** (headers; the DES example checks itself
+against it) and **hwloc 2.x** (headers, `libhwloc-dev`): the threads are placed over
+the NUMA nodes of the rank with it, and there is no fallback without it.  Binaries
+land in `build/examples/`.
 
 Two things to know before trusting any number that comes out:
 
@@ -49,7 +51,9 @@ mpirun -np 4 --bind-to none build/examples/double_speck64_demo \
 - `--nrounds` gives up after that many versions of the mixing function
 - `--walkers-per-node` / `--inserters-per-node` set the thread layout; by default the
   walkers fill whatever affinity mask the launcher handed the rank, which is why
-  `--bind-to none` matters
+  `--bind-to none` matters.  The shards are pinned round-robin over the rank's NUMA
+  nodes, so make `--inserters-per-node` a multiple of their count (rank 0 warns
+  otherwise); `--no-bind` disables pinning
 - the queue and buffer sizes (`--walker-queue`, `--buffer`, `--chunk`, ...) are the
   tuning knobs for the communication path
 

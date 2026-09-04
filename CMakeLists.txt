@@ -16,6 +16,14 @@ find_package(OpenMP REQUIRED)
 find_package(Threads REQUIRED)
 find_package(OpenSSL REQUIRED)     # DES implementation
 
+# hwloc 2.x: NUMA placement of the threads (include/tools.hpp).  Hard requirement, no
+# fallback.  On a cluster: module load hwloc, or HWLOC_ROOT=/path cmake ...
+find_path(HWLOC_INCLUDE_DIR hwloc.h REQUIRED HINTS ENV HWLOC_ROOT PATH_SUFFIXES include)
+find_library(HWLOC_LIBRARY hwloc REQUIRED HINTS ENV HWLOC_ROOT PATH_SUFFIXES lib lib64)
+add_library(hwloc::hwloc UNKNOWN IMPORTED)
+set_target_properties(hwloc::hwloc PROPERTIES IMPORTED_LOCATION "${HWLOC_LIBRARY}"
+                      INTERFACE_INCLUDE_DIRECTORIES "${HWLOC_INCLUDE_DIR}")
+message(STATUS "hwloc: ${HWLOC_LIBRARY}")
 
 add_subdirectory(examples)
 

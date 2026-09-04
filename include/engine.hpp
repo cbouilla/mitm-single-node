@@ -5,6 +5,8 @@
 #include <mpi.h>
 #include <omp.h>
 #include <pthread.h>
+#include <unistd.h>
+#include <sys/syscall.h>
 #include <err.h>
 #include <memory>
 #include <vector>
@@ -497,6 +499,7 @@ optional<tuple<u64,u64,u64>> run(const ProblemWrapper &wrapper, u64 nbytes_memor
 
 	SharedContext shared(params);
 	CommThread comm(params, prng, shared);
+	int n_unpinned = 0;                 /* threads not where Parameters put them: fatal */
 
 	#pragma omp parallel num_threads(params.n_threads)
 	{
@@ -504,20 +507,45 @@ optional<tuple<u64,u64,u64>> run(const ProblemWrapper &wrapper, u64 nbytes_memor
 
 		/*
 		 * Pin first, allocate second.  Under Linux's first-touch policy a page
-		 * belongs to the NUMA node of the CPU that first writes it.
+		 * belongs to the NUMA node of the CPU that first writes it.  So ask the
+		 * kernel where we are before touching anything: a thread that is not on
+		 * its CPU would void the placement, and the whole rank stops instead --
+		 * through thread 0, the only one allowed to call MPI (FUNNELED), and
+		 * before anyone zero-fills a shard.
 		 */
-		pin_to_cpu(params.thread_cpu[tid]);
+		int want = params.thread_cpu[tid];
+		if (want >= 0 && pin_to_cpu(want) < 0) {
+			warn("MPI: rank %d: cannot pin thread %d to CPU %d", params.rank, tid, want);
+			#pragma omp atomic
+			n_unpinned += 1;
+		}
+		unsigned cpu = 0, numa_node = 0;
+		if (syscall(SYS_getcpu, &cpu, &numa_node, NULL) != 0)
+			err(1, "getcpu");
+		if (want >= 0 && (int) cpu != want) {
+			warnx("MPI: rank %d: thread %d asked for CPU %d, runs on CPU %u", params.rank, tid, want, cpu);
+			#pragma omp atomic
+			n_unpinned += 1;
+		}
+
+		#pragma omp barrier             /* everybody is pinned, or nobody allocates */
+
+		if (tid == 0 && n_unpinned > 0)
+			MPI_Abort(params.mpi_comm, 1);
 		int role = WALKER;
 		if (tid == 0)
 			role = COMM;
 		else if (tid <= params.inserters_per_node)
 			role = INSERTER;
-		shared.ctx[tid] = std::make_unique<ThreadContext>(role, params);
+		shared.ctx[tid] = std::make_unique<ThreadContext>(role, cpu, numa_node, params);
 		if (role == INSERTER)
 			shared.shards[tid - 1] = std::make_unique<PcsDict>(params.jbits, params.w_shard);
 		ThreadContext &me = *shared.ctx[tid];
 
 		#pragma omp barrier             /* now we can inspect the shared context */
+
+		if (tid == 0 && params.verbose)
+			Controller::placement(params, shared);
 
 		for (;;) {
 			me.state = RUNNING;

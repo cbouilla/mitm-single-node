@@ -7,6 +7,11 @@
 #include <string>
 #include <vector>
 #include <optional>
+#include <cerrno>
+#include <err.h>
+#include <sched.h>
+#include <pthread.h>
+#include <hwloc.h>
 
 using std::vector;
 using std::pair;
@@ -15,6 +20,8 @@ using std::optional;
 using std::nullopt;
 
 #include "types.h"
+
+static_assert(HWLOC_API_VERSION >= 0x00020000, "hwloc 2.x is required (NUMA nodes as memory children)");
 
 namespace mitm {
 
@@ -29,7 +36,8 @@ static inline void cpu_relax()
 #endif
 }
 
-/* pin the calling thread to `cpu`.  Returns cpu, or -1 on failure (or if cpu < 0). */
+/* pin the calling thread to `cpu`.  Returns cpu, or -1 on failure (or if cpu < 0) with
+   errno set -- pthread_setaffinity_np returns the error instead -- so the caller can warn(). */
 static inline int pin_to_cpu(int cpu)
 {
     if (cpu < 0)
@@ -37,9 +45,39 @@ static inline int pin_to_cpu(int cpu)
     cpu_set_t set;
     CPU_ZERO(&set);
     CPU_SET(cpu, &set);
-    if (pthread_setaffinity_np(pthread_self(), sizeof(set), &set) != 0)
+    int rc = pthread_setaffinity_np(pthread_self(), sizeof(set), &set);
+    if (rc != 0) {
+        errno = rc;
         return -1;
+    }
     return cpu;
+}
+
+/*
+ * NUMA node of every CPU of `mask`, as hwloc's os_index (the node number of numactl -H):
+ * numa_node_of_cpu[cpu], -1 for a CPU outside the mask or in no NUMA node.  The topology is
+ * whatever hwloc sees: the machine minus what the cgroup forbids, or what HWLOC_SYNTHETIC /
+ * HWLOC_XMLFILE describe (the test path).  The mask is intersected here, so NO topology flag
+ * is set: RESTRICT_TO_CPUBINDING / THISSYSTEM_ALLOWED_RESOURCES would defeat the synthetic
+ * test.  A CPU listed by several NUMA nodes goes to the first one hwloc lists.
+ */
+static inline void numa_node_of_cpus(const cpu_set_t &mask, std::vector<int> &numa_node_of_cpu)
+{
+    numa_node_of_cpu.assign(CPU_SETSIZE, -1);
+    hwloc_topology_t topo;
+    if (hwloc_topology_init(&topo) != 0)
+        err(1, "hwloc_topology_init");
+    if (hwloc_topology_load(topo) != 0)
+        err(1, "hwloc_topology_load");
+    hwloc_obj_t node = NULL;
+    while ((node = hwloc_get_next_obj_by_type(topo, HWLOC_OBJ_NUMANODE, node)) != NULL) {
+        unsigned cpu;
+        hwloc_bitmap_foreach_begin(cpu, node->cpuset)
+            if (cpu < CPU_SETSIZE && CPU_ISSET(cpu, &mask) && numa_node_of_cpu[cpu] < 0)
+                numa_node_of_cpu[cpu] = (int) node->os_index;
+        hwloc_bitmap_foreach_end();
+    }
+    hwloc_topology_destroy(topo);
 }
 
 
