@@ -12,19 +12,9 @@
 namespace mitm {
 
 /*
- * The controller lives on the comm thread of rank 0, which also has a full node to
- * run.  It is therefore a state object driven by that thread's poll loop rather than
- * a loop of its own: nothing here blocks, and nothing probes.
- *
- * It owns the inbound side of rank 0's control channel: one always-posted receive for
- * progress reports (TAG_REPORT) and one for solutions (TAG_SOLUTION), from any node.
- * service() tests them, digests what arrived, and closes the round -- one zero-length
- * TAG_END_ROUND to every node, itself included -- once the reported DP count has
- * reached points_per_version or a solution has come in.  That is the only message the
- * controller ever sends.  Closing the round is also where the search's own state
- * advances: the round count, and `stop` once the last permitted round is over.  The
- * rest of the class is printing.  The object exists on every rank so that the node
- * code stays uniform, but only rank 0 posts the receives; elsewhere it is inert.
+ * Rank 0's round manager, driven by the comm thread's poll loop (nothing here blocks): it owns the
+ * report and solution receives, closes the round with one TAG_END_ROUND per node, and prints.  Exists
+ * on every rank so that the node code stays uniform; inert off rank 0.  PROTOCOL.md §2.2 and §4.3.
  */
 class Controller {
 	MPI_Comm comm;
@@ -45,7 +35,8 @@ public:
 	   nothing else -- the round report prints the exact reduction. */
 	u64 reported[N_COUNTERS] = {0};
 	bool round_closed = false;                     /* TAG_END_ROUND sent to every node */
-	double round_start = 0, last_display = 0;
+	double round_start = 0;                        /* wtime() at begin_round() */
+	double last_display = 0;                       /* wtime() of the last live line */
 
 	/* all-time: every round's reduction folded in -- counts summed, HyperLogLog
 	   registers maxed.  In-class initialisers: the constructor returns early off rank 0. */
@@ -73,14 +64,9 @@ public:
 	}
 
 	/*
-	 * One turn of the controller: take delivery of everything that has reached rank 0
-	 * on the control channel, then decide.  Both inbound messages are one-way and their
-	 * relative order is irrelevant: the decision is taken once, after both receives
-	 * have been drained.  Each receive is drained to empty so that one call absorbs a
-	 * backlog -- this is what keeps a report matched late in our own drain from being
-	 * credited to the next round.  Called by the comm thread of rank 0 in every phase of
-	 * the round, its own drain included, so late reports and a late solution are
-	 * digested (round tallies, and `stop` for the next round header).
+	 * One turn: drain the solution and report receives to empty, then close the round if it is time
+	 * (PROTOCOL.md §2.2).  Draining to empty is what keeps a report matched late in our own drain from
+	 * being credited to the next round (§6).
 	 */
 	void service()
 	{
@@ -90,7 +76,6 @@ public:
 			MPI_Test(&req_solution, &flag, MPI_STATUS_IGNORE);
 			if (!flag)
 				break;
-			/* a node found the golden pair: the first one wins, and the search ends */
 			if (not solution)
 				solution = optional(tuple(solution_buf[SOL_I], solution_buf[SOL_X0], solution_buf[SOL_X1]));
 			stop = 1;
@@ -101,22 +86,13 @@ public:
 			MPI_Test(&req_report, &flag, MPI_STATUS_IGNORE);
 			if (!flag)
 				break;
-			/* a progress report: its deltas are added to the round's tallies */
 			for (int k = 0; k < N_COUNTERS; k++)
 				reported[k] += report_buf[k];
 			display();
 			MPI_Irecv(report_buf, N_COUNTERS, MPI_UINT64_T, MPI_ANY_SOURCE, TAG_REPORT, comm, &req_report);
 		}
 
-		/* Close the round: tell every node, ourselves included, that it is over.  Exactly
-		   once per round: the signal is matched by a receive that names source 0 and this
-		   tag, so successive signals are non-overtaking and a node consumes exactly one per
-		   round (it is its only way out of the steady state) -- a second one would be
-		   consumed in the *next* round and end it at once.  This is also where the search
-		   decides whether there is a next round: give up after max_versions of them, and
-		   the engine reports "not found".  `stop` goes out in the next round header, which
-		   rank 0 broadcasts once everybody has drained.  Not to be confused with
-		   end_round(), the statistics, printed at that point. */
+		/* close the round, exactly once; the search advances here (PROTOCOL.md §2.2) */
 		if (not round_closed && (stop || reported[N_DP] >= params.points_per_version)) {
 			round_closed = true;
 			nround += 1;
@@ -140,6 +116,7 @@ public:
 		}
 	}
 
+	/* the live one-line display, from the reports so far; at most twice a second */
 	void display()
 	{
 		double now = wtime();
@@ -163,12 +140,9 @@ public:
 	}
 
 	/*
-	 * The round report, once everybody has drained.  `r` is the round's counters,
-	 * summed over every thread of every node (the MPI_SUM reduction), `hll_round` the
-	 * MPI_MAX reduction of the nodes' HyperLogLog registers.  Exact, unlike `reported`,
-	 * so everything printed here comes from them; the running totals live here too.
-	 * Printing only: the round was closed, counted, and the next one decided on, in
-	 * service().
+	 * The round report: `r` is the exact SUM of the counters over every thread of every node, `hll_round`
+	 * the MAX of the HyperLogLog registers; both are folded into the all-time totals.  Printing only:
+	 * the round was closed, counted and the next one decided on, in service().
 	 */
 	void end_round(const u64 r[N_COUNTERS], const u8 hll_round[HLL_REGISTERS])
 	{
@@ -221,9 +195,8 @@ public:
 	}
 
 	/*
-	 * The startup report, all of it, in one place.  Static: run() prints it
-	 * before the team -- hence the dictionary, and the Controller itself -- exists,
-	 * so that the plan is on record even if the allocation fails.
+	 * The startup report.  Static: run() prints it before the team, hence the dictionary, exists, so
+	 * that the plan is on record even if the allocation fails.
 	 */
 	static void banner(const Parameters &params, u64 seed)
 	{
@@ -261,11 +234,7 @@ public:
 		fflush(stdout);
 	}
 
-	/*
-	 * The measured layout, once the team is up: each thread's NUMA node as the kernel
-	 * reported it after pinning (ThreadContext::numa_node), one line per NUMA node.
-	 * Static like banner(); thread 0 of rank 0 calls it from run().
-	 */
+	/* the measured layout, one line per NUMA node: the threads that landed there.  Static like banner() */
 	static void placement(const Parameters &params, const SharedContext &shared)
 	{
 		std::vector<int> numa_ids;
@@ -292,6 +261,7 @@ public:
 		fflush(stdout);
 	}
 
+	/* the last line: found, or gave up after nround versions */
 	void done()
 	{
 		if (solution)

@@ -25,39 +25,9 @@ namespace mitm {
 /******************************* the comm thread ******************************/
 
 /*
- * One MPI rank per node, MPI_THREAD_FUNNELED.  Thread 0 is the only one that ever
- * touches MPI, and this is all of it: it drains the walker threads' queues, routes
- * points to the output buffers or straight into a local inserter's queue, services
- * the control channel, winds the round down, reduces the statistics and, on rank 0,
- * runs the controller.  run() calls it at the synchronisation points of a round --
- * begin_round(), comm_round(), and finish() after the last one -- and everything in
- * between is here.  comm_round() is one loop, whose phase is the comm thread's own
- * ThreadContext::state (thread_state in comm.hpp), followed by end_round(), the
- * round's statistics.  Its own tallies (the drops it causes) go into ctx[0]->ctr like
- * every other thread's.
- *
- * Built by run() before the team, on the main thread, which becomes thread 0 of the
- * team: it is that thread's object, and everything it owns -- the MPI buffers, the
- * requests, the controller -- is private to it.  What it shares with the workers,
- * the parameters, the PRNG and the SharedContext, is held by reference.
- *
- * Incoming points land in a pool of n_in_buffers always-posted MPI_ANY_SOURCE
- * receives, so that buffer memory is set by that knob rather than by the number of
- * peers; poll_incoming() runs the Testsome / scatter / repost loop over the pool.
- * A zero-length TAG_POINTS message is a node's end-of-round sentinel: n_sentinels
- * counts them, and the round's incoming traffic is over when it reaches n_nodes.
- *
- * The node's end of the control channel (the three tags are listed in comm.hpp) is
- * here too, and it is small: one always-posted receive for the end-of-round signal.
- * It only ever comes from rank 0, so the receive names its source and there is no
- * wildcard at all.  The inbound side of rank 0 -- the report and solution receives --
- * belongs to the Controller, the only thing that ever reads them.  Rank 0 talks to
- * itself through MPI like any other node.  Sends on the channel are plain MPI_Bsend
- * at the call sites: the messages are short, buffered mode completes locally, so
- * there is nothing to track and the comm thread never blocks.  The buffer behind them
- * is per process and serves every Bsend of the engine -- reports, solutions, the
- * controller's end-of-round signals and the end-of-round sentinels; run() attaches it
- * before this object is built, sizes it (see there), and detaches it after finish().
+ * Thread 0's object: all of the rank's MPI.  Routing, the receive pool, the control channel, the
+ * round's state machine (comm_round), the end-of-round reductions and, on rank 0, the controller.
+ * Built by run() on the main thread, before the team.  PROTOCOL.md §2 and §4.
  */
 class CommThread {
 public:
@@ -68,7 +38,7 @@ public:
 
 	OutBuffers outbuf;
 
-	/* the incoming bulk DP buffers: n_in_buffers receives, always posted */
+	/* the receive pool: n_in_buffers always-posted ANY_SOURCE receives, sized by that knob and not by the peers */
 	size_t in_cap;                                        /* u64 per buffer */
 	std::vector<std::vector<u64>> in_data;
 	std::vector<MPI_Request> in_req;
@@ -90,7 +60,6 @@ public:
 		  in_done_idx(params.n_in_buffers), in_done_st(params.n_in_buffers),
 		  controller(params)
 	{
-		// post receives
 		for (int k = 0; k < params.n_in_buffers; k++) {
 			in_data[k].resize(in_cap);
 			MPI_Irecv(in_data[k].data(), in_cap, MPI_UINT64_T, MPI_ANY_SOURCE, TAG_POINTS,
@@ -130,8 +99,7 @@ public:
 		return moved;
 	}
 
-	/* take delivery of whatever arrived over MPI: scatter each completed buffer to the
-	   local inserters, or count it as a sentinel, and repost its receive */
+	/* take delivery of whatever arrived over MPI, and repost each completed receive */
 	void poll_incoming()
 	{
 		int outcount = 0;
@@ -157,13 +125,8 @@ public:
 	}
 
 	/*
-	 * Service the control channel: the end-of-round signal, if it came, and on rank 0
-	 * the controller's inbound traffic.  Called in every phase of the round, our own
-	 * drain included: on rank 0 so that the reports and solutions of nodes still in
-	 * their steady state are digested (round tallies, and `stop` for the next round
-	 * header), and on every rank because its MPI_Test drives the progress our sentinels
-	 * and rank 0's signals need to actually leave.  Nobody's liveness depends on it:
-	 * every signal of the round is sent before rank 0 can enter its own drain.
+	 * The control channel: our end-of-round signal and, on rank 0, the controller's receives.  Run in
+	 * every phase of the round, our own drain included: PROTOCOL.md §4.5, last paragraph.
 	 */
 	void service_control()
 	{
@@ -180,14 +143,7 @@ public:
 
 	/******************* one round *******************/
 
-	/*
-	 * The tallies of every thread of this rank, added up as they stand.  They are
-	 * plain u64 that the workers write with no synchronisation at all: the flush
-	 * makes whatever has reached memory visible, and a count that lags a little (one
-	 * bumped once per chunk can sit in a register until the walker's next release
-	 * store or mutex) is fine for a progress report.  The exact values are read once,
-	 * when every worker has gone quiescent (end_round).
-	 */
+	/* the node's tallies as they stand: approximate mid-round, exact once every worker is QUIESCENT (§3.4) */
 	void snapshot(u64 sum[N_COUNTERS])
 	{
 		#pragma omp flush
@@ -198,10 +154,7 @@ public:
 				sum[k] += ctx[t]->ctr[k];
 	}
 
-	/*
-	 * The round header.  Rank 0 draws the function version and the root seed; 
-	 * every rank learns them from the broadcast.
-	 */
+	/* the round header: drawn by rank 0, broadcast, stored in the SharedContext (PROTOCOL.md §4.2) */
 	void begin_round(u64 out_mask)
 	{
 		u64 msg[3];
@@ -228,6 +181,7 @@ public:
 		return true;
 	}
 
+	/* ask every thread of `role` to move to `st` */
 	void set_state(int role, int st)
 	{
 		for (int t = 0; t < params.n_threads; t++)
@@ -247,21 +201,8 @@ public:
 	}
 
 	/*
-	 * One round: the steady state, then the seven-step drain, as one loop.  Every turn
-	 * does the same things whatever the phase -- route the walkers' points, take
-	 * delivery over MPI, service the control channel, call home (the golden pair as
-	 * soon as a walker has confirmed it, a progress report on the pacing rule) -- then
-	 * tests the exit condition of the current phase, held in ctx[0]->state (see
-	 * thread_state in comm.hpp), and moves on to the next one.  Nothing in the loop
-	 * blocks.  Then, with every thread of the node quiescent, the round's statistics
-	 * (end_round): its reductions block, and every rank reaches them.
-	 *
-	 * The drain phases run the full body too, and that is harmless: from FLUSHING on
-	 * the walkers are held and their queues empty, so routing moves nothing; past
-	 * WAITING every point message of the round has been delivered, and none of the next
-	 * round can exist yet -- a node sends round r+1 points only after the round r+1
-	 * broadcast returns, which needs rank 0's round r reductions to complete, i.e.
-	 * every node past its own drain.
+	 * One round of the comm thread: steady state and drain as one non-blocking loop, whose phase is
+	 * ctx[0]->state, then end_round().  The turn's body and each phase's exit test: PROTOCOL.md §4.3, §4.5.
 	 */
 	void comm_round()
 	{
@@ -270,13 +211,7 @@ public:
 
 		u64 prev[N_COUNTERS] = {0};        /* the tallies at the previous report */
 
-		/*
-		 * Reporting on a timer alone lets a short round run far past beta*w: the
-		 * controller cannot end it before the first reports land, and by then the
-		 * walkers have produced a whole ping_delay of points.  That overshoot also
-		 * runs the chain counter j past the width the dictionary encodes it in.  So
-		 * also report once a node has produced its share of the round.
-		 */
+		/* report by volume too: on a timer alone a short round overshoots beta*w and runs j past jbits */
 		u64 dp_report_threshold = params.points_per_version
 		                        / ((u64) params.reports_per_round * params.n_nodes);
 		if (dp_report_threshold < 1)
@@ -288,20 +223,17 @@ public:
 			poll_incoming();
 			service_control();
 
-			/* a walker confirmed the golden collision: tell the controller now */
 			if (not golden_sent && shared.golden_found.load(std::memory_order_acquire)) {
 				MPI_Bsend(shared.golden, SOL_NWORDS, MPI_UINT64_T, 0, TAG_SOLUTION, params.mpi_comm);
 				golden_sent = true;
 			}
 
-			/* periodic call home */
 			if ((++poll_tick & 0xff) == 0) {
 				u64 cur[N_COUNTERS];
 				snapshot(cur);
 				bool due = cur[N_DP] - prev[N_DP] >= dp_report_threshold || wtime() - last_ping >= params.ping_delay;
 				if (due) {
 					last_ping = wtime();
-					/* the report is the delta of every counter since the previous one */
 					u64 msg[N_COUNTERS];
 					for (int k = 0; k < N_COUNTERS; k++) {
 						msg[k] = cur[k] - prev[k];
@@ -311,69 +243,45 @@ public:
 				}
 			}
 
-			/* the phase: its exit test, and the step it triggers.  Ours alone, hence relaxed */
+			/* our phase: nobody else reads it, hence relaxed */
 			int st = ctx[0]->state.load(std::memory_order_relaxed);
 			assert(st == RUNNING || st == COLLECTING || not moved);      /* held walkers produce nothing */
-			
+
 			switch (st) {
 			case RUNNING:
-				if (round_over) {
-				/* 1. our end-of-round signal: the walkers stop producing points.  
-				      They keep resolving collisions. */
+				if (round_over) {                                /* step 1 */
 					set_state(WALKER, HOLD);
 					st = COLLECTING;
 				}
 				break;
 
-			case COLLECTING:
-				/* 2. every walker has acknowledged -- one only reads its state once per
-				      chunk, so an empty queue before then is not an idle one -- and their
-				      queues are empty: every point of ours is routed.  A walker's last
-				      push happens-before its HELD store, so the queue test that follows
-				      the acquire load of HELD sees it. */
+			case COLLECTING:                                     /* step 2 */
 				if (all_in_state(WALKER, HELD) && not moved && walker_queues_empty())
 					st = FLUSHING;
 				break;
 
-			case FLUSHING:
-				/* 3. the partial buffers are out and every send has completed -- while
-				      still taking delivery, so the peers we wait on make progress too.
-				   4. tell every node we are done sending (buffered: nothing to wait for) */
+			case FLUSHING:                                       /* steps 3, 4 */
 				if (outbuf.flush_poll()) {
 					outbuf.send_sentinels();
 					st = WAITING;
 				}
 				break;
 
-			case WAITING:
-				/* 5. every node (ourselves included) has finished sending to us.  Every
-				      node was sent its end-of-round signal in one go, and rank 0 only
-				      gets here after receiving its own, so nobody is waiting on us; rank 0
-				      keeps digesting reports so the round's tallies cover what the others
-				      produced meanwhile.
-				   6. nothing further will ever be delivered: the inserters can finish
-				      their queues and announce themselves quiescent */
+			case WAITING:                                        /* steps 5, 6 */
 				if (n_sentinels == params.n_nodes) {
 					set_state(INSERTER, DRAIN);
 					st = DRAINING_INSERTERS;
 				}
 				break;
 
-			case DRAINING_INSERTERS:
-				/* 6. every inserter has: every point of the round has been probed.
-				   7. with every inserter stopped, no new collision candidate can appear,
-				      so the walkers can empty the collision queue and go quiet too.
-				      Doing this last is what stops a golden collision found on the final
-				      candidate from being lost. */
+			case DRAINING_INSERTERS:                             /* steps 6, 7 */
 				if (all_in_state(INSERTER, QUIESCENT)) {
 					set_state(WALKER, DRAIN);
 					st = DRAINING_WALKERS;
 				}
 				break;
 
-			case DRAINING_WALKERS:
-				/* 7. every walker has: every candidate of the round has been resolved,
-				      and the round is over for this node */
+			case DRAINING_WALKERS:                               /* step 7 */
 				if (all_in_state(WALKER, QUIESCENT))
 					st = QUIESCENT;
 				break;
@@ -388,15 +296,9 @@ public:
 	/******************* end-of-round statistics *******************/
 
 	/*
-	 * The round's statistics, once every worker of the node is QUIESCENT: their
-	 * tallies are then exact and nobody writes them, and no walker touches the
-	 * HyperLogLog any more -- a worker's last increment happens-before its QUIESCENT
-	 * store, which comm_round() loaded with acquire.  Sum the tallies over the threads
-	 * of this rank, copy the node's registers out, reduce both over the ranks -- SUM of
-	 * the counts, MAX of the registers -- hand the result to the controller, and clear
-	 * everything that is scoped to the round; nobody touches any of it again before
-	 * the next round's barrier.  The reductions block, and they are the first thing a
-	 * rank does once its drain is over, so every rank reaches them.
+	 * The round's statistics, once every worker is QUIESCENT: reduce the tallies (SUM) and the
+	 * HyperLogLog (MAX) to rank 0, then zero everything round-scoped.  The reductions block; every rank
+	 * reaches them after its drain (PROTOCOL.md §4.6).
 	 */
 	void end_round()
 	{
@@ -459,15 +361,14 @@ public:
 /******************* the whole computation *******************/
 
 /*
- * The one entry point of the engine.  Returns (i, x0, x1) --- the mixing
- * function index and the two colliding points --- or nothing if the search
- * gave up after opts.max_versions rounds.
+ * The one entry point of the engine.  Returns (i, x0, x1) --- the mixing function index and the two
+ * colliding points --- or nothing if the search gave up after opts.max_versions rounds.  Threads pin
+ * before they allocate: first touch places each object on its owner's NUMA node (PROTOCOL.md §4.1).
  */
 template <class ProblemWrapper>
 optional<tuple<u64,u64,u64>> run(const ProblemWrapper &wrapper, u64 nbytes_memory,
                                  const Options &opts, PRNG &prng)
 {
-	/* MPI must be initialised with at least FUNNELED support */
 	int provided;
 	MPI_Query_thread(&provided);
 	if (provided < MPI_THREAD_FUNNELED)
@@ -505,14 +406,6 @@ optional<tuple<u64,u64,u64>> run(const ProblemWrapper &wrapper, u64 nbytes_memor
 	{
 		int tid = omp_get_thread_num();
 
-		/*
-		 * Pin first, allocate second.  Under Linux's first-touch policy a page
-		 * belongs to the NUMA node of the CPU that first writes it.  So ask the
-		 * kernel where we are before touching anything: a thread that is not on
-		 * its CPU would void the placement, and the whole rank stops instead --
-		 * through thread 0, the only one allowed to call MPI (FUNNELED), and
-		 * before anyone zero-fills a shard.
-		 */
 		int want = params.thread_cpu[tid];
 		if (want >= 0 && pin_to_cpu(want) < 0) {
 			warn("MPI: rank %d: cannot pin thread %d to CPU %d", params.rank, tid, want);
@@ -549,7 +442,7 @@ optional<tuple<u64,u64,u64>> run(const ProblemWrapper &wrapper, u64 nbytes_memor
 
 		for (;;) {
 			me.state = RUNNING;
-			
+
 			#pragma omp master
 			comm.begin_round(wrapper.out_mask);
 
@@ -567,15 +460,14 @@ optional<tuple<u64,u64,u64>> run(const ProblemWrapper &wrapper, u64 nbytes_memor
 
 			#pragma omp barrier         /* every thread is back.  Nothing depends on it */
 
-			if (me.role == INSERTER)        // later: collective flush
+			if (me.role == INSERTER)        /* later: a collective flush */
 				shared.shards[tid - 1]->flush();
 		}
 	}
 
 	optional<tuple<u64,u64,u64>> answer = comm.finish();
 
-	/* detach waits for our last buffered sends to be out; then give MPI back the
-	   caller's buffer, if there was one */
+	/* detach waits for our last buffered sends; then restore the caller's buffer, if there was one */
 	void *ptr = NULL;
 	int sz = 0;
 	MPI_Buffer_detach(&ptr, &sz);
