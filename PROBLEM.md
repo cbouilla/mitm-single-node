@@ -219,6 +219,18 @@ Each multiplies whatever parallel routing gives.
   placement the engine would give them and hammers each with pseudo-random endpoints,
   reporting probes/s per quarter-`w` of load.  `--beta` bounds how far it fills.  It
   does not exercise the hit path, so it measures the probe, not the collision queue.
+- **And no way to price routing before rewriting it** -- **there is now**:
+  `staging_benchmark()` in `benchmark.hpp`, next to the probe benchmark and asked for by the
+  same `--ram`.  It prices §5's producer-side routing: the rank's walker threads, pinned
+  where the engine puts them, each staging pseudo-random points into a shared buffer per
+  destination, swept over the fan-out such a router would face (`n_nodes *
+  inserters_per_node` destinations, in powers of four until the buffers no longer fit the
+  budget).  Three ways per row -- no fan-out at all (the floor), one atomic reservation and
+  one scattered store per point, and the same through one private cache line per destination
+  -- and two point sizes, three words and two, since the destination index implies the low
+  bits of `x` and a two-word point puts four in a write-combining line instead of two.  The
+  number to beat is one comm thread's ~250 ns per point (§3).  It never seals a buffer nor
+  sends one, so it prices the steady state and not the handoff to the funnel.
 
 ## 7. Numbers to re-measure
 
@@ -409,4 +421,6 @@ rather than inferred.  What is new:
 - Numbers worth having that this run did not take: the collision queue with per-inserter
   rings; `R` ranks per node at `--n 48` or above, where a round is long enough that
   startup and dictionary zeroing vanish; and idea A on a node with more than two L3
-  domains, where `R` can grow without taking the last walkers away.
+  domains, where `R` can grow without taking the last walkers away.  The staging sweep of
+  §6 is now the first thing to run on each of them: nothing in §5 is worth building until
+  it says a walker can stage a point in well under the 250 ns a comm thread spends.

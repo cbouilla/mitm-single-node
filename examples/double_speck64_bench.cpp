@@ -15,8 +15,10 @@ int main(int argc, char* argv[])
     mitm::PRNG prng(seed);
     mitm::DoubleSpeck64_Problem pb(n, prng);
     mitm::benchmark(pb, opts);
-    if (ram > 0)         // --ram is optional here: it asks for the dictionary-probe benchmark too
+    if (ram > 0) {       // --ram is optional here: it asks for the probe and staging benchmarks too
         mitm::probe_benchmark(pb, opts, ram);
+        mitm::staging_benchmark(pb, opts, ram);
+    }
 
     MPI_Finalize();
     return EXIT_SUCCESS;
