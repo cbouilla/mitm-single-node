@@ -22,10 +22,9 @@ walkers_per_node` threads, laid out by thread id:
 | `R+1 .. n_threads-1` | `WALKER`   | walks trails, ships distinguished points, resolves collision candidates |
 
 (`R == inserters_per_node`.)  MPI is initialised with `MPI_THREAD_FUNNELED`
-and **only thread 0 ever calls MPI** (its code is the `CommThread` class); the
-workers never see an `MPI_` symbol.
+and **only thread 0 ever calls MPI** (its code is the `CommThread` class).
 
-**Placement.**  `Parameters` pins every thread to a CPU of the rank's affinity mask
+**Placement.**  `Parameters` assigns every thread to a CPU of the rank's affinity mask
 (`thread_cpu[tid]`), chosen from the hwloc topology: the comm thread takes the first
 CPU of the first NUMA node; inserter `i` goes to NUMA node `i mod n_numa_nodes` and
 walker `s` to NUMA node `s mod n_numa_nodes`, each taking the next free CPU of that
@@ -125,10 +124,7 @@ rank that consumes it:
 | `TAG_REPORT` | every node | rank 0 | `N_COUNTERS` | `Controller`, rank 0 only, `MPI_ANY_SOURCE` |
 | `TAG_SOLUTION` | every node | rank 0 | `SOL_NWORDS` | `Controller`, rank 0 only, `MPI_ANY_SOURCE` |
 
-Which receive completed says what the message is, so each buffer is sized exactly for
-its message and nothing is ever inferred from a length.  There is no `MPI_ANY_TAG`
-anywhere, which is what keeps these receives from ever matching `TAG_POINTS` traffic
-bound for rank 0's node role.  The report and solution receives are serviced by the
+The report and solution receives are serviced by the
 controller itself (`Controller::service()`); the node's comm code only ever sees the
 end-of-round signal.  Rank 0 talks to itself through MPI like any other node.  Every
 send is `MPI_Bsend`: it completes locally, so the comm thread never blocks and there is
