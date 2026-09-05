@@ -29,16 +29,16 @@ static void usage(const char *argv0)
 	printf("  --dp-len-bits N  bits of trail length shipped with a distinguished point.  A length that\n");
 	printf("                   does not fit is re-walked when a collision needs it.  0 == all that fit\n");
 	printf("\n");
-	printf("  --walkers-per-node W     default: fill the affinity mask\n");
-	printf("  --inserters-per-node I   dictionary shards per node, one per thread group.  Default: 1\n");
+	printf("  --producers-per-node W     default: fill the affinity mask\n");
+	printf("  --dicts-per-node I   dictionary shards per node, one per thread group.  Default: 1\n");
 	printf("  --cache-level N          cache level a thread group sits in.  0 == auto (the lowest one\n");
 	printf("                           shared by several cores).  Default: 0\n");
 	printf("  --no-bind                do not pin threads to CPUs (no cache/NUMA placement)\n");
 	printf("\n");
-	printf("  --walker-queue N     DPs buffered between a walker and the comm thread\n");
-	printf("  --inserter-queue N   DPs buffered between the comm thread and an inserter\n");
-	printf("  --coll-queue N       collision candidates buffered per inserter, for its group\n");
-	printf("  --coll-per-chunk N   candidates a walker retires per chunk.  0 == until its batch stops filling\n");
+	printf("  --producer-queue N     DPs buffered between a producer and the comm thread\n");
+	printf("  --dict-queue N   DPs buffered between the comm thread and a dict thread\n");
+	printf("  --coll-queue N       collision candidates buffered per dict thread, for its group\n");
+	printf("  --coll-per-chunk N   candidates a producer retires per chunk.  0 == until its batch stops filling\n");
 	printf("  --buffer N           DPs per node-to-node message\n");
 	printf("  --in-buffers N       posted MPI_Irecv slots\n");
 	printf("  --chunk N            trail steps between queue / phase checks\n");
@@ -52,7 +52,7 @@ static void usage(const char *argv0)
 static void process_command_line_options(int argc, char **argv, Options &opts,
                                          u64 &nbytes_memory, int &n, u64 &seed)
 {
-	enum {OPT_WALKER_QUEUE = 1000, OPT_INSERTER_QUEUE, OPT_COLL_QUEUE, OPT_COLL_PER_CHUNK,
+	enum {OPT_PRODUCER_QUEUE = 1000, OPT_DICT_QUEUE, OPT_COLL_QUEUE, OPT_COLL_PER_CHUNK,
 	      OPT_BUFFER, OPT_IN_BUFFERS, OPT_CHUNK, OPT_CACHE_LEVEL, OPT_NO_BIND, OPT_DP_LEN_BITS,
 	      OPT_HELP};
 
@@ -65,10 +65,10 @@ static void process_command_line_options(int argc, char **argv, Options &opts,
 		{"beta",               required_argument, NULL, 'b'},
 		{"nrounds",            required_argument, NULL, 'o'},
 		{"dp-len-bits",        required_argument, NULL, OPT_DP_LEN_BITS},
-		{"walkers-per-node",   required_argument, NULL, 'W'},
-		{"inserters-per-node", required_argument, NULL, 'I'},
-		{"walker-queue",       required_argument, NULL, OPT_WALKER_QUEUE},
-		{"inserter-queue",     required_argument, NULL, OPT_INSERTER_QUEUE},
+		{"producers-per-node", required_argument, NULL, 'W'},
+		{"dicts-per-node",     required_argument, NULL, 'I'},
+		{"producer-queue",     required_argument, NULL, OPT_PRODUCER_QUEUE},
+		{"dict-queue",         required_argument, NULL, OPT_DICT_QUEUE},
 		{"coll-queue",         required_argument, NULL, OPT_COLL_QUEUE},
 		{"coll-per-chunk",     required_argument, NULL, OPT_COLL_PER_CHUNK},
 		{"buffer",             required_argument, NULL, OPT_BUFFER},
@@ -91,10 +91,10 @@ static void process_command_line_options(int argc, char **argv, Options &opts,
 		case 'a': opts.alpha = std::stof(optarg);                        break;
 		case 'b': opts.beta = std::stof(optarg);                         break;
 		case 'o': opts.max_versions = std::stoull(optarg, 0, 0);         break;
-		case 'W': opts.walkers_per_node = std::stoi(optarg);             break;
-		case 'I': opts.inserters_per_node = std::stoi(optarg);           break;
-		case OPT_WALKER_QUEUE:   opts.walker_queue_capacity = std::stoull(optarg);   break;
-		case OPT_INSERTER_QUEUE: opts.inserter_queue_capacity = std::stoull(optarg); break;
+		case 'W': opts.producers_per_node = std::stoi(optarg);           break;
+		case 'I': opts.dicts_per_node = std::stoi(optarg);               break;
+		case OPT_PRODUCER_QUEUE: opts.producer_queue_capacity = std::stoull(optarg); break;
+		case OPT_DICT_QUEUE:     opts.dict_queue_capacity = std::stoull(optarg);     break;
 		case OPT_COLL_QUEUE:     opts.coll_queue_capacity = std::stoull(optarg);     break;
 		case OPT_COLL_PER_CHUNK: opts.coll_per_chunk = std::stoull(optarg);          break;
 		case OPT_BUFFER:         opts.buffer_capacity = std::stoull(optarg);         break;

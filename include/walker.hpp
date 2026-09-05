@@ -544,7 +544,7 @@ void service_collisions(const ProblemWrapper &wrapper, u64 ctr[], u8 hll[], cons
 /*
  * A walker thread: walks vlen trails in lockstep, ships every DP to the comm thread over its SPSC
  * queue, and between chunks retires the candidates queued by the one inserter of its own thread group
- * (ctx.group, PROTOCOL.md §1).  Chain indices are strided by n_walkers from the global walker index.
+ * (ctx.group, PROTOCOL.md §1).  Chain indices are strided by n_producers from the global walker index.
  * Wind-down: ctx.state, PROTOCOL.md §3.3.
  */
 template <class ProblemWrapper>
@@ -577,9 +577,9 @@ void walker_thread(ThreadContext &ctx, const ProblemWrapper &wrapper, const Para
 	if constexpr (vlen == 1)
 		trail.resize(params.dp_max_it + 1);
 
-	u64 j = (u64) params.rank * params.walkers_per_node + walker_index;
+	u64 j = (u64) params.rank * params.producers_per_node + walker_index;
 	for (int k = 0; k < vlen; k++)
-		start_chain(params, wrapper.out_mask, root_seed, j, x, len, seed, params.n_walkers, k);
+		start_chain(params, wrapper.out_mask, root_seed, j, x, len, seed, params.n_producers, k);
 	assert((j & jmask) == j);
 
 	for (;;) {
@@ -622,13 +622,13 @@ void walker_thread(ThreadContext &ctx, const ProblemWrapper &wrapper, const Para
 					u64 l = std::min(len[k], params.len_sat);
 					DP p = {x[k], (seed[k] & jmask) | (l << jbits)};
 					if (not out.push(p))
-						ctr[DROP_WALKERQ] += 1;
+						ctr[DROP_PRODUCERQ] += 1;
 				}
 				if (dp || failure) {
 					if (failure && not dp)
 						ctr[BAD_DP] += 1;
 					start_chain(params, wrapper.out_mask, root_seed, j,
-					            x, len, seed, params.n_walkers, k);
+					            x, len, seed, params.n_producers, k);
 					assert((j & jmask) == j);
 				}
 			}

@@ -23,19 +23,19 @@ class PcsDict;   /* inserter.hpp; complete in run(), where the one SharedContext
 /****************************** collision queue *******************************/
 
 struct CollisionCandidate {
-	u64 i;                  /* mixing function version; a walker asserts it is the round's */
+	u64 i;                  /* mixing function version; a producer asserts it is the round's */
 	u64 seed0;              /* the incoming point: its chain index, ... */
-	u64 len0_maybe;         /* ... its trail length; 0 == it saturated on the wire, the walker re-walks it */
+	u64 len0_maybe;         /* ... its trail length; 0 == it saturated on the wire, the producer re-walks it */
 	u64 end;                /* ... and its endpoint, in full: what a re-walked trail must reach */
 	u64 seed1;              /* the point that was in the slot: its chain index, ... */
-	u64 len1_maybe;         /* ... and its length; 0 == saturated in the dictionary, the walker re-walks it */
+	u64 len1_maybe;         /* ... and its length; 0 == saturated in the dictionary, the producer re-walks it */
 };
 
 /*
- * Bounded, mutex-protected queue of dictionary hits: ONE per inserter, pushed by that inserter and
- * popped by the walkers of its thread group.  Candidates cross it in runs, never one at a time, so
+ * Bounded, mutex-protected queue of dictionary hits: ONE per dict thread, pushed by that dict thread and
+ * popped by the producers of its thread group.  Candidates cross it in runs, never one at a time, so
  * that the lock and the `count` line are touched once per run.  Full == the run is truncated and the
- * inserter tallies the rest (DROP_COLL).  PROTOCOL.md §3.2.
+ * dict thread tallies the rest (DROP_COLL).  PROTOCOL.md §3.2.
  */
 class CollisionQueue {
 	std::mutex mtx;
@@ -47,7 +47,7 @@ class CollisionQueue {
 public:
 	CollisionQueue(size_t capacity) : buf(capacity < 1 ? 1 : capacity), count(0) {}
 
-	/* Relaxed on purpose: a stale answer costs a walker one wasted pop() at worst. */
+	/* Relaxed on purpose: a stale answer costs a producer one wasted pop() at worst. */
 	bool is_empty() const
 	{
 		return count.load(std::memory_order_relaxed) == 0;
@@ -68,7 +68,7 @@ public:
 		return k;
 	}
 
-	/* consumer side.  Several walkers of the group may be here at once; the lock is what orders them. */
+	/* consumer side.  Several producers of the group may be here at once; the lock is what orders them. */
 	size_t pop_bulk(CollisionCandidate *out, size_t max)
 	{
 		std::lock_guard<std::mutex> lock(mtx);
@@ -93,7 +93,7 @@ public:
  * None of this is part of the attack: it is what tells us whether the parameters are any good.
  */
 enum counter {
-	/* walkers */
+	/* producers */
 	N_EVAL = 0,             /* evaluations of the mixing function, by walking or by resolving */
 	N_DP,                   /* distinguished points found */
 	N_POINTS_TRAILS,        /* sum of the lengths of the trails that reached a DP */
@@ -105,14 +105,14 @@ enum counter {
 	BAD_COLLISION,          /* the two trails "collide" on the same value */
 	BAD_WALK_ROBINHOOD,     /* one trail is a suffix of the other */
 	BAD_WALK_NONCOLLIDING,  /* dictionary false positive: the trails never meet */
-	DROP_WALKERQ,           /* DP dropped: the queue to the comm thread was full */
-	/* inserters */
+	DROP_PRODUCERQ,         /* DP dropped: the queue to the comm thread was full */
+	/* dict threads */
 	N_PROBE,                /* dictionary probes retired */
 	BAD_PROBE,              /* dictionary slot was empty, or held a different key */
 	DROP_COLL,              /* candidate dropped: the collision queue was full */
 	/* comm thread */
 	DROP_OUT,               /* DP dropped: the outgoing MPI buffer was still in flight */
-	DROP_INSERTERQ,         /* DP dropped: a local inserter's queue was full */
+	DROP_DICTQ,             /* DP dropped: a local dict thread's queue was full */
 	N_COUNTERS
 };
 
@@ -122,8 +122,8 @@ enum counter {
 static constexpr int HLL_REGISTERS = 0x10000;   /* one per value of the top 16 bits of a pair's hash */
 
 /*
- * How many DISTINCT collisions a round found.  One HyperLogLog per walker, plain `u8`, written by its
- * owner alone and merged by the comm thread once every walker is quiescent: PROTOCOL.md §3.4.  None of
+ * How many DISTINCT collisions a round found.  One HyperLogLog per producer, plain `u8`, written by its
+ * owner alone and merged by the comm thread once every producer is quiescent: PROTOCOL.md §3.4.  None of
  * this is part of the attack -- it is what tells us whether the parameters are any good.
  */
 
@@ -176,7 +176,7 @@ static inline u64 distinct_collisions_estimation(const u8 h[HLL_REGISTERS])
  */
 enum thread_state {
 	RUNNING, HOLD, HELD, DRAIN, QUIESCENT,                                /* workers (RUNNING, QUIESCENT: everyone) */
-	COLLECTING, FLUSHING, WAITING, DRAINING_INSERTERS, DRAINING_WALKERS   /* comm thread only */
+	COLLECTING, FLUSHING, WAITING, DRAINING_DICTS, DRAINING_PRODUCERS   /* comm thread only */
 };
 
 
@@ -190,21 +190,21 @@ struct alignas(64) ThreadContext {
 	const int role;                 /* the comm thread dispatches on it */
 	const int cpu;                  /* where the thread runs, asked to the kernel once pinned */
 	const int numa_node;            /* its NUMA node: the one its first touch lands on */
-	const int group;                /* its thread group; a walker's IS the inserter it resolves for (§1) */
+	const int group;                /* its thread group; a producer's IS the dict thread it resolves for (§1) */
 	std::atomic<int> state;         /* PROTOCOL.md §3.3.  Thread 0's is the phase of its round loop */
 	u64 ctr[N_COUNTERS] = {};       /* this thread's alone, plain u64; exact only once it is QUIESCENT (§3.4) */
-	std::unique_ptr<SPSCQueue> q;   /* walker: to the comm thread; inserter: from it; null for the comm thread */
-	std::vector<u8> hll;            /* walker: its own HyperLogLog of the round's collisions; empty otherwise */
+	std::unique_ptr<SPSCQueue> q;   /* producer: to the comm thread; dict thread: from it; null for the comm thread */
+	std::vector<u8> hll;            /* producer: its own HyperLogLog of the round's collisions; empty otherwise */
 
 	/* built by the thread it describes, once pinned: its buffers are then its first touch (§4.1) */
 	ThreadContext(int role, int cpu, int numa_node, int group, const Parameters &params)
 		: role(role), cpu(cpu), numa_node(numa_node), group(group), state(RUNNING)
 	{
-		if (role == WALKER) {
-			q = std::make_unique<SPSCQueue>(params.walker_queue_capacity);
+		if (role == PRODUCER) {
+			q = std::make_unique<SPSCQueue>(params.producer_queue_capacity);
 			hll.assign(HLL_REGISTERS, 0);
-		} else if (role == INSERTER)
-			q = std::make_unique<SPSCQueue>(params.inserter_queue_capacity);
+		} else if (role == DICT)
+			q = std::make_unique<SPSCQueue>(params.dict_queue_capacity);
 	}
 };
 
@@ -224,20 +224,20 @@ struct SharedContext {
 	/* one per thread, by tid; a worker only ever sees its own */
 	std::vector<std::unique_ptr<ThreadContext>> ctx;
 
-	/* shard r: inserter r (thread 1 + r) alone builds, probes and flushes it */
+	/* shard r: dict thread r (thread 1 + r) alone builds, probes and flushes it */
 	std::vector<std::unique_ptr<PcsDict>> shards;
 
-	/* queue r: inserter r pushes, the walkers of group r pop (PROTOCOL.md §3.2) */
+	/* queue r: dict thread r pushes, the producers of group r pop (PROTOCOL.md §3.2) */
 	std::vector<std::unique_ptr<CollisionQueue>> coll_q;
 
-	/* the golden pair: any walker writes (the first one wins), the comm thread polls */
+	/* the golden pair: any producer writes (the first one wins), the comm thread polls */
 	std::mutex golden_mtx;
 	std::atomic<bool> golden_found;
 	u64 golden[3];              /* i, x0, x1: the TAG_SOLUTION payload (solution_field) */
 
 	SharedContext(const Parameters &params)
-		: ctx(params.n_threads), shards(params.inserters_per_node),
-		  coll_q(params.inserters_per_node), golden_found(false)
+		: ctx(params.n_threads), shards(params.dicts_per_node),
+		  coll_q(params.dicts_per_node), golden_found(false)
 	{
 		golden[0] = golden[1] = golden[2] = 0;
 	}

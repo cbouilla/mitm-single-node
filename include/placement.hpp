@@ -20,7 +20,7 @@ static_assert(HWLOC_API_VERSION >= 0x00020000, "hwloc 2.x is required (NUMA node
 
 namespace mitm {
 
-enum thread_role {COMM, INSERTER, WALKER};
+enum thread_role {COMM, DICT, PRODUCER};
 
 
 /********************************* the topology ******************************/
@@ -131,7 +131,7 @@ static inline int topology_of_cpus(const cpu_set_t &mask, int level, std::vector
 
 /*
  * Groups are cut out of the CORES of a cache domain, never out of its CPUs: a core's SMT siblings must
- * land in the same group, or the sibling of an inserter would be a thread of somebody else's group.
+ * land in the same group, or the sibling of a dict thread would be a thread of somebody else's group.
  *
  * At least as many groups as cache domains: each group sits in one domain, and a domain hosts a share
  * of the groups proportional to its cores, so every group comes out the same size to within one core.
@@ -168,7 +168,7 @@ static void split_caches(const std::vector<std::vector<int>> &cache_cores, int n
 }
 
 /*
- * Fewer groups than cache domains: a group must still hold exactly one inserter, so it covers a run of
+ * Fewer groups than cache domains: a group must still hold exactly one dict thread, so it covers a run of
  * whole domains instead of sitting inside one.  Locality is what is given up; rank 0 warns.
  */
 static void merge_caches(const std::vector<std::vector<int>> &cache_cores, int n_groups,
@@ -189,8 +189,8 @@ static void merge_caches(const std::vector<std::vector<int>> &cache_cores, int n
 
 /*
  * The group's emptiest core that still has a free CPU, or -1.  Handing every thread the emptiest core
- * is what puts the comm thread and the inserters on cores of their own, and then fills the siblings
- * they left with walkers: a walker is compute-bound and fills the issue slots a thread waiting on
+ * is what puts the comm thread and the dict threads on cores of their own, and then fills the siblings
+ * they left with producers: a producer is compute-bound and fills the issue slots a thread waiting on
  * memory leaves idle, whereas two waiting threads on one core would only slow each other down.
  */
 static int emptiest_core(const std::vector<int> &cores, const std::vector<std::vector<int>> &core_cpus,
@@ -216,9 +216,9 @@ static int emptiest_core(const std::vector<int> &cores, const std::vector<std::v
  */
 struct Placement {
 	const int rank;                        /* whose affinity mask this describes */
-	const int n_groups;                    /* == inserters_per_node: one group per inserter */
+	const int n_groups;                    /* == dicts_per_node: one group per dict thread */
 	const bool bind;                       /* pin, or leave every thread where the launcher put it */
-	int n_walkers;                         /* walkers_per_node, resolved: 0 asked to fill the mask */
+	int n_producers;                       /* producers_per_node, resolved: 0 asked to fill the mask */
 
 	/* what the mask offers */
 	int n_avail_cpu;                       /* CPUs in it */
@@ -228,19 +228,19 @@ struct Placement {
 
 	/* the plan */
 	std::vector<int> thread_cpu;           /* CPU for each thread, in tid order; -1 == do not pin */
-	std::vector<int> thread_group;         /* group of each thread; a walker's IS its inserter */
+	std::vector<int> thread_group;         /* group of each thread; a producer's IS its dict thread */
 	std::vector<int> group_size;           /* CPUs in each group */
 	std::vector<int> group_cache;          /* cache domain of each group (the first, when it spans) */
 
 	/*
-	 * The mask's CORES are cut into one group per inserter, each inside one cache domain and all of the
-	 * same size to within one core; the comm thread and inserter j then take the emptiest core of group
-	 * 0 (resp. j), and the walkers fill the groups evenly, emptiest core first -- so every service
-	 * thread gets a core of its own and the SMT siblings it leaves go to walkers.  `walkers == 0` asks
+	 * The mask's CORES are cut into one group per dict thread, each inside one cache domain and all of the
+	 * same size to within one core; the comm thread and dict thread j then take the emptiest core of group
+	 * 0 (resp. j), and the producers fill the groups evenly, emptiest core first -- so every service
+	 * thread gets a core of its own and the SMT siblings it leaves go to producers.  `producers == 0` asks
 	 * for as many as the mask holds.
 	 */
-	Placement(int rank, int inserters, int walkers, bool bind, int level)
-		: rank(rank), n_groups(inserters), bind(bind), n_walkers(walkers)
+	Placement(int rank, int dicts, int producers, bool bind, int level)
+		: rank(rank), n_groups(dicts), bind(bind), n_producers(producers)
 	{
 		cpu_set_t mask;
 		CPU_ZERO(&mask);
@@ -249,20 +249,20 @@ struct Placement {
 		n_avail_cpu = CPU_COUNT(&mask);
 
 		if (n_groups < 1)
-			errx(1, "MPI: at least one inserter thread per node is required");
-		if (n_walkers == 0)
-			n_walkers = n_avail_cpu - 1 - n_groups;
-		if (n_walkers < 1)
-			errx(1, "MPI: at least one walker thread per node is required "
-			        "(%d CPUs in mask, %d reserved for inserters + comm)", n_avail_cpu, n_groups + 1);
+			errx(1, "MPI: at least one dict thread per node is required");
+		if (n_producers == 0)
+			n_producers = n_avail_cpu - 1 - n_groups;
+		if (n_producers < 1)
+			errx(1, "MPI: at least one producer thread per node is required "
+			        "(%d CPUs in mask, %d reserved for dict threads + comm)", n_avail_cpu, n_groups + 1);
 		if (bind && n_groups > n_avail_cpu)
 			errx(1, "MPI: rank %d: %d shards cannot each own a thread group in a mask of %d CPUs"
 			        " (use --no-bind, or fewer shards)", rank, n_groups, n_avail_cpu);
-		if (n_walkers < n_groups)
-			errx(1, "MPI: %d walkers cannot serve %d collision queues: every inserter needs a walker"
-			        " of its own group to resolve for it (raise --walkers-per-node, or lower"
-			        " --inserters-per-node)", n_walkers, n_groups);
-		int n_threads = 1 + n_groups + n_walkers;
+		if (n_producers < n_groups)
+			errx(1, "MPI: %d producers cannot serve %d collision queues: every dict thread needs a producer"
+			        " of its own group to resolve for it (raise --producers-per-node, or lower"
+			        " --dicts-per-node)", n_producers, n_groups);
+		int n_threads = 1 + n_groups + n_producers;
 		if (bind && n_avail_cpu < n_threads)
 			warnx("MPI: rank %d has only %d CPUs in its affinity mask for %d threads."
 			      "  Did you forget --bind-to none?", rank, n_avail_cpu, n_threads);
@@ -321,7 +321,7 @@ struct Placement {
 			merge_caches(cache_cores, n_groups, group_cores, group_cache);
 			if (rank == 0)
 				warnx("MPI: %d shards over %d L%d domains: a thread group spans several of them"
-				      " (raise --inserters-per-node to %d)", n_groups, n_caches, cache_level, n_caches);
+				      " (raise --dicts-per-node to %d)", n_groups, n_caches, cache_level, n_caches);
 		}
 		group_size.assign(n_groups, 0);
 		int cmin = group_cores[0].size();
@@ -338,14 +338,14 @@ struct Placement {
 
 		/*
 		 * Every thread takes the emptiest core of its group, service threads first: each of them lands
-		 * on a core of its own while cores last, and the siblings they leave are the first the walkers
+		 * on a core of its own while cores last, and the siblings they leave are the first the producers
 		 * fill.  A core that runs out is simply skipped.
 		 */
 		thread_cpu.assign(n_threads, -1);
 		thread_group.assign(n_threads, 0);
 		std::vector<size_t> next_cpu(core_cpus.size(), 0);   /* core k's next free CPU */
 		std::vector<int> group_free(n_groups, 0);            /* CPUs left in each group */
-		std::vector<int> n_walk(n_groups, 0);                /* walkers assigned to each group so far */
+		std::vector<int> n_walk(n_groups, 0);                /* producers assigned to each group so far */
 		int shared = 0;                                      /* service threads that got no core to themselves */
 		for (int j = 0; j < n_groups; j++)
 			group_free[j] = group_size[j];
@@ -369,11 +369,11 @@ struct Placement {
 			group_free[j] -= 1;
 		}
 		if (shared > 0 && rank == 0)
-			warnx("MPI: %d inserter(s) share a core with another service thread: too few cores per"
+			warnx("MPI: %d dict thread(s) share a core with another service thread: too few cores per"
 			      " group for one each", shared);
 
-		/* the emptiest group first, so that no collision queue is left without a walker to drain it */
-		for (int s = 0; s < n_walkers; s++) {
+		/* the emptiest group first, so that no collision queue is left without a producer to drain it */
+		for (int s = 0; s < n_producers; s++) {
 			int tid = 1 + n_groups + s;
 			int best = -1;
 			for (int j = 0; bind && j < n_groups; j++)
@@ -391,7 +391,7 @@ struct Placement {
 			group_free[best] -= 1;
 		}
 
-		/* a group whose CPUs ran out borrows a walker from the fullest one: every queue keeps a consumer */
+		/* a group whose CPUs ran out borrows a producer from the fullest one: every queue keeps a consumer */
 		for (int j = 0; j < n_groups; j++) {
 			if (n_walk[j] > 0)
 				continue;
@@ -407,7 +407,7 @@ struct Placement {
 					break;
 				}
 			if (rank == 0)
-				warnx("MPI: group %d has no CPU left for a walker: one of group %d resolves for it",
+				warnx("MPI: group %d has no CPU left for a producer: one of group %d resolves for it",
 				      j, from);
 		}
 	}
@@ -420,7 +420,7 @@ struct Placement {
 		int gmin = *std::min_element(group_size.begin(), group_size.end());
 		int gmax = *std::max_element(group_size.begin(), group_size.end());
 		if (cache_level > 0)
-			printf("MPI: %d thread group(s) of %d..%d CPUs over %d L%d domain(s), one inserter each\n",
+			printf("MPI: %d thread group(s) of %d..%d CPUs over %d L%d domain(s), one dict thread each\n",
 				n_groups, gmin, gmax, n_caches, cache_level);
 		else
 			printf("MPI: %d thread group(s) of %d..%d CPUs; no cache is shared by several cores,"
@@ -433,7 +433,7 @@ struct Placement {
 			printf("***** WARNING *****\n");
 		}
 		if (bind) {
-			printf("MPI: inserters on CPUs");
+			printf("MPI: dict threads on CPUs");
 			for (int j = 0; j < n_groups; j++)
 				printf(" %d", thread_cpu[1 + j]);
 			printf("\n");
@@ -459,7 +459,7 @@ struct Placement {
 					continue;
 				if (role[tid] == COMM)
 					n_comm++;
-				else if (role[tid] == INSERTER)
+				else if (role[tid] == DICT)
 					n_ins++;
 				else
 					n_walk++;

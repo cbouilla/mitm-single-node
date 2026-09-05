@@ -49,7 +49,7 @@ static void display_stats(u64 N, double start, int vlen, MPI_Comm comm, int rank
 /*
  * Iterate f / g 2^26 times, then vfg 2^20 times if vlen > 1, on every rank, and print the rates.
  * Both loops walk ONE dependent chain per lane, the shape a trail and a collision resolution both
- * have, so that the two rates can be divided: what that ratio is worth is how much a walker gains by
+ * have, so that the two rates can be divided: what that ratio is worth is how much a producer gains by
  * batching its resolutions (PROTOCOL.md §3.2).  Each loop's last value is printed, and that is the
  * only reason it survives -O3: nothing else here is observable.  Collective
  */
@@ -108,13 +108,13 @@ void benchmark(const Problem& pb, const Options &opts)
 
 
 /*
- * How fast can an inserter probe its shard, with nothing else running?  R_p has only ever been
+ * How fast can a dict thread probe its shard, with nothing else running?  R_p has only ever been
  * measured through the whole pipeline, tangled up with the queues and the router (PROBLEM.md §6).
  * This is the shard alone, at the size and the placement the engine would give it: the rank's
- * `inserters_per_node` threads, pinned exactly where Parameters puts them, each hammering its own
+ * `dicts_per_node` threads, pinned exactly where Parameters puts them, each hammering its own
  * PcsDict with pseudo-random endpoints.  The rate is reported per quarter-`w` batch, because the
  * probe's cost depends on how full the shard is: a round starts empty and ends at `beta`
- * insertions per slot.  Rank-local, no MPI, no walkers, no comm thread.
+ * insertions per slot.  Rank-local, no MPI, no producers, no comm thread.
  */
 template<typename Problem>
 void probe_benchmark(const Problem& pb, const Options &opts, u64 nbytes_memory)
@@ -125,7 +125,7 @@ void probe_benchmark(const Problem& pb, const Options &opts, u64 nbytes_memory)
 	if (rank != 0)
 		return;                     /* every rank is doing the same thing; one of them reports */
 
-	int I = params.inserters_per_node;
+	int I = params.dicts_per_node;
 	char hw[8], hws[8];
 	human_format(params.w, hw);
 	human_format(params.w_shard, hws);
@@ -134,7 +134,7 @@ void probe_benchmark(const Problem& pb, const Options &opts, u64 nbytes_memory)
 
 	u64 batch = params.w_shard / 4;                   /* probes per timed batch, per shard */
 	int n_batches = std::max(1, (int) (4 * params.beta));   /* --beta bounds the run: it is long */
-	u64 key_range = std::ldexp(1., pb.n) / params.n_inserters;
+	u64 key_range = std::ldexp(1., pb.n) / params.n_dicts;
 	std::vector<double> rate(n_batches * I);
 	std::vector<u64> hits(I, 0);
 	cpu_set_t caller;                                 /* thread 0 of the team is the calling thread:
@@ -221,7 +221,7 @@ static u64 stage_local(u64 *buf, u64 cap, u64 n, u64 seed)
 }
 
 /*
- * Every walker writing straight into its destination's shared buffer: one atomic reservation and one
+ * Every producer writing straight into its destination's shared buffer: one atomic reservation and one
  * scattered store per point.  The destination is masked out of the point rather than divided out of
  * it, so that this measures staging and not the runtime division the engine still owes (PROBLEM.md §5.C).
  */
@@ -277,15 +277,15 @@ static u64 stage_line(u64 *buf, StagingCursor *cur, u64 dmask, u64 cap, u64 n, u
 }
 
 /*
- * One row of the sweep: `n_dest` destinations, the three strategies in turn, on the rank's walker
+ * One row of the sweep: `n_dest` destinations, the three strategies in turn, on the rank's producer
  * threads pinned where Parameters puts them.  The shared buffers are first-touched by destination, so
- * they spread over the NUMA nodes the walkers sit on -- no walker has a local set of destinations,
+ * they spread over the NUMA nodes the producers sit on -- no producer has a local set of destinations,
  * which is the truth of an all-to-all keyed on a hash of the endpoint.
  */
 template<int WORDS>
 static void staging_row(const Parameters &params, u64 n_dest, u64 cap, u64 &checksum)
 {
-	int W = params.walkers_per_node;
+	int W = params.producers_per_node;
 	u64 dmask = n_dest - 1;
 	std::unique_ptr<u64[]> buf(new u64[n_dest * cap * WORDS]);      /* uninitialized: the threads touch it */
 	std::unique_ptr<StagingCursor[]> cur(new StagingCursor[n_dest]);
@@ -300,7 +300,7 @@ static void staging_row(const Parameters &params, u64 n_dest, u64 cap, u64 &chec
 #pragma omp parallel num_threads(W)
 	{
 		int tid = omp_get_thread_num();
-		int cpu = params.place.thread_cpu[1 + params.inserters_per_node + tid];
+		int cpu = params.place.thread_cpu[1 + params.dicts_per_node + tid];
 		if (params.bind_threads && pin_to_cpu(cpu) < 0)
 			warn("staging_benchmark: cannot pin thread %d to CPU %d", tid, cpu);
 		std::vector<u64> wc(n_dest * STAGING_LINE);       /* this thread's lines, its own first touch */
@@ -363,11 +363,11 @@ static void staging_row(const Parameters &params, u64 n_dest, u64 cap, u64 &chec
 }
 
 /*
- * How fast can the walkers of a node stage their own distinguished points, one shared buffer per
+ * How fast can the producers of a node stage their own distinguished points, one shared buffer per
  * destination shard?  Prices the producer-side routing of PROBLEM.md §5 before it is built, at the
- * fan-out it will face -- `n_nodes * inserters_per_node` destinations, which is why the sweep is over
+ * fan-out it will face -- `n_nodes * dicts_per_node` destinations, which is why the sweep is over
  * that.  Two different numbers come out of a row: the *node* rate is what replaces one comm thread's
- * 4.2 M DP/s, and the last two columns, what one thread spends per point, are the tax on a walker --
+ * 4.2 M DP/s, and the last two columns, what one thread spends per point, are the tax on a producer --
  * read them against the ~670 ns it spends walking a trail to produce the point (PROBLEM.md §9).
  *
  * What it does NOT measure: sealing a full buffer and handing it to the funnel.  The buffers here are
@@ -388,12 +388,12 @@ void staging_benchmark(const Problem& pb, const Options &opts, u64 nbytes_memory
 	u64 cap = 8;
 	while (cap < params.buffer_capacity)
 		cap *= 2;
-	printf("Benchmarking DP staging: %d walker thread(s), %" PRIu64 " points per destination buffer,"
+	printf("Benchmarking DP staging: %d producer thread(s), %" PRIu64 " points per destination buffer,"
 	       " %" PRIu64 " points per thread and measurement\n",
-	       params.walkers_per_node, cap, STAGING_POINTS);
+	       params.producers_per_node, cap, STAGING_POINTS);
 	printf("  the sweep stops where the buffers no longer fit the %" PRIu64 " MB budget;"
 	       " this job's own fan-out is %d (%d nodes x %d shards)\n",
-	       nbytes_memory / 1000000, params.n_inserters, params.n_nodes, params.inserters_per_node);
+	       nbytes_memory / 1000000, params.n_dicts, params.n_nodes, params.dicts_per_node);
 
 	u64 checksum = 0;
 	for (int words = 3; words >= 2; words--) {
@@ -404,7 +404,7 @@ void staging_benchmark(const Problem& pb, const Options &opts, u64 nbytes_memory
 		       " per point, per thread\n");
 		for (u64 d = 1; ; d *= 4) {
 			u64 shared_bytes = d * cap * words * 8;
-			u64 private_bytes = (u64) params.walkers_per_node * d * STAGING_LINE * 8;
+			u64 private_bytes = (u64) params.producers_per_node * d * STAGING_LINE * 8;
 			if (shared_bytes + private_bytes > nbytes_memory)
 				break;
 			if (words == 3)

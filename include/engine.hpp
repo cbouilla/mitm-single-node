@@ -60,8 +60,8 @@ public:
 		  in_done_idx(params.n_in_buffers), in_done_st(params.n_in_buffers),
 		  controller(params)
 	{
-		bucket.resize((size_t) params.inserters_per_node * BUCKET_CAP);
-		bucket_n.assign(params.inserters_per_node, 0);
+		bucket.resize((size_t) params.dicts_per_node * BUCKET_CAP);
+		bucket_n.assign(params.dicts_per_node, 0);
 		for (int k = 0; k < params.n_in_buffers; k++) {
 			in_data[k].resize(in_cap);
 			MPI_Irecv(in_data[k].data(), in_cap, MPI_UINT64_T, MPI_ANY_SOURCE, TAG_POINTS,
@@ -73,51 +73,51 @@ public:
 	/******************* routing *******************/
 
 	/*
-	 * A point is staged in its destination shard's bucket and handed to the inserter in runs, never
+	 * A point is staged in its destination shard's bucket and handed to the dict thread in runs, never
 	 * one at a time: a push per point is one release store on a line the consumer is spinning on, and
-	 * one sweep of the walker queues scatters over every shard of the node, so each ring's lines
+	 * one sweep of the producer queues scatters over every shard of the node, so each ring's lines
 	 * ping-pong between the two cores once per point (PROBLEM.md §3, §5.C).  A bucket never outlives
-	 * the call that filled it -- route_walker_queues() and poll_incoming() both flush before
+	 * the call that filled it -- route_producer_queues() and poll_incoming() both flush before
 	 * returning -- so the drain of PROTOCOL.md §4.5 sees exactly what it did before.
 	 */
 	static constexpr size_t BUCKET_CAP = 128;             /* points staged per shard */
-	std::vector<DP> bucket;                               /* inserters_per_node runs of BUCKET_CAP */
+	std::vector<DP> bucket;                               /* dicts_per_node runs of BUCKET_CAP */
 	std::vector<size_t> bucket_n;                         /* points staged for each shard */
 
-	/* hand shard `slot`'s staged run to its inserter, dropping whatever did not fit */
+	/* hand shard `slot`'s staged run to its dict thread, dropping whatever did not fit */
 	void flush_bucket(int slot)
 	{
 		size_t n = bucket_n[slot];
 		if (n == 0)
 			return;
-		size_t k = ctx[1 + slot]->q->push_bulk(&bucket[slot * BUCKET_CAP], n);   /* inserter `slot` is thread 1 + slot */
-		ctx[0]->ctr[DROP_INSERTERQ] += n - k;
+		size_t k = ctx[1 + slot]->q->push_bulk(&bucket[slot * BUCKET_CAP], n);   /* dict thread `slot` is thread 1 + slot */
+		ctx[0]->ctr[DROP_DICTQ] += n - k;
 		bucket_n[slot] = 0;
 	}
 
 	void flush_local()
 	{
-		for (int slot = 0; slot < params.inserters_per_node; slot++)
+		for (int slot = 0; slot < params.dicts_per_node; slot++)
 			flush_bucket(slot);
 	}
 
-	/* stage a point for the inserter thread that owns its shard, on this node */
+	/* stage a point for the dict thread that owns its shard, on this node */
 	void deliver_local(const DP &p)
 	{
-		int slot = (int) ((p.x / params.n_nodes) % params.inserters_per_node);
+		int slot = (int) ((p.x / params.n_nodes) % params.dicts_per_node);
 		if (bucket_n[slot] == BUCKET_CAP)
 			flush_bucket(slot);
 		bucket[slot * BUCKET_CAP + bucket_n[slot]] = p;
 		bucket_n[slot] += 1;
 	}
 
-	/* pull whatever the walker threads have produced and route it */
-	bool route_walker_queues()
+	/* pull whatever the producer threads have produced and route it */
+	bool route_producer_queues()
 	{
 		DP batch[64];
 		bool moved = false;
-		for (int s = 0; s < params.walkers_per_node; s++) {
-			int t = 1 + params.inserters_per_node + s;          /* walker s is thread t */
+		for (int s = 0; s < params.producers_per_node; s++) {
+			int t = 1 + params.dicts_per_node + s;              /* producer s is thread t */
 			size_t k = ctx[t]->q->pop_bulk(batch, 64);
 			if (k > 0)
 				moved = true;
@@ -224,11 +224,11 @@ public:
 				ctx[t]->state.store(st, std::memory_order_release);
 	}
 
-	/* is every walker queue empty?  Tested from outside, when the round winds down */
-	bool walker_queues_empty()
+	/* is every producer queue empty?  Tested from outside, when the round winds down */
+	bool producer_queues_empty()
 	{
-		for (int w = 0; w < params.walkers_per_node; w++) {
-			SPSCQueue &q = *ctx[1 + params.inserters_per_node + w]->q;
+		for (int w = 0; w < params.producers_per_node; w++) {
+			SPSCQueue &q = *ctx[1 + params.dicts_per_node + w]->q;
 			if (q.head.load(std::memory_order_acquire) != q.tail.load(std::memory_order_acquire))
 				return false;
 		}
@@ -254,7 +254,7 @@ public:
 		u64 poll_tick = 0;
 
 		for (;;) {
-			bool moved = route_walker_queues();
+			bool moved = route_producer_queues();
 			poll_incoming();
 			service_control();
 
@@ -280,18 +280,18 @@ public:
 
 			/* our phase: nobody else reads it, hence relaxed */
 			int st = ctx[0]->state.load(std::memory_order_relaxed);
-			assert(st == RUNNING || st == COLLECTING || not moved);      /* held walkers produce nothing */
+			assert(st == RUNNING || st == COLLECTING || not moved);      /* held producers produce nothing */
 
 			switch (st) {
 			case RUNNING:
 				if (round_over) {                                /* step 1 */
-					set_state(WALKER, HOLD);
+					set_state(PRODUCER, HOLD);
 					st = COLLECTING;
 				}
 				break;
 
 			case COLLECTING:                                     /* step 2 */
-				if (all_in_state(WALKER, HELD) && not moved && walker_queues_empty())
+				if (all_in_state(PRODUCER, HELD) && not moved && producer_queues_empty())
 					st = FLUSHING;
 				break;
 
@@ -304,20 +304,20 @@ public:
 
 			case WAITING:                                        /* steps 5, 6 */
 				if (n_sentinels == params.n_nodes) {
-					set_state(INSERTER, DRAIN);
-					st = DRAINING_INSERTERS;
+					set_state(DICT, DRAIN);
+					st = DRAINING_DICTS;
 				}
 				break;
 
-			case DRAINING_INSERTERS:                             /* steps 6, 7 */
-				if (all_in_state(INSERTER, QUIESCENT)) {
-					set_state(WALKER, DRAIN);
-					st = DRAINING_WALKERS;
+			case DRAINING_DICTS:                                 /* steps 6, 7 */
+				if (all_in_state(DICT, QUIESCENT)) {
+					set_state(PRODUCER, DRAIN);
+					st = DRAINING_PRODUCERS;
 				}
 				break;
 
-			case DRAINING_WALKERS:                               /* step 7 */
-				if (all_in_state(WALKER, QUIESCENT))
+			case DRAINING_PRODUCERS:                             /* step 7 */
+				if (all_in_state(PRODUCER, QUIESCENT))
 					st = QUIESCENT;
 				break;
 			}
@@ -331,7 +331,7 @@ public:
 	/******************* end-of-round statistics *******************/
 
 	/*
-	 * The round's statistics, once every worker is QUIESCENT: merge the walkers' HyperLogLogs, reduce
+	 * The round's statistics, once every worker is QUIESCENT: merge the producers' HyperLogLogs, reduce
 	 * them (MAX) and the tallies (SUM) to rank 0, then zero everything round-scoped.  The reductions
 	 * block; every rank reaches them after its drain (PROTOCOL.md §4.6).
 	 */
@@ -341,7 +341,7 @@ public:
 		snapshot(sum);
 		u8 hll[HLL_REGISTERS] = {};
 		for (int t = 0; t < params.n_threads; t++)
-			if (ctx[t]->role == WALKER)
+			if (ctx[t]->role == PRODUCER)
 				hll_merge(hll, ctx[t]->hll.data());
 
 		if (params.rank == 0) {
@@ -462,14 +462,14 @@ optional<tuple<u64,u64,u64>> run(const ProblemWrapper &wrapper, u64 nbytes_memor
 
 		if (tid == 0 && n_unpinned > 0)
 			MPI_Abort(params.mpi_comm, 1);
-		int role = WALKER;
+		int role = PRODUCER;
 		if (tid == 0)
 			role = COMM;
-		else if (tid <= params.inserters_per_node)
-			role = INSERTER;
+		else if (tid <= params.dicts_per_node)
+			role = DICT;
 		shared.ctx[tid] = std::make_unique<ThreadContext>(role, cpu, numa_node,
 		                                                 params.place.thread_group[tid], params);
-		if (role == INSERTER) {
+		if (role == DICT) {
 			shared.shards[tid - 1] = std::make_unique<PcsDict>(params.jbits, params.w_shard);
 			shared.coll_q[tid - 1] = std::make_unique<CollisionQueue>(params.coll_queue_capacity);
 		}
@@ -499,14 +499,14 @@ optional<tuple<u64,u64,u64>> run(const ProblemWrapper &wrapper, u64 nbytes_memor
 
 			if (me.role == COMM)
 				comm.comm_round();          /* ends with end_round(), the statistics */
-			else if (me.role == INSERTER)
+			else if (me.role == DICT)
 				inserter_thread(me, params, shared, tid - 1);
 			else
-				walker_thread(me, wrapper, params, shared, tid - 1 - params.inserters_per_node);
+				walker_thread(me, wrapper, params, shared, tid - 1 - params.dicts_per_node);
 
 			#pragma omp barrier         /* every thread is back.  Nothing depends on it */
 
-			if (me.role == INSERTER)        /* later: a collective flush */
+			if (me.role == DICT)            /* later: a collective flush */
 				shared.shards[tid - 1]->flush();
 		}
 	}

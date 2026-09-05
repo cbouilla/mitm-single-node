@@ -27,7 +27,7 @@ struct DP {        /* one distinguished point (PROTOCOL.md §2.1) */
 /********************************** options **********************************/
 
 struct Options {
-	int inserters_per_node = 1;               /* dictionary shards per node. Users SHOULD set this themselves */
+	int dicts_per_node = 1;                   /* dictionary shards per node. Users SHOULD set this themselves */
 	int cache_level = 0;                      /* cache level a thread group sits in. 0 == auto-detect */
 	double theta = -1;                        /* proportion of distinguished points. -1 == auto */
 	bool verbose = true;                      /* print progress information (from rank 0 only) */
@@ -38,7 +38,7 @@ struct Options {
 	MPI_Comm mpi_comm = MPI_COMM_WORLD;       /* one rank per node */
 
 	/* thread layout inside a node */
-	int walkers_per_node = 0;              /* 0 == fill the inherited affinity mask */
+	int producers_per_node = 0;            /* 0 == fill the inherited affinity mask */
 	bool bind_threads = true;              /* pin each thread to a CPU of the mask */
 
 	/* algorithm */
@@ -49,8 +49,8 @@ struct Options {
 	u64 max_versions = 0xffffffffffffffffull; /* how many functions to try before giving up */
 
 	/* SPSC queue capacities, in DPs (rounded up to a power of two internally) */
-	size_t walker_queue_capacity = 1024;   /* walker -> comm */
-	size_t inserter_queue_capacity = 4096; /* comm -> inserter */
+	size_t producer_queue_capacity = 1024; /* producer -> comm */
+	size_t dict_queue_capacity = 4096;     /* comm -> dict thread */
 
 	/* control channel */
 	int bsend_slack = 8;                   /* MPI_Bsend slots beyond the 2*n_nodes bounded traffic
@@ -60,9 +60,9 @@ struct Options {
 	size_t buffer_capacity = 1500;         /* DPs per message (double-buffered per node) */
 	int n_in_buffers = 8;                  /* posted MPI_Irecv slots (ANY_SOURCE) */
 
-	/* collision queues, one per inserter */
-	size_t coll_queue_capacity = 8192;     /* candidates buffered by each inserter for its group */
-	size_t coll_per_chunk = 0;             /* candidates a walker retires per chunk; 0 == until its
+	/* collision queues, one per dict thread */
+	size_t coll_queue_capacity = 8192;     /* candidates buffered by each dict thread for its group */
+	size_t coll_per_chunk = 0;             /* candidates a producer retires per chunk; 0 == until its
 	                                          batch is not full and the queue is empty */
 
 	/* pacing */
@@ -106,14 +106,14 @@ struct Parameters : Options {
 	Placement place;
 
 	/* thread layout */
-	int n_threads;                         /* 1 + walkers_per_node + inserters_per_node */
-	int n_walkers;                         /* total walker threads, all nodes */
-	int n_inserters;                       /* total dictionary shards, all nodes */
+	int n_threads;                         /* 1 + producers_per_node + dicts_per_node */
+	int n_producers;                       /* total producer threads, all nodes */
+	int n_dicts;                           /* total dictionary shards, all nodes */
 
 	/* dictionary */
 	u64 nbytes_memory;                     /* RAM budget per node */
 	u64 w;                                 /* # slots in the (whole, distributed) dict */
-	u64 w_shard;                           /* # slots per inserter thread */
+	u64 w_shard;                           /* # slots per dict thread */
 	int jbits;                             /* bits of chain index stored with each DP */
 
 	/* the second word of a DP: the chain index in the low jbits, the trail length above it */
@@ -129,31 +129,31 @@ struct Parameters : Options {
 
 	/*
 	 * n, m are the wrapped problem's.  The thread layout is `place`'s, built first because it resolves
-	 * `walkers_per_node` when the user left it at 0 (fill the affinity mask); everything here is the
+	 * `producers_per_node` when the user left it at 0 (fill the affinity mask); everything here is the
 	 * arithmetic that follows from it.
 	 */
 	Parameters(const Options &o, u64 nbytes_memory, int n, int m)
 		: Options(o), rank(comm_rank(o.mpi_comm)), n_nodes(comm_size(o.mpi_comm)),
-		  place(rank, o.inserters_per_node, o.walkers_per_node, o.bind_threads, o.cache_level),
+		  place(rank, o.dicts_per_node, o.producers_per_node, o.bind_threads, o.cache_level),
 		  nbytes_memory(nbytes_memory)
 	{
 		verbose = verbose && (rank == 0);
-		walkers_per_node = place.n_walkers;
+		producers_per_node = place.n_producers;
 
-		n_threads = 1 + walkers_per_node + inserters_per_node;
-		n_inserters = n_nodes * inserters_per_node;
-		n_walkers = n_nodes * walkers_per_node;
+		n_threads = 1 + producers_per_node + dicts_per_node;
+		n_dicts = n_nodes * dicts_per_node;
+		n_producers = n_nodes * producers_per_node;
 
 		if (nbytes_memory == 0)
 			errx(1, "the RAM budget per node must be given (and nonzero)");
 		/* 8-byte slots, and a whole number of them per shard */
 		w = (nbytes_memory * n_nodes) / sizeof(u64);
-		w = (w / n_inserters) * n_inserters;
+		w = (w / n_dicts) * n_dicts;
 		if (w == 0)
 			errx(1, "RAM budget too small: %" PRIu64 " bytes/node cannot hold one slot per shard",
 			     nbytes_memory);
-		assert(w % n_inserters == 0);
-		w_shard = w / n_inserters;
+		assert(w % n_dicts == 0);
+		w_shard = w / n_dicts;
 		jbits = std::log2(10 * w) + 8;
 		if (jbits > 56)
 			errx(1, "dictionary too large: a %d-bit chain index leaves a slot no room for a length",

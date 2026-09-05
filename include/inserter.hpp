@@ -104,7 +104,7 @@ inline void inserter_thread(ThreadContext &ctx, const Parameters &params, Shared
 			size_t k = in.pop_bulk(staging, BATCH);
 			for (size_t t = 0; t < k; t++) {
 				const DP &p = staging[t];
-				u64 key = p.x / params.n_inserters;
+				u64 key = p.x / params.n_dicts;
 				u64 seed0 = p.jl & jmask;
 				u64 len = (p.jl >> params.jbits) & params.len_sat;
 				u64 len0_maybe = (len == params.len_sat) ? 0 : len;

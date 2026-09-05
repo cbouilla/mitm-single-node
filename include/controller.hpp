@@ -128,11 +128,11 @@ public:
 		double dp_rate = ndp / delta;
 		double completion = (double) ndp / params.points_per_version;
 		char hrate[8], hnrate[8], hprobe[8];
-		human_format(dp_rate / params.theta / params.n_walkers, hrate);
+		human_format(dp_rate / params.theta / params.n_producers, hrate);
 		human_format(ndp * DP_WORDS * sizeof(u64) / params.n_nodes / delta, hnrate);
-		human_format((double) reported[N_PROBE] / params.n_inserters / delta, hprobe);
-		printf("\rRound %" PRId64 ":  %.1fs (%.1f%%, ETA %.1fs).  %.2f*w #DP.  %s #f/s per walker.  "
-		       "%s probe/s per inserter.  node-->%sB/s   ",
+		human_format((double) reported[N_PROBE] / params.n_dicts / delta, hprobe);
+		printf("\rRound %" PRId64 ":  %.1fs (%.1f%%, ETA %.1fs).  %.2f*w #DP.  %s #f/s per producer.  "
+		       "%s probe/s per dict thread.  node-->%sB/s   ",
 			nround + 1, delta, 100. * completion,
 			(completion > 0) ? delta * (1 - completion) / completion : 0.,
 			(double) ndp / params.w, hrate, hprobe, hnrate);
@@ -155,12 +155,12 @@ public:
 
 		u64 ndp = r[N_DP];
 		char hrate[8], hnrate[8];
-		human_format((double) r[N_EVAL] / params.n_walkers / delta, hrate);
+		human_format((double) r[N_EVAL] / params.n_producers / delta, hrate);
 		human_format((double) ndp * DP_WORDS * sizeof(u64) / params.n_nodes / delta, hnrate);
 
 		printf("\n");
 		printf("Round %" PRId64 ".  %.1fs.  #DP %.2f*w (total 2^%.2f).  #coll %.2f*w (total 2^%.2f).  "
-		       "Total #f=2^%.3f.  %s #f/s per walker.  node-->%sB/s\n",
+		       "Total #f=2^%.3f.  %s #f/s per producer.  node-->%sB/s\n",
 			nround, delta,
 			(double) ndp / params.w, std::log2((double) total[N_DP] ? (double) total[N_DP] : 1.),
 			(double) r[N_COLLISIONS] / params.w,
@@ -174,8 +174,8 @@ public:
 				printf(" (x%.2f & x%.2f colliding)",
 					(double) r[COLLIDING_LEN_MIN] / r[N_COLLISIONS] / avglen,
 					(double) r[COLLIDING_LEN_MAX] / r[N_COLLISIONS] / avglen);
-			/* BAD_PROBE is an inserter-side counter: its denominator is the probes retired, not the
-			   DPs found.  The other four are walker-side, where ndp is right. */
+			/* BAD_PROBE is a dict thread-side counter: its denominator is the probes retired, not the
+			   DPs found.  The other four are producer-side, where ndp is right. */
 			printf(".  %.2f%% probe failure.  %.2f%% walk-robinhood.  %.2f%% walk-noncolliding.  "
 			       "%.2f%% same-value.  %.2f%% DP failure.  %.2f re-walked/collision\n",
 				r[N_PROBE] ? 100. * r[BAD_PROBE] / r[N_PROBE] : 0., 100. * r[BAD_WALK_ROBINHOOD] / ndp,
@@ -192,17 +192,17 @@ public:
 			char hoff[8], hins[8], hprobe[8];
 			human_format((double) ndp / delta, hoff);
 			human_format((double) r[N_PROBE] / delta, hins);
-			human_format((double) r[N_PROBE] / params.n_inserters / delta, hprobe);
+			human_format((double) r[N_PROBE] / params.n_dicts / delta, hprobe);
 			printf("            ROUTED  %s DP/s found --> %s DP/s inserted (%.2f%% reached a shard,"
-			       " %s probe/s per inserter).  dict load %.2f/slot\n",
+			       " %s probe/s per dict thread).  dict load %.2f/slot\n",
 				hoff, hins, 100. * r[N_PROBE] / ndp, hprobe,
 				(double) r[N_PROBE] / params.w);
 		}
 
-		if (r[DROP_WALKERQ] | r[DROP_OUT] | r[DROP_INSERTERQ] | r[DROP_COLL])
-			printf("            DROPPED  %" PRId64 " walker-queue / %" PRId64 " output-buffer / "
-			       "%" PRId64 " inserter-queue / %" PRId64 " collision-queue\n",
-				r[DROP_WALKERQ], r[DROP_OUT], r[DROP_INSERTERQ], r[DROP_COLL]);
+		if (r[DROP_PRODUCERQ] | r[DROP_OUT] | r[DROP_DICTQ] | r[DROP_COLL])
+			printf("            DROPPED  %" PRId64 " producer-queue / %" PRId64 " output-buffer / "
+			       "%" PRId64 " dict-queue / %" PRId64 " collision-queue\n",
+				r[DROP_PRODUCERQ], r[DROP_OUT], r[DROP_DICTQ], r[DROP_COLL]);
 
 		u64 E_i = distinct_collisions_estimation(hll_round);
 		u64 E = distinct_collisions_estimation(hll);
@@ -224,9 +224,9 @@ public:
 		human_format(params.w * sizeof(u64), hdict);
 		printf("Starting MPI+OpenMP collision search with seed=%016" PRIx64 "\n", seed);
 		printf("MPI: %d node(s) x (1 comm + %d ins + %d walk) = %d threads/node\n",
-			params.n_nodes, params.inserters_per_node, params.walkers_per_node, params.n_threads);
-		printf("MPI: %d dictionary shards, %d walker threads in total\n",
-			params.n_inserters, params.n_walkers);
+			params.n_nodes, params.dicts_per_node, params.producers_per_node, params.n_threads);
+		printf("MPI: %d dictionary shards, %d producer threads in total\n",
+			params.n_dicts, params.n_producers);
 		params.place.report();
 		printf("RAM per node == %sB buffers + dict.  Total dict == %sB (2^%.2f slots)\n",
 			hbuf, hdict, std::log2((double) params.w));
