@@ -5,11 +5,12 @@ round loop), `include/comm.hpp` (the contexts, the point buffers), `include/spsc
 `include/controller.hpp`, `include/parameters.hpp` -- moves points from producer threads to the
 dictionary shards and runs the rounds; it is templated on a **scheme**, which says what a point
 is, what a dict thread does with it, what a producer does, when a round ends and how it is
-reported (§7).  Today's scheme is PCS: `include/pcs_common.hpp` (its data and its `Scheme`),
+reported (§7).  Two schemes: PCS -- `include/pcs_common.hpp` (its data and its `Scheme`),
 `include/walker.hpp`, `include/inserter.hpp` and `include/pcs.hpp` (its functions and its entry
-points).  A heading or a paragraph marked **(PCS)** describes that scheme's use of the core;
-everything else is the core and holds for every scheme.  Names in code font are the ones used
-there.
+points) -- and the direct, exhaustive scheme (§8) -- `include/direct_common.hpp`,
+`include/direct_dict.hpp`, `include/direct_producer.hpp`, `include/direct.hpp`.  A heading or a
+paragraph marked **(PCS)** or **(direct)** describes that scheme's use of the core; everything
+else is the core and holds for every scheme.  Names in code font are the ones used there.
 
 ## 1. Actors
 
@@ -24,7 +25,7 @@ producers_per_node` threads, laid out by thread id:
 |----------------------|------------|-------------------------------------------------------------------------|
 | `0`                  | `COMM`     | all MPI traffic; routes points; on rank 0, runs the controller          |
 | `1 .. R`             | `DICT`     | owns dictionary shard `tid-1` (the scheme's `Dict`); consumes every point delivered to it |
-| `R+1 .. n_threads-1` | `PRODUCER` | the scheme's producer.  PCS: walks trails, ships distinguished points, resolves collision candidates |
+| `R+1 .. n_threads-1` | `PRODUCER` | the scheme's producer.  PCS: walks trails, ships distinguished points, resolves collision candidates.  Direct: enumerates its piece of the domain, ships every image |
 
 (`R == dicts_per_node`.)  MPI is initialised with `MPI_THREAD_FUNNELED`
 and **only thread 0 ever calls MPI** (its code is the `CommThread` class).
@@ -117,7 +118,8 @@ most 24 000 bytes).  Each pair is one `Point` (`parameters.hpp`):
 
 **(PCS) A point is a distinguished point**: `key` is the endpoint (the distinguished point
 itself), `val` the chain index `j` in the low `jbits` and the trail length in the `lenbits`
-above it.
+above it.  **(direct) A point is an image**: `key` is `f(x)` while the round fills, `g(y)`
+while it probes, `val` the preimage (§8).
 
 **(PCS) Why two words and not three.**  A 64-byte write-combining line holds four points
 instead of two, which is worth 2x on the producer-side staging a large node needs
@@ -418,6 +420,7 @@ thread itself *writes to answer*; a thread always announces its own completion.
 
 ```
 producer:     RUNNING --[comm]--> HOLD --[self]--> HELD --[comm]--> DRAIN --[self]--> QUIESCENT
+                 \------[self: range exhausted (direct)]---^
 dict thread:  RUNNING -----------------------------------[comm]--> DRAIN --[self]--> QUIESCENT
 ```
 
@@ -425,7 +428,7 @@ dict thread:  RUNNING -----------------------------------[comm]--> DRAIN --[self
 |---|---|---|
 | `RUNNING` | produces points (PCS: walks chunks, ships DPs, retires collision candidates between chunks) | consumes everything in its queue (PCS: probes it) |
 | `HOLD` | "stop producing points": acknowledges by writing `HELD` | (not used) |
-| `HELD` | no new points; keeps retiring collision candidates, batch still parked between chunks | (not used) |
+| `HELD` | no new points; PCS keeps retiring collision candidates, batch still parked between chunks.  A direct producer enters it by itself once its piece of the domain is exhausted (§8), and answers a `HOLD` that arrives here with `HELD` again -- as does a PCS walker | (not used) |
 | `DRAIN` | "nothing more will ever come": finishes what it holds (PCS: empties **its own group's** queue and its private run **and runs its resolver batch down to the last candidate**, §3.2), writes `QUIESCENT`, returns | "no point will ever be delivered": empties its queue, writes `QUIESCENT`, returns |
 | `QUIESCENT` | done for this round | done for this round |
 
@@ -631,7 +634,7 @@ airtight: no thread declares itself finished while something can still arrive fo
 
 | step | phase | passes when | then | guarantee once it passes |
 |---|---|---|---|---|
-| 1 | `RUNNING` | `round_over` | `state(PRODUCER) := HOLD`; phase `COLLECTING` | producers will stop producing at their next chunk boundary; they keep resolving collisions |
+| 1 | `RUNNING` | `round_over`, or every producer is `HELD` (direct: they hold themselves once exhausted, §8) | `state(PRODUCER) := HOLD` for the producers still `RUNNING`; phase `COLLECTING` | producers will stop producing at their next chunk boundary; PCS's keep resolving collisions |
 | 2 | `COLLECTING` | every producer is `HELD`, this turn's `route_producer_queues()` moved nothing, every producer queue has `head == tail`, and the comm thread's carry is empty (always, for a dropping scheme) | phase `FLUSHING` | every DP this node produced this round has been routed (delivered locally or handed to `OutBuffers`).  The `HELD` load is acquire and a producer's last push happens-before its `HELD` store, so the queue test that follows sees it; a `HELD` producer never pushes again |
 | 3, 4 | `FLUSHING` | `outbuf.flush_poll()`: nothing left to send, every `Isend` completed | `outbuf.send_sentinels()`; phase `WAITING` | every DP bound for another node has left this node -- receiving went on throughout, so the peers we waited on could complete their sends too -- and every node (self included) will learn that we are done sending; the sentinel cannot overtake the data it follows |
 | 5, 6 | `WAITING` | `n_sentinels == n_nodes`, every received buffer is delivered and every bucket is empty (the last two always hold for a dropping scheme) | `state(DICT) := DRAIN`; phase `DRAINING_DICTS` | every node has finished sending to us, and everything they sent has been scattered to the dict queues.  Every node was sent its end-of-round signal before rank 0 could even enter its drain, so nobody is waiting on rank 0 here; it keeps digesting reports so the round's tallies cover what the others produced meanwhile |
@@ -670,10 +673,12 @@ can enter its own drain.
    (§4.2, step 3).
 2. **OpenMP barrier**: every thread of the node is back from its round function.
    Nothing depends on it; it is an explicit synchronisation point, kept as such.
-3. Each dict thread runs `Scheme::after_round()` on its own shard (PCS: zeroes it,
-   `flush()`, so that every round starts from an empty dictionary).  The shard is its alone,
-   so this needs no synchronisation with anyone, and it is done before the dict thread
-   reaches the next round's barrier.
+3. Each dict thread runs `Scheme::after_round()` on its own shard, with its own copy of the
+   round's header -- thread 0 may already be writing the next one into `SharedContext::header`
+   (§4.2, step 2) -- (PCS: zeroes it, `flush()`, so that every round starts from an empty
+   dictionary; direct: zeroes it after a `PROBE` phase only, the entries of a `FILL` phase being
+   what the next phase probes).  The shard is its alone, so this needs no synchronisation with
+   anyone, and it is done before the dict thread reaches the next round's barrier.
 
 ### 4.7 Termination
 
@@ -734,10 +739,14 @@ dict thread waits on nobody -- it only consumes.
   in a producer's private run and the ones parked in its resolver batch included; a producer
   asserts `c.i == round.i` as it starts one.
 - (PCS) The dictionary is empty at the start of every round (each dict thread flushes its
-  shard in `after_round()`, before the next round's barrier).
-- The controller sends exactly one message per round, the end-of-round signal to every
-  node, and answers nothing; a round can end no other way, and a node leaves the
-  steady state exactly once per round.
+  shard in `after_round()`, before the next round's barrier).  (direct) It is empty at the
+  start of every `FILL` phase and holds the phase's every entry throughout the `PROBE` phase
+  that follows.
+- The controller sends at most one message per round, the end-of-round signal to every
+  node, and answers nothing.  A round ends that way, or -- for the direct scheme -- when every
+  producer of the node has exhausted its range, each node draining on its own and the
+  sentinels of §4.5 doing the rest; either way a node leaves the steady state exactly once
+  per round.
 
 **Why it does not deadlock.**
 
@@ -798,18 +807,84 @@ The core is templated on a `Scheme` struct -- `mitm::pcs::Scheme` today, declare
 defines the functions the core calls.  Nothing in the core knows what a point's payload or a
 dictionary slot means, or when a search is over.
 
-| the scheme's | is | PCS |
-|---|---|---|
-| `Params` | its parameters, derived from the core's `Parameters` (rank, layout, `w` slots) and setting `report_points` (§2.2) | `jbits`, the length field, theta, `points_per_version` |
-| `Header` | the round header's words: trivially copyable, whole `u64`s; `stop` travels beside it (§4.2) | `i`, `root_seed` |
-| `Dict` | one shard, built by `build_dict()` | `PcsDict`: direct-addressed, a slot overwritten by a longer trail |
-| `enum counter`, `N_COUNTERS`, `PACING` | its tallies -- the report and reduction layout -- and the one that paces the reports | 17 counters, `N_DP` |
-| `ThreadStats`, `RoundStats` | statistics beyond the counters: a thread's, and the round's with `collect()`, `reduce()`, `fold()` (§3.4, §4.6) | a producer's HyperLogLog; the merged registers |
-| `Shared` | state hung on the `SharedContext` | the collision queues (§3.2) |
-| `LOSSLESS`; `DROP_OUT`, `DROP_DICTQ` or `STALL_OUT`, `STALL_IN` | the overflow policy (§5), and the comm thread's two tallies: dropped points for a dropping scheme, stalled turns for a lossless one | drops |
-| `producer_per_dict` (to `Parameters`) | whether `Placement` must give every dict thread a producer (§1) | yes |
-| `next_header()` | rank 0's next header and `stop`, from the previous ones (§4.2) | a fresh `i` and `root_seed` |
-| `build_dict()`, `after_round()` | a dict thread's shard, built once pinned (§4.1); what it does after the epilogue barrier (§4.6) | shard and collision queue; `flush()` |
-| `producer_thread()`, `dict_thread()` | the two worker rounds (§3.3) | `walker_thread()`, `inserter_thread()` |
-| `round_complete()` | closes the round on the reported tallies (§2.2) | `N_DP >= points_per_version` |
-| `banner()`, `display()`, `round_report()`, `done()` | all the printing | |
+| the scheme's | is | PCS | direct (§8) |
+|---|---|---|---|
+| `Params` | its parameters, derived from the core's `Parameters` (rank, layout, `w` slots) and setting `report_points` (§2.2) | `jbits`, the length field, theta, `points_per_version` | `domain`, `per_round`, `n_rounds`, `check_bits` |
+| `Header` | the round header's words: trivially copyable, whole `u64`s; `stop` travels beside it (§4.2) | `i`, `root_seed` | `round`, `phase` |
+| `Dict` | one shard, built by `build_dict()` | `PcsDict`: direct-addressed, a slot overwritten by a longer trail | `DirectDict`: linear probing, every entry kept |
+| `enum counter`, `N_COUNTERS`, `PACING` | its tallies -- the report and reduction layout -- and the one that paces the reports | 17 counters, `N_DP` | 10 counters, `N_POINTS` |
+| `ThreadStats`, `RoundStats` | statistics beyond the counters: a thread's, and the round's with `collect()`, `reduce()`, `fold()` (§3.4, §4.6) | a producer's HyperLogLog; the merged registers | empty |
+| `Shared` | state hung on the `SharedContext` | the collision queues (§3.2) | empty |
+| `LOSSLESS`; `DROP_OUT`, `DROP_DICTQ` or `STALL_OUT`, `STALL_IN` | the overflow policy (§5), and the comm thread's two tallies: dropped points for a dropping scheme, stalled turns for a lossless one | drops | lossless |
+| `producer_per_dict` (to `Parameters`) | whether `Placement` must give every dict thread a producer (§1) | yes | no |
+| `next_header()` | rank 0's next header and `stop`, from the previous ones (§4.2) | a fresh `i` and `root_seed` | the next phase; `stop` past the last round |
+| `build_dict()`, `after_round()` | a dict thread's shard, built once pinned (§4.1); what it does after the epilogue barrier, given the round's header (§4.6) | shard and collision queue; `flush()` | shard; `flush()` after `PROBE` only |
+| `producer_thread()`, `dict_thread()` | the two worker rounds (§3.3) | `walker_thread()`, `inserter_thread()` | `direct::producer_thread()`, `direct::dict_thread()` |
+| `round_complete()` | closes the round on the reported tallies (§2.2) | `N_DP >= points_per_version` | never: a round ends by exhaustion (§4.5, §8) |
+| `banner()`, `display()`, `round_report()`, `done()` | all the printing | | |
+
+## 8. The direct scheme
+
+`mitm::direct` (`direct_common.hpp`, `direct_dict.hpp`, `direct_producer.hpp`, `direct.hpp`):
+the exhaustive meet-in-the-middle, the baseline PCS is measured against.  `w' = fill * w`
+entries per round (`--fill`, default 0.5), `R = ceil(2^n / w')` rounds; `--nrounds` caps `R`,
+and the search is then not exhaustive -- the banner and the last line say so.
+
+**One direct round is two protocol rounds.**  The header is `(round, phase)`, sequenced by
+rank 0 in `next_header()`: `(0, FILL)`, `(0, PROBE)`, `(1, FILL)`, ...; past round `R - 1` it
+raises `stop`.  The drain between the two phases (§4.5) is the barrier the algorithm needs:
+every entry of the round is in its shard before the first probe of the round is delivered.
+
+| phase | a producer evaluates | on | a dict thread | after the epilogue barrier |
+|---|---|---|---|---|
+| `FILL` | `f` | chunk `round` of the domain: `[round * w', min((round + 1) * w', 2^n))` | inserts `(key, val)` | keeps the shard |
+| `PROBE` | `g` (`f` for a collision problem) | the whole domain | probes `key`; resolves every match on the spot | `flush()`es the shard |
+
+**Points.**  `key` is the image, `f(x)` or `g(y)`, in full; `val` is the preimage.  One point
+per evaluation, so a node runs at its comm thread's speed (`PROBLEM.md` §2), and the banner
+says so.
+
+**Producers** (`producer_thread()`).  The phase's domain is cut into `n_producers` contiguous
+pieces of equal length to within one; producer `p = rank * producers_per_node + index` takes
+the `p`-th, so the partition is the same on every node and needs no message.  A producer
+walks its piece `vlen` inputs at a time (`veval()`: `vfg` with every choice set to the phase's
+function, `vf` for a collision problem, `f` / `g` themselves when `vlen == 1`), ships every
+image, and **waits for room** in its ring rather than dropping (§5).  It reads its `state`
+every `chunk_size` vectors, and a `HOLD` ends its piece early: the round is over, a solution
+was found elsewhere.  Once its piece is exhausted it moves itself to `HELD` (§3.3) and answers
+`HOLD` with `HELD` and `DRAIN` with `QUIESCENT`: it holds nothing to drain.
+
+**Dict threads** (`dict_thread()`).  The shard, `DirectDict`, is linear probing over 8-byte
+slots: `OCCUPIED | check << n | preimage`, zero empty, `n <= 63`.  `key / n_dicts` is the
+shard's part of the key (§2.1); its run starts at `home()`, that part modulo `w_shard`, and
+`tag()` -- bit 63 and the low `63 - n` bits of the part above the index, shifted above the
+preimage -- is what every slot holding that key carries.  `FILL`: insert into the first empty
+slot of the run; a full shard is fatal, which `fill <= 0.9` rules out.  `PROBE`: every slot of
+the run carrying the key's tag is a match, which the thread verifies with **one evaluation**,
+`wrapper.fill(x) == key` -- the check bits' false positives die here (`BAD_MATCH`) -- counts as
+a collision (`N_COLLISIONS`) and tests with `good(x, y)`: `is_good_pair`, a collision problem
+demanding `x != y` and trying both orders, the pair coming back in the order that passed.  A
+golden pair goes to `set_golden(round, x, y)` at once.  No collision queue and no candidate: a
+match costs about what a probe does, and a hand-off would cost more than it saves.  Hence
+`producer_per_dict == false`: few producers over many dict threads is a legitimate layout.
+
+**Rounds end by exhaustion** (§4.5, step 1).  `round_complete()` is false, so the controller
+never closes a round on volume; a node's comm thread enters its drain when every producer of
+the node is `HELD`, sends its sentinels once everything the node produced is routed, and keeps
+inserting or probing what the other nodes send until their sentinels arrive.  `TAG_END_ROUND`
+is sent only on `stop`, when a solution is known: the early exit.
+
+**Lossless** (§5).  `LOSSLESS` is true and `STALL_OUT`, `STALL_IN` are the comm thread's two
+tallies.  A dropped point would be a missing entry or a missing probe, and "no solution" is a
+proof only when none was dropped.
+
+**Counters.**  `N_EVAL`, `N_POINTS` (producers); `N_INSERT`, `N_PROBE`, `N_STEPS` (slots
+visited by inserts and probes: the cost of linear probing), `N_MATCH`, `BAD_MATCH`,
+`N_COLLISIONS` (dict threads); `STALL_OUT`, `STALL_IN` (comm thread).  `PACING` is `N_POINTS`
+and `report_points` is `w' / (reports_per_round * n_nodes)`, the `FILL` phase being the short
+one.  `ThreadStats`, `RoundStats` and `Shared` are empty.
+
+**Answer.**  The golden slot holds `(round, x, y)`.  `claw_search` returns `(x, y)` with
+`f(x) == g(y)`, `collision_search` the pair in the order `is_good_pair` accepted.  With no
+solution the search returns nothing after `R` rounds, and that is a proof of absence -- unless
+`--nrounds` cut it short, which `done()` says.

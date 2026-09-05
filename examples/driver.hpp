@@ -27,7 +27,8 @@ static void usage(const char *argv0)
 	printf("  --difficulty T   proportion theta of distinguished points.  Default: auto\n");
 	printf("  --alpha A        auto-tuning: theta = A*sqrt(w/n)\n");
 	printf("  --beta B         use each version of the function for B*w distinguished points\n");
-	printf("  --nrounds R      give up after R versions of the function\n");
+	printf("  --nrounds R      give up after R rounds (PCS: versions of the function)\n");
+	printf("  --fill F         direct: dictionary fill ratio, entries per round == F * slots.  Default: 0.5\n");
 	printf("  --dp-len-bits N  bits of trail length shipped with a distinguished point.  A length that\n");
 	printf("                   does not fit is re-walked when a collision needs it.  0 == all that fit\n");
 	printf("\n");
@@ -54,7 +55,7 @@ static void usage(const char *argv0)
 static void process_command_line_options(int argc, char **argv, Options &opts,
                                          u64 &nbytes_memory, int &n, u64 &seed, std::string &engine)
 {
-	enum {OPT_ENGINE = 999, OPT_PRODUCER_QUEUE = 1000, OPT_DICT_QUEUE, OPT_COLL_QUEUE, OPT_COLL_PER_CHUNK,
+	enum {OPT_ENGINE = 998, OPT_FILL = 999, OPT_PRODUCER_QUEUE = 1000, OPT_DICT_QUEUE, OPT_COLL_QUEUE, OPT_COLL_PER_CHUNK,
 	      OPT_BUFFER, OPT_IN_BUFFERS, OPT_CHUNK, OPT_CACHE_LEVEL, OPT_NO_BIND, OPT_DP_LEN_BITS,
 	      OPT_HELP};
 
@@ -67,6 +68,7 @@ static void process_command_line_options(int argc, char **argv, Options &opts,
 		{"alpha",              required_argument, NULL, 'a'},
 		{"beta",               required_argument, NULL, 'b'},
 		{"nrounds",            required_argument, NULL, 'o'},
+		{"fill",               required_argument, NULL, OPT_FILL},
 		{"dp-len-bits",        required_argument, NULL, OPT_DP_LEN_BITS},
 		{"producers-per-node", required_argument, NULL, 'W'},
 		{"dicts-per-node",     required_argument, NULL, 'I'},
@@ -89,6 +91,7 @@ static void process_command_line_options(int argc, char **argv, Options &opts,
 		case -1:                   return;
 		case 'r': nbytes_memory = human_parse(optarg);                   break;
 		case OPT_ENGINE:         engine = optarg;                                    break;
+		case OPT_FILL:           opts.fill = std::stof(optarg);                       break;
 		case 'n': n = std::stoi(optarg);                                 break;
 		case 's': seed = std::stoull(optarg, 0, 0);                      break;
 		case 'd': opts.theta = std::stof(optarg);                        break;
@@ -127,8 +130,8 @@ static void init(int argc, char **argv, Options &opts, u64 &nbytes_memory, int &
 		errx(1, "MPI: this MPI does not provide MPI_THREAD_FUNNELED");
 
 	process_command_line_options(argc, argv, opts, nbytes_memory, n, seed, engine);
-	if (engine != "pcs")
-		errx(1, "--engine %s: unknown scheme (pcs)", engine.c_str());
+	if (engine != "pcs" && engine != "direct")
+		errx(1, "--engine %s: unknown scheme (pcs, direct)", engine.c_str());
 
 	int rank;
 	MPI_Comm_rank(MPI_COMM_WORLD, &rank);

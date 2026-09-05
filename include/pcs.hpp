@@ -315,7 +315,7 @@ void Scheme::dict_thread(ThreadContext<Scheme> &ctx, const Wrapper &, const Para
 }
 
 /* every round starts from an empty dictionary (PROTOCOL.md §5); a collective flush is future work */
-inline void Scheme::after_round(SharedContext<Scheme> &shared, const Params &, int d)
+inline void Scheme::after_round(SharedContext<Scheme> &shared, const Params &, int d, const Header &)
 {
     shared.shards[d]->flush();
 }

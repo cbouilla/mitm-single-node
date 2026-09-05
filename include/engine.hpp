@@ -326,6 +326,14 @@ public:
 				ctx[t]->state.store(st, std::memory_order_release);
 	}
 
+	/* step 1 of the drain: the producers still RUNNING are told to HOLD; one already HELD (exhausted) is left be */
+	void hold_producers()
+	{
+		for (int t = 0; t < params.n_threads; t++)
+			if (ctx[t]->role == PRODUCER && ctx[t]->state.load(std::memory_order_acquire) == RUNNING)
+				ctx[t]->state.store(HOLD, std::memory_order_release);
+	}
+
 	/* is every producer queue empty?  Tested from outside, when the round winds down */
 	bool producer_queues_empty()
 	{
@@ -381,9 +389,9 @@ public:
 			assert(st == RUNNING || st == COLLECTING || not moved);      /* held producers produce nothing */
 
 			switch (st) {
-			case RUNNING:
-				if (round_over) {                                /* step 1 */
-					set_state(PRODUCER, HOLD);
+			case RUNNING:                                        /* step 1: told to, or every producer exhausted */
+				if (round_over || all_in_state(PRODUCER, HELD)) {
+					hold_producers();
 					st = COLLECTING;
 				}
 				break;
@@ -598,6 +606,9 @@ optional<tuple<u64,u64,u64>> run(const Wrapper &wrapper, u64 nbytes_memory, cons
 
 			if (shared.stop)
 				break;
+			/* this thread's copy of the round's header: thread 0 rewrites shared.header at the next round's
+			   start, while a slower thread may still be in after_round() */
+			const typename Scheme::Header header = shared.header;
 
 			if (me.role == COMM)
 				comm.comm_round();          /* ends with end_round(), the statistics */
@@ -609,7 +620,7 @@ optional<tuple<u64,u64,u64>> run(const Wrapper &wrapper, u64 nbytes_memory, cons
 			#pragma omp barrier         /* every thread is back.  Nothing depends on it */
 
 			if (me.role == DICT)
-				Scheme::after_round(shared, params, tid - 1);
+				Scheme::after_round(shared, params, tid - 1, header);
 		}
 	}
 

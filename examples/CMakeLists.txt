@@ -34,7 +34,3 @@ mitm_example(double_aes_bench aes.c)
 mitm_example(sha2_claw_demo sha256.c)
 mitm_example(sha2_collision_demo sha256.c)
 
-
-# NOT BUILT: naive_double_speck64_demo.cpp, on top of include/naive/.  That is the
-# naive all-to-all MITM, a different engine; it has not been ported to the one-rank-
-# per-node topology and does not compile.  Kept as the starting point for that work.

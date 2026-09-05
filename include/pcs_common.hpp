@@ -315,8 +315,8 @@ struct Scheme {
 	static void dict_thread(ThreadContext<Scheme> &ctx, const Wrapper &wrapper, const Params &params,
 	                        SharedContext<Scheme> &shared, int index);
 
-	/* dict thread d, after the epilogue barrier: its shard is emptied for the next round (§4.6) */
-	static void after_round(SharedContext<Scheme> &shared, const Params &params, int d);
+	/* dict thread d, after the epilogue barrier, given the round's header: its shard is emptied (§4.6) */
+	static void after_round(SharedContext<Scheme> &shared, const Params &params, int d, const Header &h);
 
 	/* the controller's one decision, and all of its printing */
 	static bool round_complete(const Params &params, const u64 reported[]);

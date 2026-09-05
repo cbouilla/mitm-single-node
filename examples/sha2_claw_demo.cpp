@@ -1,6 +1,7 @@
 #include <mpi.h>
 
 #include "pcs.hpp"
+#include "direct.hpp"
 #include "driver.hpp"
 #include "sha2_problem.hpp"
 
@@ -18,7 +19,11 @@ int main(int argc, char* argv[])
         printf("sha2-claw demo! seed=%016" PRIx64 ", n=%d\n", prng.seed, n);
 
     mitm::SHA2ClawProblem pb(n, prng);
-    auto claw = mitm::pcs::claw_search(pb, ram, opts, prng);
+    optional<pair<u64, u64>> claw;
+    if (engine == "direct")
+        claw = mitm::direct::claw_search(pb, ram, opts, prng);
+    else
+        claw = mitm::pcs::claw_search(pb, ram, opts, prng);
     if (opts.verbose) {
         if (claw) {
             auto [x0, x1] = *claw;

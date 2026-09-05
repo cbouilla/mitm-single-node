@@ -47,12 +47,15 @@ struct Options {
 	int producers_per_node = 0;            /* 0 == fill the inherited affinity mask */
 	bool bind_threads = true;              /* pin each thread to a CPU of the mask */
 
+	/* direct */
+	double fill = 0.5;                        /* dictionary fill ratio: entries per round == fill * slots */
+
 	/* PCS */
 	double alpha = 2.5;                       /* auto-chosen theta == alpha * sqrt(w/n) */
 	double beta = 8;                          /* use each function variant for beta*w DPs */
 	int dp_lenbits = 0;                       /* bits of trail length shipped with a DP.  0 == all that fit */
 	u64 multiplier = 0x2545f4914f6cdd1dull;   /* to generate starting points */
-	u64 max_versions = 0xffffffffffffffffull; /* how many functions to try before giving up */
+	u64 max_versions = 0xffffffffffffffffull; /* how many rounds (PCS: function versions) before giving up */
 
 	/* SPSC queue capacities, in points (rounded up to a power of two internally) */
 	size_t producer_queue_capacity = 1024; /* producer -> comm */

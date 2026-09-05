@@ -1,6 +1,7 @@
 #include <mpi.h>
 
 #include "pcs.hpp"
+#include "direct.hpp"
 #include "driver.hpp"
 #include "double_DES_problem.hpp"
 
@@ -18,7 +19,11 @@ int main(int argc, char* argv[])
         printf("2DES demo! seed=%016" PRIx64 ", n=%d\n", prng.seed, n);
 
     mitm::DoubleDES_Problem Pb(n, prng);
-    auto claw = mitm::pcs::claw_search(Pb, ram, opts, prng);
+    optional<pair<u64, u64>> claw;
+    if (engine == "direct")
+        claw = mitm::direct::claw_search(Pb, ram, opts, prng);
+    else
+        claw = mitm::pcs::claw_search(Pb, ram, opts, prng);
     if (opts.verbose) {
         if (claw) {
             auto [x0, x1] = *claw;
