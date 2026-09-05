@@ -542,14 +542,14 @@ void service_collisions(const ProblemWrapper &wrapper, u64 ctr[], u8 hll[], cons
 
 
 /*
- * A walker thread: walks vlen trails in lockstep, ships every DP to the comm thread over its SPSC
+ * PCS's producer, the walker: walks vlen trails in lockstep, ships every DP to the comm thread over its SPSC
  * queue, and between chunks retires the candidates queued by the one inserter of its own thread group
  * (ctx.group, PROTOCOL.md §1).  Chain indices are strided by n_producers from the global walker index.
  * Wind-down: ctx.state, PROTOCOL.md §3.3.
  */
 template <class ProblemWrapper>
-void walker_thread(ThreadContext<Scheme> &ctx, const ProblemWrapper &wrapper, const Params &params,
-                   SharedContext<Scheme> &shared, int walker_index)
+void Scheme::producer_thread(ThreadContext<Scheme> &ctx, const ProblemWrapper &wrapper, const Params &params,
+                             SharedContext<Scheme> &shared, int walker_index)
 {
 	constexpr int vlen = ProblemWrapper::vlen;
 	SPSCQueue &out = *ctx.q;

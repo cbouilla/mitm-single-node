@@ -204,12 +204,6 @@ public:
 		return moved;
 	}
 
-	/* post buffer k's receive again */
-	void repost(int k)
-	{
-		MPI_Irecv(in_data[k].data(), in_cap, MPI_UINT64_T, MPI_ANY_SOURCE, TAG_POINTS, params.mpi_comm, &in_req[k]);
-	}
-
 	/*
 	 * Take delivery of whatever arrived over MPI, oldest buffer first, and repost each receive once its
 	 * buffer is fully delivered.  A sentinel is counted at once.  A lossless scheme's delivery stops at
@@ -226,7 +220,8 @@ public:
 				MPI_Get_count(&in_done_st[t], MPI_UINT64_T, &in_count[k]);
 				if (in_count[k] == 0) {
 					n_sentinels += 1;             /* that node has finished the round */
-					repost(k);
+					MPI_Irecv(in_data[k].data(), in_cap, MPI_UINT64_T, MPI_ANY_SOURCE, TAG_POINTS,
+					          params.mpi_comm, &in_req[k]);
 				} else {
 					in_ready[(in_ready_head + in_ready_n) % in_ready.size()] = k;
 					in_ready_n += 1;
@@ -245,7 +240,7 @@ public:
 			}
 			if (stalled)
 				break;
-			repost(k);
+			MPI_Irecv(in_data[k].data(), in_cap, MPI_UINT64_T, MPI_ANY_SOURCE, TAG_POINTS, params.mpi_comm, &in_req[k]);
 			in_ready_head = (in_ready_head + 1) % in_ready.size();
 			in_ready_n -= 1;
 			in_off = 0;
@@ -488,7 +483,7 @@ public:
 				auto [i, x0, x1] = *controller.solution;
 				answer[0] = 1; answer[1] = i; answer[2] = x0; answer[3] = x1;
 			}
-			controller.done();
+			Scheme::done(params, controller.nround, controller.solution.has_value(), wtime() - controller.start_time);
 		}
 		MPI_Bcast(answer, 4, MPI_UINT64_T, 0, params.mpi_comm);
 

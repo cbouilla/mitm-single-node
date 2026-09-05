@@ -17,8 +17,8 @@ namespace mitm::direct {
  * the partition is the same on every node and needs no message.
  */
 template <class Wrapper>
-void producer_thread(ThreadContext<Scheme> &ctx, const Wrapper &wrapper, const Params &params,
-                     SharedContext<Scheme> &shared, int index)
+void Scheme::producer_thread(ThreadContext<Scheme> &ctx, const Wrapper &wrapper, const Params &params,
+                             SharedContext<Scheme> &shared, int index)
 {
 	constexpr int vlen = Wrapper::vlen;
 	SPSCQueue &out = *ctx.q;

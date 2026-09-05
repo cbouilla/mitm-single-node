@@ -148,7 +148,7 @@ struct Scheme {
 	/* dict thread d builds its shard, once pinned: first touch (§4.1) */
 	static void build_dict(SharedContext<Scheme> &shared, const Params &params, int d);
 
-	/* the two worker threads' rounds */
+	/* the two worker threads' rounds: direct_producer.hpp and direct_dict.hpp */
 	template <class Wrapper>
 	static void producer_thread(ThreadContext<Scheme> &ctx, const Wrapper &wrapper, const Params &params,
 	                            SharedContext<Scheme> &shared, int index);

@@ -88,8 +88,8 @@ public:
  * PROTOCOL.md §3.3.
  */
 template <class Wrapper>
-void dict_thread(ThreadContext<Scheme> &ctx, const Wrapper &wrapper, const Params &params,
-                 SharedContext<Scheme> &shared, int index)
+void Scheme::dict_thread(ThreadContext<Scheme> &ctx, const Wrapper &wrapper, const Params &params,
+                         SharedContext<Scheme> &shared, int index)
 {
 	SPSCQueue &in = *ctx.q;
 	DirectDict &dict = *shared.shards[index];

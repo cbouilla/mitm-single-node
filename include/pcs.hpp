@@ -300,20 +300,6 @@ inline void Scheme::build_dict(SharedContext<Scheme> &shared, const Params &para
     shared.scheme.coll_q[d] = std::make_unique<CollisionQueue>(params.coll_queue_capacity);
 }
 
-template <class Wrapper>
-void Scheme::producer_thread(ThreadContext<Scheme> &ctx, const Wrapper &wrapper, const Params &params,
-                             SharedContext<Scheme> &shared, int index)
-{
-    walker_thread(ctx, wrapper, params, shared, index);
-}
-
-template <class Wrapper>
-void Scheme::dict_thread(ThreadContext<Scheme> &ctx, const Wrapper &, const Params &params,
-                         SharedContext<Scheme> &shared, int index)
-{
-    inserter_thread(ctx, params, shared, index);
-}
-
 /* every round starts from an empty dictionary (PROTOCOL.md §5); a collective flush is future work */
 inline void Scheme::after_round(SharedContext<Scheme> &shared, const Params &, int d, const Header &)
 {

@@ -164,7 +164,7 @@ three divisions are split over the three stages that need them:
 |---|---|---|
 | sending comm thread | `node = key % n_nodes` | `route_producer_queues()` |
 | receiving comm thread | `slot = (key / n_nodes) % dicts_per_node` | `deliver_local()` |
-| dict thread | `key / n_dicts`, the part of the key the shard indexes on | the scheme's dict thread (PCS: `inserter_thread()`) |
+| dict thread | `key / n_dicts`, the part of the key the shard indexes on | the scheme's `dict_thread()` (PCS: `inserter.hpp`) |
 
 A point whose `node` is the local rank never touches MPI: `deliver_local()` pushes it
 straight into the dict queue.
@@ -548,8 +548,8 @@ comm:      RUNNING -> COLLECTING -> FLUSHING -> WAITING -> DRAINING_DICTS -> DRA
    the round and resets the per-round tallies and `round_closed`, unless `stop` is set.
 3. **OpenMP barrier**: publishes `SharedContext` to every thread.
 4. If `stop`, every thread leaves the round loop (§4.7).  Otherwise thread 0 enters
-   `CommThread::comm_round()`, dict threads `Scheme::dict_thread()` (PCS: `inserter_thread()`),
-   producers `Scheme::producer_thread()` (PCS: `walker_thread()`).
+   `CommThread::comm_round()`, dict threads `Scheme::dict_thread()` (PCS: `inserter.hpp`),
+   producers `Scheme::producer_thread()` (PCS: `walker.hpp`).
 
 ### 4.3 Steady state
 
@@ -819,7 +819,7 @@ dictionary slot means, or when a search is over.
 | `producer_per_dict` (to `Parameters`) | whether `Placement` must give every dict thread a producer (§1) | yes | no |
 | `next_header()` | rank 0's next header and `stop`, from the previous ones (§4.2) | a fresh `i` and `root_seed` | the next phase; `stop` past the last round |
 | `build_dict()`, `after_round()` | a dict thread's shard, built once pinned (§4.1); what it does after the epilogue barrier, given the round's header (§4.6) | shard and collision queue; `flush()` | shard; `flush()` after `PROBE` only |
-| `producer_thread()`, `dict_thread()` | the two worker rounds (§3.3) | `walker_thread()`, `inserter_thread()` | `direct::producer_thread()`, `direct::dict_thread()` |
+| `producer_thread()`, `dict_thread()` | the two worker rounds (§3.3) | the walker (`walker.hpp`), the inserter (`inserter.hpp`) | `direct_producer.hpp`, `direct_dict.hpp` |
 | `round_complete()` | closes the round on the reported tallies (§2.2) | `N_DP >= points_per_version` | never: a round ends by exhaustion (§4.5, §8) |
 | `banner()`, `display()`, `round_report()`, `done()` | all the printing | | |
 

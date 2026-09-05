@@ -307,7 +307,7 @@ struct Scheme {
 	/* dict thread d builds its shard and its collision queue, once pinned: first touch (§4.1) */
 	static void build_dict(SharedContext<Scheme> &shared, const Params &params, int d);
 
-	/* the two worker threads' rounds */
+	/* the two worker threads' rounds: the walker (walker.hpp) and the inserter (inserter.hpp) */
 	template <class Wrapper>
 	static void producer_thread(ThreadContext<Scheme> &ctx, const Wrapper &wrapper, const Params &params,
 	                            SharedContext<Scheme> &shared, int index);

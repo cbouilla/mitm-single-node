@@ -77,7 +77,7 @@ public:
 /******************************* the inserter thread **************************/
 
 /*
- * An inserter thread: probes every DP delivered to its queue into its shard and hands the hits to the
+ * PCS's dict thread, the inserter: probes every DP delivered to its queue into its shard and hands the hits to the
  * walkers of its own group, over its own collision queue and in runs (PROTOCOL.md §3.2).  A run is
  * handed over as soon as there is nothing left to probe, so a partial one never waits on the next hit.
  * Wind-down: ctx.state, PROTOCOL.md §3.3.
@@ -86,8 +86,9 @@ public:
  * so that many misses are outstanding at once).  Measured at about 5% on a laptop with a 256 MB
  * dictionary, not worth its ring buffer; retry on cluster hardware before dismissing it.
  */
-inline void inserter_thread(ThreadContext<Scheme> &ctx, const Params &params, SharedContext<Scheme> &shared,
-                            int inserter_index)
+template <class Wrapper>
+void Scheme::dict_thread(ThreadContext<Scheme> &ctx, const Wrapper &, const Params &params,
+                         SharedContext<Scheme> &shared, int inserter_index)
 {
 	SPSCQueue &in = *ctx.q;
 	PcsDict &dict = *shared.shards[inserter_index];

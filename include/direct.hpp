@@ -150,20 +150,6 @@ inline void Scheme::build_dict(SharedContext<Scheme> &shared, const Params &para
 	shared.shards[d] = std::make_unique<DirectDict>(params.w_shard, params.n);
 }
 
-template <class Wrapper>
-void Scheme::producer_thread(ThreadContext<Scheme> &ctx, const Wrapper &wrapper, const Params &params,
-                             SharedContext<Scheme> &shared, int index)
-{
-	direct::producer_thread(ctx, wrapper, params, shared, index);
-}
-
-template <class Wrapper>
-void Scheme::dict_thread(ThreadContext<Scheme> &ctx, const Wrapper &wrapper, const Params &params,
-                         SharedContext<Scheme> &shared, int index)
-{
-	direct::dict_thread(ctx, wrapper, params, shared, index);
-}
-
 /* the dictionary lives from FILL to PROBE and is emptied after that (PROTOCOL.md §8) */
 inline void Scheme::after_round(SharedContext<Scheme> &shared, const Params &, int d, const Header &h)
 {
@@ -175,17 +161,6 @@ inline void Scheme::after_round(SharedContext<Scheme> &shared, const Params &, i
 inline bool Scheme::round_complete(const Params &, const u64[])
 {
 	return false;
-}
-
-/* the round of protocol round `nround`, and its phase: they alternate from (0, FILL) */
-static inline u64 round_of(u64 nround)
-{
-	return (nround - 1) / 2;
-}
-
-static inline const char *phase_name(u64 nround)
-{
-	return ((nround - 1) % 2 == 0) ? "FILL" : "PROBE";
 }
 
 /* the startup report, printed by run() before the team exists */
@@ -209,12 +184,12 @@ inline void Scheme::banner(const Params &params, u64 seed)
 	fflush(stdout);
 }
 
-/* the live one-line display, from the reports so far */
+/* the live one-line display, from the reports so far.  Protocol round nround is direct round (nround - 1) / 2 */
 inline void Scheme::display(const Params &params, const u64 reported[], double delta, u64 nround)
 {
-	u64 total = (phase_name(nround)[0] == 'F')
-	          ? std::min(params.per_round, params.domain - round_of(nround) * params.per_round)
-	          : params.domain;
+	u64 round = (nround - 1) / 2;
+	bool filling = ((nround - 1) % 2 == 0);       /* the phases alternate from (0, FILL) */
+	u64 total = filling ? std::min(params.per_round, params.domain - round * params.per_round) : params.domain;
 	double completion = (double) reported[N_POINTS] / total;
 	char hrate[8], hdict[8], hnrate[8];
 	human_format((double) reported[N_EVAL] / params.n_producers / delta, hrate);
@@ -222,7 +197,7 @@ inline void Scheme::display(const Params &params, const u64 reported[], double d
 	human_format((double) reported[N_POINTS] * POINT_WORDS * sizeof(u64) / params.n_nodes / delta, hnrate);
 	printf("\rRound %" PRIu64 "/%" PRIu64 " %s:  %.1fs (%.1f%%, ETA %.1fs).  %s #f/s per producer.  "
 	       "%s points/s per dict thread.  node-->%sB/s   ",
-	       round_of(nround), params.n_rounds, phase_name(nround), delta, 100. * completion,
+	       round, params.n_rounds, filling ? "FILL" : "PROBE", delta, 100. * completion,
 	       (completion > 0) ? delta * (1 - completion) / completion : 0., hrate, hdict, hnrate);
 	fflush(stdout);
 }
@@ -231,6 +206,8 @@ inline void Scheme::display(const Params &params, const u64 reported[], double d
 inline void Scheme::round_report(const Params &params, const u64 r[], const u64 total[], const RoundStats &,
                                  const RoundStats &, double delta, u64 nround)
 {
+	u64 round = (nround - 1) / 2;
+	bool filling = ((nround - 1) % 2 == 0);
 	char hrate[8], hnrate[8], hdict[8];
 	human_format((double) r[N_EVAL] / params.n_producers / delta, hrate);
 	human_format((double) r[N_POINTS] * POINT_WORDS * sizeof(u64) / params.n_nodes / delta, hnrate);
@@ -238,7 +215,7 @@ inline void Scheme::round_report(const Params &params, const u64 r[], const u64 
 	printf("\n");
 	printf("Round %" PRIu64 " %s.  %.1fs.  2^%.2f evaluations (total 2^%.2f).  %s #f/s per producer.  "
 	       "node-->%sB/s.  %s points/s per dict thread\n",
-	       round_of(nround), phase_name(nround), delta, std::log2((double) (r[N_EVAL] ? r[N_EVAL] : 1)),
+	       round, filling ? "FILL" : "PROBE", delta, std::log2((double) (r[N_EVAL] ? r[N_EVAL] : 1)),
 	       std::log2((double) (total[N_EVAL] ? total[N_EVAL] : 1)), hrate, hnrate, hdict);
 	if (r[N_INSERT] > 0)
 		printf("            %" PRIu64 " inserted (%.2f%% of the points shipped), load %.2f/slot, "

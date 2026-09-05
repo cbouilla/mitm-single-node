@@ -171,12 +171,6 @@ public:
 		all.fold(round);
 		Scheme::round_report(params, r, total, round, all, delta, nround);
 	}
-
-	/* the last line: found, or not, after nround rounds */
-	void done()
-	{
-		Scheme::done(params, nround, solution.has_value(), wtime() - start_time);
-	}
 };
 
 }
