@@ -177,10 +177,11 @@ public:
 			/* BAD_PROBE is an inserter-side counter: its denominator is the probes retired, not the
 			   DPs found.  The other four are walker-side, where ndp is right. */
 			printf(".  %.2f%% probe failure.  %.2f%% walk-robinhood.  %.2f%% walk-noncolliding.  "
-			       "%.2f%% same-value.  %.2f%% DP failure\n",
+			       "%.2f%% same-value.  %.2f%% DP failure.  %.2f re-walked/collision\n",
 				r[N_PROBE] ? 100. * r[BAD_PROBE] / r[N_PROBE] : 0., 100. * r[BAD_WALK_ROBINHOOD] / ndp,
 				100. * r[BAD_WALK_NONCOLLIDING] / ndp, 100. * r[BAD_COLLISION] / ndp,
-				100. * r[BAD_DP] / ndp);
+				100. * r[BAD_DP] / ndp,
+				r[N_COLLISIONS] ? (double) r[N_MEASURE] / r[N_COLLISIONS] : 0.);
 
 			/*
 			 * What the round actually routed.  A round closes on points *found* (service(), against
@@ -226,35 +227,17 @@ public:
 			params.n_nodes, params.inserters_per_node, params.walkers_per_node, params.n_threads);
 		printf("MPI: %d dictionary shards, %d walker threads in total\n",
 			params.n_inserters, params.n_walkers);
-		printf("MPI: rank 0 has %d CPUs in its affinity mask over %d NUMA node(s); threads %s\n",
-			params.n_avail_cpu, params.n_numa_nodes, params.bind_threads ? "pinned" : "NOT pinned (--no-bind)");
-		int gmin = params.group_size.empty() ? 0 : *std::min_element(params.group_size.begin(),
-		                                                             params.group_size.end());
-		int gmax = params.group_size.empty() ? 0 : *std::max_element(params.group_size.begin(),
-		                                                             params.group_size.end());
-		if (params.cache_level_used > 0)
-			printf("MPI: %d thread group(s) of %d..%d CPUs over %d L%d domain(s), one inserter each\n",
-				params.n_groups, gmin, gmax, params.n_caches, params.cache_level_used);
-		else
-			printf("MPI: %d thread group(s) of %d..%d CPUs; no cache is shared by several cores,"
-			       " so the mask is one domain\n", params.n_groups, gmin, gmax);
-		if (params.n_numa_nodes != 1) {
-			printf("***** WARNING *****\n");
-			printf("---> rank 0 spans %d NUMA nodes: the engine wants ONE MPI RANK PER NUMA NODE\n",
-				params.n_numa_nodes);
-			printf("---> (mpirun --map-by numa --bind-to numa, or the launcher's equivalent)\n");
-			printf("***** WARNING *****\n");
-		}
-		if (params.bind_threads) {
-			printf("MPI: inserters on CPUs");
-			for (int tid = 1; tid <= params.inserters_per_node; tid++)
-				printf(" %d", params.thread_cpu[tid]);
-			printf("\n");
-		}
+		params.place.report();
 		printf("RAM per node == %sB buffers + dict.  Total dict == %sB (2^%.2f slots)\n",
 			hbuf, hdict, std::log2((double) params.w));
 		printf("Generating %.1f*w = %" PRIu64 " = 2^%0.2f distinguished points / version\n",
 			params.beta, params.points_per_version, std::log2((double) params.points_per_version));
+		printf("DP == %d words: endpoint + (%d-bit length | %d-bit chain index).  ",
+			DP_WORDS, params.lenbits, params.jbits);
+		if (params.dp_max_it > params.len_sat)
+			printf("Lengths >= %" PRIu64 " re-walked\n", params.len_sat);
+		else
+			printf("No length can saturate (dp_max_it == %" PRIu64 ")\n", params.dp_max_it);
 		if (params.theta_auto)
 			printf("AUTO-TUNING: setting 1/theta == %.2f\n", 1 / params.theta);
 		else
@@ -265,49 +248,6 @@ public:
 			printf("---> zero difficulty (use the naive technique!)\n");
 			printf("***** WARNING *****\n***** WARNING *****\n***** WARNING *****\n");
 		}
-		fflush(stdout);
-	}
-
-	/*
-	 * The measured layout, one line per NUMA node: the threads that landed there.  Then the plan, one
-	 * line per cache domain, while the groups are few enough to be worth listing.  Static like banner()
-	 */
-	static void placement(const Parameters &params, const SharedContext &shared)
-	{
-		std::vector<int> numa_ids;
-		for (int tid = 0; tid < params.n_threads; tid++) {
-			int id = shared.ctx[tid]->numa_node;
-			if (std::find(numa_ids.begin(), numa_ids.end(), id) == numa_ids.end())
-				numa_ids.push_back(id);
-		}
-		std::sort(numa_ids.begin(), numa_ids.end());
-		for (size_t k = 0; k < numa_ids.size(); k++) {
-			int n_comm = 0, n_ins = 0, n_walk = 0;
-			for (int tid = 0; tid < params.n_threads; tid++) {
-				if (shared.ctx[tid]->numa_node != numa_ids[k])
-					continue;
-				if (shared.ctx[tid]->role == COMM)
-					n_comm++;
-				else if (shared.ctx[tid]->role == INSERTER)
-					n_ins++;
-				else
-					n_walk++;
-			}
-			printf("NUMA node %d: %s%d ins + %d walk\n", numa_ids[k], n_comm ? "comm + " : "", n_ins, n_walk);
-		}
-		if (params.cache_level_used > 0 && params.n_groups >= params.n_caches && params.n_groups <= 32)
-			for (int c = 0; c < params.n_caches; c++) {
-				printf("L%d domain %d: groups", params.cache_level_used, c);
-				for (int j = 0; j < params.n_groups; j++)
-					if (params.group_cache[j] == c)
-						printf(" %d(%d cpu)", j, params.group_size[j]);
-				printf("\n");
-			}
-		else if (params.cache_level_used > 0 && params.n_groups <= 32)
-			for (int j = 0; j < params.n_groups; j++)
-				printf("group %d: %d cpu, L%d domains %d-%d\n", j, params.group_size[j],
-					params.cache_level_used, params.group_cache[j],
-					(j + 1 < params.n_groups) ? params.group_cache[j + 1] - 1 : params.n_caches - 1);
 		fflush(stdout);
 	}
 

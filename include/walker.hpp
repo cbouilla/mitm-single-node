@@ -55,18 +55,17 @@ bool retire_collision(const ProblemWrapper &wrapper, u64 ctr[], u8 hll[], Shared
 }
 
 /*
- * The collision behind a dictionary hit, both trail lengths known: (x0, x1, len1) with
- * mixf(x0) == mixf(x1), or nothing when one trail is a suffix of the other (robin-hood) or they never
- * meet (a false positive).  Trusts the lengths, not that the trails end at the same DP.
+ * The collision behind a dictionary hit, both trail lengths known: (x0, x1) with mixf(x0) == mixf(x1),
+ * or nothing when one trail is a suffix of the other (robin-hood) or they never meet (a false
+ * positive).  Trusts the lengths, not that the trails end at the same DP.
  */
 template<class ProblemWrapper>
-optional<tuple<u64,u64,u64>> walk(const ProblemWrapper &wrapper, u64 ctr[], const Parameters &params,
-	u64 i, u64 x0, u64 len0, u64 x1, u64 len1__)
+optional<pair<u64,u64>> walk(const ProblemWrapper &wrapper, u64 ctr[], const Parameters &params,
+	u64 i, u64 x0, u64 len0, u64 x1, u64 len1)
 {
 	assert(not is_distinguished_point(x1, params.threshold));
 	assert(not is_distinguished_point(x0, params.threshold));
 
-	u64 len1 = len1__;
 	ctr[N_EVAL] += (len0 > len1) ? len0 - len1 : len1 - len0;   /* the two loops below */
 	for (; len0 > len1; len0--)
 		x0 = wrapper.mixf(i, x0);
@@ -83,7 +82,7 @@ optional<tuple<u64,u64,u64>> walk(const ProblemWrapper &wrapper, u64 ctr[], cons
 		u64 y1 = wrapper.mixf(i, x1);
 		ctr[N_EVAL] += 2;
 		if (y0 == y1) {
-			return optional(tuple(x0, x1, len1__));   /* x0, x1: the inputs of the colliding evaluation */
+			return optional(pair(x0, x1));   /* x0, x1: the inputs of the colliding evaluation */
 		}
 		x0 = y0;
 		x1 = y1;
@@ -95,89 +94,141 @@ optional<tuple<u64,u64,u64>> walk(const ProblemWrapper &wrapper, u64 ctr[], cons
 }
 
 /*
- * walk() when the second trail's length is unknown (it saturated in the dictionary): that trail is
- * re-walked and kept, and `end0` (its DP as dictionary key, x / n_inserters) says whether it is the
- * right one.  dp_max_it words of stack, and the re-walk stops there rather than overrun them.
+ * The trail length of one chain of a candidate, recovered by re-walking it to its distinguished point:
+ * what a length that saturated on the wire or in the dictionary costs (PROTOCOL.md §3.2).  Nothing when
+ * the chain reaches no distinguished point within dp_max_it steps, or reaches one other than `end`.
  */
 template<class ProblemWrapper>
-optional<tuple<u64,u64,u64>> walk_nolen1(const ProblemWrapper &wrapper, u64 ctr[], const Parameters &params,
-	u64 i, u64 x0, u64 len0, u64 end0, u64 x1)
+optional<u64> measure_trail(const ProblemWrapper &wrapper, u64 ctr[], const Parameters &params,
+	u64 i, u64 x, u64 end)
 {
-	u64 maxit = params.dp_max_it;
-	u64 trail1[maxit];
-	trail1[0] = x1;
-	u64 len1 = 0;
-	assert(not is_distinguished_point(x1, params.threshold));
-	assert(not is_distinguished_point(x0, params.threshold));
+	assert(not is_distinguished_point(x, params.threshold));
+	ctr[N_MEASURE] += 1;
+	for (u64 len = 1; len <= params.dp_max_it; len++) {
+		x = wrapper.mixf(i, x);
+		ctr[N_EVAL] += 1;
+		if (not is_distinguished_point(x, params.threshold))
+			continue;
+		if (x != end) {
+			ctr[BAD_WALK_NONCOLLIDING] += 1;      /* not the trail the dictionary meant */
+			return nullopt;
+		}
+		return optional(len);
+	}
+	ctr[BAD_DP] += 1;
+	return nullopt;
+}
+
+/*
+ * walk() when one of the two trail lengths is unknown: that trail is re-walked into `trail` and kept,
+ * which recovers its length and makes the march one evaluation per step instead of two.  The other
+ * trail is stepped and its length is trusted; either chain of the candidate can play either role.
+ * Returns the inputs of the colliding evaluation, the stepped chain's first, then the recorded trail's
+ * length.  `trail` holds dp_max_it + 1 points, which is every trail a round can produce.
+ */
+template<class ProblemWrapper>
+optional<tuple<u64,u64,u64>> walk_recorded(const ProblemWrapper &wrapper, u64 ctr[],
+	const Parameters &params, u64 i, u64 x_step, u64 len_step, u64 x_rec, u64 end, u64 trail[])
+{
+	assert(not is_distinguished_point(x_step, params.threshold));
+	assert(not is_distinguished_point(x_rec, params.threshold));
+	assert(len_step > 0);
+
+	ctr[N_MEASURE] += 1;
+	trail[0] = x_rec;
+	u64 len_rec = 0;
 	for (;;) {
-		if (len1 + 1 >= maxit) {          /* longer than any trail of the round: not the stored one */
-			ctr[N_EVAL] += len1;
+		len_rec += 1;
+		x_rec = wrapper.mixf(i, x_rec);
+		trail[len_rec] = x_rec;
+		if (is_distinguished_point(x_rec, params.threshold))
+			break;
+		if (len_rec == params.dp_max_it) {        /* longer than any trail of the round: not the stored one */
+			ctr[N_EVAL] += len_rec;
 			ctr[BAD_DP] += 1;
 			return nullopt;
 		}
-		len1 += 1;
-		x1 = wrapper.mixf(i, x1);
-		trail1[len1] = x1;
-		if (is_distinguished_point(x1, params.threshold))
-			break;
 	}
-	ctr[N_EVAL] += len1;                                     /* one per turn of the loop */
+	ctr[N_EVAL] += len_rec;                       /* one per turn of the loop */
 
-	if (x1 / params.n_inserters != end0) {
+	if (x_rec != end) {
 		ctr[BAD_WALK_NONCOLLIDING] += 1;
 		return nullopt;
 	}
 
-	if (len0 > len1)
-		ctr[N_EVAL] += len0 - len1;                          /* the loop below */
-	for (; len0 > len1; len0--)
-		x0 = wrapper.mixf(i, x0);
+	if (len_step > len_rec)
+		ctr[N_EVAL] += len_step - len_rec;        /* the loop below */
+	for (; len_step > len_rec; len_step--)
+		x_step = wrapper.mixf(i, x_step);
 
-	x1 = trail1[len1 - len0];
-	if (x0 == x1) { /* robin-hood */
+	u64 j = len_rec - len_step;
+	if (x_step == trail[j]) { /* robin-hood */
 		ctr[BAD_WALK_ROBINHOOD] += 1;
 		return nullopt;
 	}
 
-	for (u64 j = len1 - len0;; j++) {
-		u64 y0 = wrapper.mixf(i, x0);
-		u64 y1 = trail1[j+1];
+	for (; j < len_rec; j++) {
+		u64 y_step = wrapper.mixf(i, x_step);
 		ctr[N_EVAL] += 1;
-		if (y0 == y1) {
-			return optional(tuple(x0, x1, len1));   /* x0, x1: the inputs of the colliding evaluation */
-		}
-		x0 = y0;
-		x1 = y1;
+		if (y_step == trail[j + 1])
+			return optional(tuple(x_step, trail[j], len_rec));
+		x_step = y_step;
 	}
+
+	ctr[BAD_WALK_NONCOLLIDING] += 1;              /* the trails never met: a false positive */
+	return nullopt;
 }
 
 /*
- * Resolve one candidate, scalar: walk both trails, locate the collision, retire it.  The path taken
- * when the problem has no vector implementation (vlen == 1); VecResolver is the other one.
+ * Resolve one candidate, scalar: recover whichever of the two trail lengths saturated, walk both
+ * trails, locate the collision, retire it (PROTOCOL.md §3.2).  The path taken when the problem has no
+ * vector implementation (vlen == 1); VecResolver is the other one.  A chain whose length is unknown is
+ * the one recorded, and when both are unknown the other is measured first, because walk_recorded()
+ * steps it and has to know how far.
  */
 template<class ProblemWrapper>
 void resolve_collision(const ProblemWrapper &wrapper, u64 ctr[], u8 hll[], const Parameters &params,
-                       SharedContext &shared, u64 seed0, u64 end, u64 len0, u64 seed1, u64 len1_maybe)
+                       SharedContext &shared, const CollisionCandidate &c, u64 trail[])
 {
 	const u64 i = shared.i;
 	const u64 root_seed = shared.root_seed;
-	u64 start0 = (root_seed + params.multiplier * seed0) & wrapper.out_mask;
-	u64 start1 = (root_seed + params.multiplier * seed1) & wrapper.out_mask;
+	u64 start0 = (root_seed + params.multiplier * c.seed0) & wrapper.out_mask;
+	u64 start1 = (root_seed + params.multiplier * c.seed1) & wrapper.out_mask;
+	u64 len0 = c.len0_maybe;
+	u64 len1 = c.len1_maybe;
 
-	optional<tuple<u64,u64,u64>> collision;
-	if (len1_maybe == 0)
-		collision = walk_nolen1(wrapper, ctr, params, i, start0, len0, end, start1);
-	else
-		collision = walk(wrapper, ctr, params, i, start0, len0, start1, len1_maybe);
+	if (len0 != 0 && len1 != 0) {
+		auto collision = walk(wrapper, ctr, params, i, start0, len0, start1, len1);
+		if (not collision)
+			return;                 /* robin-hood, or dict false positive */
+		auto [x0, x1] = *collision;
+		retire_collision(wrapper, ctr, hll, shared, c.seed0, c.seed1, x0, x1, len0, len1);
+		return;
+	}
 
-	if (not collision)
-		return;                 /* robin-hood, or dict false positive */
+	if (len0 == 0 && len1 == 0) {
+		auto measured = measure_trail(wrapper, ctr, params, i, start0, c.end);
+		if (not measured)
+			return;
+		len0 = *measured;
+		assert(len0 >= params.len_sat);            /* the wire said "at least that long" */
+	}
 
-	auto [x0, x1, len1] = *collision;
-	assert(len1_maybe == 0 || len1_maybe == len1);
-	retire_collision(wrapper, ctr, hll, shared, seed0, seed1, x0, x1, len0, len1);
+	if (len1 == 0) {
+		auto collision = walk_recorded(wrapper, ctr, params, i, start0, len0, start1, c.end, trail);
+		if (not collision)
+			return;
+		auto [x0, x1, len_rec] = *collision;
+		retire_collision(wrapper, ctr, hll, shared, c.seed0, c.seed1, x0, x1, len0, len_rec);
+	} else {
+		auto collision = walk_recorded(wrapper, ctr, params, i, start1, len1, start0, c.end, trail);
+		if (not collision)
+			return;
+		auto [x1, x0, len_rec] = *collision;
+		assert(len_rec >= params.len_sat);         /* likewise: chain 0's length came off the wire */
+		retire_collision(wrapper, ctr, hll, shared, c.seed0, c.seed1, x0, x1, len_rec, len1);
+	}
 }
-
 
 /******************************* the vectorized resolver **********************/
 
@@ -185,15 +236,17 @@ void resolve_collision(const ProblemWrapper &wrapper, u64 ctr[], u8 hll[], const
  * Why: a round spends ~2/beta of its evaluations locating collisions, and a scalar resolver makes
  * each of them vlen times dearer than the ones that produce DPs -- which is most of a walker's time
  * once the dictionary fills.  This one keeps vlen/2 candidates in flight and steps them all with one
- * vmixf.  A candidate walks its two chains through three phases, one lane per chain that is moving:
+ * vmixf.  A candidate walks its two chains through three phases:
  *
- *   MEASURE  the stored length had saturated: re-walk chain 1 to its DP to learn it (chain 0 parked)
+ *   MEASURE  a length saturated: re-walk that chain to its DP to learn it -- either chain, or both
  *   ALIGN    step the longer chain until both are the same distance from their shared endpoint
  *   MARCH    step both and compare, until they meet or the shorter trail runs out
  *
- * MEASURE and ALIGN hold one lane, MARCH two, so vlen/2 candidates never ask for more than vlen lanes
- * and the pool cannot run dry.  Unlike walk_nolen1() this re-walks chain 1 instead of recording it,
- * which trades a few evaluations for a bounded per-lane footprint.  PROTOCOL.md §3.2.
+ * A busy slot owns two lanes from fill() to release(), so vlen/2 candidates never ask for more than
+ * vlen lanes and the pool cannot run dry: an empty slot always finds its pair.  A chain that is not
+ * moving is still stepped by vmixf, its lane simply not committed.  Unlike walk_recorded() this
+ * re-walks a chain instead of recording it, which trades a few evaluations for a bounded per-lane
+ * footprint.  PROTOCOL.md §3.2.
  */
 template<class ProblemWrapper>
 struct alignas(sizeof(u64) * ProblemWrapper::vlen) VecResolver {
@@ -206,16 +259,18 @@ struct alignas(sizeof(u64) * ProblemWrapper::vlen) VecResolver {
 	u64 y[vlen] __attribute__ ((aligned(sizeof(u64) * vlen)));   /* one vmixf of x */
 
 	int phase[nslots];        /* what each slot is doing */
-	int lane0[nslots];        /* the lane walking chain 0; -1 == parked, still at start0 */
-	int lane1[nslots];        /* the lane walking chain 1; -1 == parked, still at start1 */
+	int lane0[nslots];        /* the lane chain 0 owns while the slot is busy; -1 == the slot is empty */
+	int lane1[nslots];        /* likewise chain 1 */
 	u64 seed0[nslots];        /* chain 0: its index, ... */
 	u64 start0[nslots];       /* ... where it starts, ... */
-	u64 len0[nslots];         /* ... and how long its trail is */
+	u64 len0[nslots];         /* ... and how long its trail is; counted up while it measures */
 	u64 seed1[nslots];        /* chain 1: its index, ... */
 	u64 start1[nslots];       /* ... where it starts, ... */
-	u64 len1[nslots];         /* ... and how long its trail is; counted up during MEASURE */
-	u64 end0[nslots];         /* the shared endpoint as a dictionary key: MEASURE checks it */
-	u64 remaining[nslots];    /* steps left in MEASURE, ALIGN, then MARCH */
+	u64 len1[nslots];         /* ... and how long its trail is; counted up while it measures */
+	bool measuring0[nslots];  /* chain 0 is still walking to its DP: its length saturated on the wire */
+	bool measuring1[nslots];  /* chain 1 is still walking to its DP: it saturated in the dictionary */
+	u64 end[nslots];          /* the shared endpoint, in full: what a measured chain must reach */
+	u64 remaining[nslots];    /* steps left in ALIGN, then in MARCH */
 
 	int free_lane[vlen];      /* the lanes no slot is using */
 	int n_free;               /* how many of them */
@@ -243,6 +298,8 @@ struct alignas(sizeof(u64) * ProblemWrapper::vlen) VecResolver {
 			phase[s] = SLOT_EMPTY;
 			lane0[s] = -1;
 			lane1[s] = -1;
+			measuring0[s] = false;
+			measuring1[s] = false;
 		}
 	}
 
@@ -258,38 +315,29 @@ struct alignas(sizeof(u64) * ProblemWrapper::vlen) VecResolver {
 		return n_pending;
 	}
 
-	/* hand a slot's lanes back and free it.  Every path that abandons or completes a candidate ends here */
+	/* hand a slot's two lanes back and free it.  Every path that abandons or completes a candidate ends here */
 	void release(int s)
 	{
-		if (lane0[s] >= 0) {
-			x[lane0[s]] = 0;
-			free_lane[n_free++] = lane0[s];
-			lane0[s] = -1;
-		}
-		if (lane1[s] >= 0) {
-			x[lane1[s]] = 0;
-			free_lane[n_free++] = lane1[s];
-			lane1[s] = -1;
-		}
+		assert(lane0[s] >= 0 && lane1[s] >= 0);
+		x[lane0[s]] = 0;
+		free_lane[n_free++] = lane0[s];
+		lane0[s] = -1;
+		x[lane1[s]] = 0;
+		free_lane[n_free++] = lane1[s];
+		lane1[s] = -1;
+		measuring0[s] = false;
+		measuring1[s] = false;
 		phase[s] = SLOT_EMPTY;
 		n_busy -= 1;
 		n_retired += 1;
 	}
 
 	/*
-	 * Both chains are now the same distance from their endpoint: give each a lane and step them
-	 * together.  Equal points here mean one trail is a suffix of the other, which is no collision.
+	 * Both chains are now the same distance from their endpoint: step them together.  Equal points here
+	 * mean one trail is a suffix of the other, which is no collision.
 	 */
 	void begin_march(int s, u64 ctr[])
 	{
-		if (lane0[s] < 0) {
-			lane0[s] = free_lane[--n_free];
-			x[lane0[s]] = start0[s];
-		}
-		if (lane1[s] < 0) {
-			lane1[s] = free_lane[--n_free];
-			x[lane1[s]] = start1[s];
-		}
 		if (x[lane0[s]] == x[lane1[s]]) {
 			ctr[BAD_WALK_ROBINHOOD] += 1;
 			release(s);
@@ -300,42 +348,60 @@ struct alignas(sizeof(u64) * ProblemWrapper::vlen) VecResolver {
 	}
 
 	/*
-	 * Both trail lengths are known: step the longer chain down to the shorter one's length.  The chain
-	 * that does not move stays parked at its start and costs no lane until the march.
+	 * Both trail lengths are known: rewind both chains and step the longer one down to the shorter
+	 * one's length.  The chain that does not move waits at its start, in its own lane.
 	 */
-	void begin_align(int s, int held, u64 ctr[])
+	void begin_align(int s, u64 ctr[])
 	{
-		assert(held >= 0);                                 /* fill() and MEASURE each hold exactly one */
-		lane0[s] = -1;
-		lane1[s] = -1;
+		assert(lane0[s] >= 0 && lane1[s] >= 0);   /* a busy slot owns both lanes, fill() to release() */
+		assert(len0[s] > 0 && len1[s] > 0);       /* every length is exact by now: MEASURE is over */
+		x[lane0[s]] = start0[s];                  /* a measured chain sits on its endpoint: rewind it */
+		x[lane1[s]] = start1[s];
 		if (len0[s] == len1[s]) {
-			lane0[s] = held;
-			x[held] = start0[s];
 			begin_march(s, ctr);
 			return;
 		}
-		if (len0[s] > len1[s]) {
-			lane0[s] = held;
-			x[held] = start0[s];
-			remaining[s] = len0[s] - len1[s];
-		} else {
-			lane1[s] = held;
-			x[held] = start1[s];
-			remaining[s] = len1[s] - len0[s];
-		}
+		remaining[s] = (len0[s] > len1[s]) ? len0[s] - len1[s] : len1[s] - len0[s];
 		phase[s] = SLOT_ALIGN;
+	}
+
+	/*
+	 * One step of a chain re-walking to its distinguished point to recover its length.  False == the
+	 * candidate is gone and the slot has been released, so the caller must not touch it again.
+	 */
+	bool measure_chain(int s, int l, u64 &len, bool &measuring, const Parameters &params, u64 ctr[])
+	{
+		x[l] = y[l];
+		len += 1;
+		ctr[N_EVAL] += 1;
+		if (is_distinguished_point(x[l], params.threshold)) {
+			if (x[l] != end[s]) {
+				ctr[BAD_WALK_NONCOLLIDING] += 1;   /* not the trail the dictionary meant */
+				release(s);
+				return false;
+			}
+			measuring = false;
+			return true;
+		}
+		if (len == params.dp_max_it) {
+			ctr[BAD_DP] += 1;                  /* the re-walk never reached a DP */
+			release(s);
+			return false;
+		}
+		return true;
 	}
 
 	/* start queued candidates in the empty slots.  Returns how many, so a caller can tell an empty queue */
 	int fill(const ProblemWrapper &wrapper, u64 ctr[], const Parameters &params, SharedContext &shared,
 	         CollisionQueue &coll_q)
 	{
+		/* the lane budget: two lanes per busy slot, so an empty slot always finds its pair */
+		static_assert(vlen == 1 || 2 * nslots <= vlen, "a busy slot owns two of the vlen lanes");
+		assert(n_free == vlen - 2 * n_busy);
 		int started = 0;
 		for (int s = 0; s < nslots; s++) {
 			if (phase[s] != SLOT_EMPTY)
 				continue;
-			if (n_free == 0)
-				break;                     /* every lane is walking: the rest waits its turn */
 			if (refill(coll_q) == 0)
 				break;                     /* nothing in hand and nothing queued */
 			CollisionCandidate c = pending[first++];
@@ -343,28 +409,29 @@ struct alignas(sizeof(u64) * ProblemWrapper::vlen) VecResolver {
 			assert(c.i == shared.i);
 			seed0[s] = c.seed0;
 			seed1[s] = c.seed1;
-			len0[s] = c.len0;
+			len0[s] = c.len0_maybe;            /* 0 == it saturated: MEASURE counts it up from there */
 			len1[s] = c.len1_maybe;
-			end0[s] = c.end;
+			measuring0[s] = (c.len0_maybe == 0);
+			measuring1[s] = (c.len1_maybe == 0);
+			end[s] = c.end;
 			start0[s] = (shared.root_seed + params.multiplier * c.seed0) & wrapper.out_mask;
 			start1[s] = (shared.root_seed + params.multiplier * c.seed1) & wrapper.out_mask;
-			int l = free_lane[--n_free];
+			assert(not is_distinguished_point(start0[s], params.threshold));
+			assert(not is_distinguished_point(start1[s], params.threshold));
+			lane0[s] = free_lane[--n_free];
+			lane1[s] = free_lane[--n_free];
+			x[lane0[s]] = start0[s];
+			x[lane1[s]] = start1[s];
 			n_busy += 1;
 			started += 1;
-			if (c.len1_maybe == 0) {           /* the stored length saturated: re-walk chain 1 for it */
-				lane0[s] = -1;
-				lane1[s] = l;
-				x[l] = start1[s];
-				len1[s] = 0;
-				remaining[s] = params.dp_max_it;
+			if (measuring0[s])
+				ctr[N_MEASURE] += 1;
+			if (measuring1[s])
+				ctr[N_MEASURE] += 1;
+			if (measuring0[s] || measuring1[s])
 				phase[s] = SLOT_MEASURE;
-			} else {
-				lane0[s] = l;
-				lane1[s] = -1;
-				x[l] = start0[s];
-				phase[s] = SLOT_ALIGN;
-				begin_align(s, l, ctr);    /* it picks the chain that has to move, or marches at once */
-			}
+			else
+				begin_align(s, ctr);       /* it picks the chain that has to move, or marches at once */
 		}
 		return started;
 	}
@@ -380,24 +447,14 @@ struct alignas(sizeof(u64) * ProblemWrapper::vlen) VecResolver {
 
 		for (int s = 0; s < nslots; s++) {
 			if (phase[s] == SLOT_MEASURE) {
-				int l = lane1[s];
-				x[l] = y[l];
-				len1[s] += 1;
-				remaining[s] -= 1;
-				ctr[N_EVAL] += 1;
-				if (is_distinguished_point(x[l], params.threshold)) {
-					if (x[l] / params.n_inserters == end0[s]) {
-						begin_align(s, l, ctr);
-					} else {
-						ctr[BAD_WALK_NONCOLLIDING] += 1;   /* not the trail the dictionary meant */
-						release(s);
-					}
-				} else if (remaining[s] == 0) {
-					ctr[BAD_DP] += 1;                  /* the re-walk never reached a DP */
-					release(s);
-				}
+				if (measuring0[s] && not measure_chain(s, lane0[s], len0[s], measuring0[s], params, ctr))
+					continue;          /* the slot is gone: its lanes are back in the pool */
+				if (measuring1[s] && not measure_chain(s, lane1[s], len1[s], measuring1[s], params, ctr))
+					continue;
+				if (not measuring0[s] && not measuring1[s])
+					begin_align(s, ctr);
 			} else if (phase[s] == SLOT_ALIGN) {
-				int l = (lane0[s] >= 0) ? lane0[s] : lane1[s];
+				int l = (len0[s] > len1[s]) ? lane0[s] : lane1[s];   /* the longer chain is the mover */
 				x[l] = y[l];
 				remaining[s] -= 1;
 				ctr[N_EVAL] += 1;
@@ -425,7 +482,6 @@ struct alignas(sizeof(u64) * ProblemWrapper::vlen) VecResolver {
 	}
 };
 
-
 /* start chain k from the next chain index j (stepping by jinc) that is not itself a DP.  theta == 1: never returns */
 static void start_chain(const Parameters &params, u64 out_mask, u64 root_seed, u64 &j,
                         u64 x[], u64 len[], u64 seed[], u64 jinc, int k)
@@ -449,12 +505,13 @@ static void start_chain(const Parameters &params, u64 out_mask, u64 root_seed, u
  * stop as soon as nothing more is in hand and the batch is not full, and let the rest wait for the
  * next chunk: running the batch down to its last candidate would spend full-width steps on one or two
  * live lanes.  `drain` is the end of the round, where every candidate must be retired whatever it
- * costs.  PROTOCOL.md §3.2, §3.3.
+ * costs.  `trail` is the scalar path's recording buffer, and is unused when vlen > 1.
+ * PROTOCOL.md §3.2, §3.3.
  */
 template <class ProblemWrapper>
 void service_collisions(const ProblemWrapper &wrapper, u64 ctr[], u8 hll[], const Parameters &params,
                         SharedContext &shared, CollisionQueue &coll_q,
-                        VecResolver<ProblemWrapper> &resolver, size_t budget, bool drain)
+                        VecResolver<ProblemWrapper> &resolver, size_t budget, bool drain, u64 trail[])
 {
 	constexpr int vlen = ProblemWrapper::vlen;
 
@@ -465,8 +522,7 @@ void service_collisions(const ProblemWrapper &wrapper, u64 ctr[], u8 hll[], cons
 			CollisionCandidate cand = resolver.pending[resolver.first++];
 			resolver.n_pending -= 1;
 			assert(cand.i == shared.i);
-			resolve_collision(wrapper, ctr, hll, params, shared, cand.seed0, cand.end, cand.len0,
-			                  cand.seed1, cand.len1_maybe);
+			resolve_collision(wrapper, ctr, hll, params, shared, cand, trail);
 		}
 		return;
 	} else {
@@ -506,7 +562,6 @@ void walker_thread(ThreadContext &ctx, const ProblemWrapper &wrapper, const Para
 
 	int jbits = params.jbits;
 	u64 jmask = make_mask(jbits);
-	(void) jmask;
 
 	/* state of the vlen chains being walked */
 	u64 x[vlen] __attribute__ ((aligned(sizeof(u64) * vlen)));
@@ -516,6 +571,11 @@ void walker_thread(ThreadContext &ctx, const ProblemWrapper &wrapper, const Para
 
 	/* the candidates being resolved, vlen/2 of them at once (PROTOCOL.md §3.2) */
 	VecResolver<ProblemWrapper> resolver;
+
+	/* the trail a scalar resolution records: the longest one a round can produce, plus its start */
+	std::vector<u64> trail;
+	if constexpr (vlen == 1)
+		trail.resize(params.dp_max_it + 1);
 
 	u64 j = (u64) params.rank * params.walkers_per_node + walker_index;
 	for (int k = 0; k < vlen; k++)
@@ -531,14 +591,16 @@ void walker_thread(ThreadContext &ctx, const ProblemWrapper &wrapper, const Para
 		}
 
 		if (st == DRAIN) {
-			service_collisions(wrapper, ctr, hll, params, shared, coll_q, resolver, 0, true);
+			service_collisions(wrapper, ctr, hll, params, shared, coll_q, resolver, 0, true,
+			                   trail.data());
 			assert(resolver.n_busy == 0);
 			assert(resolver.n_pending == 0);
 			ctx.state.store(QUIESCENT, std::memory_order_release);
 			return;
 		}
 
-		service_collisions(wrapper, ctr, hll, params, shared, coll_q, resolver, params.coll_per_chunk, false);
+		service_collisions(wrapper, ctr, hll, params, shared, coll_q, resolver, params.coll_per_chunk,
+		                   false, trail.data());
 
 		if (st == HELD) {
 			cpu_relax();
@@ -557,7 +619,8 @@ void walker_thread(ThreadContext &ctx, const ProblemWrapper &wrapper, const Para
 				if (dp) {
 					ctr[N_DP] += 1;
 					ctr[N_POINTS_TRAILS] += len[k];
-					DP p = {seed[k], x[k], len[k]};
+					u64 l = std::min(len[k], params.len_sat);
+					DP p = {x[k], (seed[k] & jmask) | (l << jbits)};
 					if (not out.push(p))
 						ctr[DROP_WALKERQ] += 1;
 				}

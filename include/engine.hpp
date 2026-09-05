@@ -149,7 +149,7 @@ public:
 				n_sentinels += 1;             /* that node has finished the round */
 			} else {
 				for (int off = 0; off + DP_WORDS <= count; off += DP_WORDS) {
-					DP p = {in_data[k][off], in_data[k][off + 1], in_data[k][off + 2]};
+					DP p = {in_data[k][off], in_data[k][off + 1]};
 					deliver_local(p);
 				}
 			}
@@ -443,7 +443,7 @@ optional<tuple<u64,u64,u64>> run(const ProblemWrapper &wrapper, u64 nbytes_memor
 	{
 		int tid = omp_get_thread_num();
 
-		int want = params.thread_cpu[tid];
+		int want = params.place.thread_cpu[tid];
 		if (want >= 0 && pin_to_cpu(want) < 0) {
 			warn("MPI: rank %d: cannot pin thread %d to CPU %d", params.rank, tid, want);
 			#pragma omp atomic
@@ -468,7 +468,7 @@ optional<tuple<u64,u64,u64>> run(const ProblemWrapper &wrapper, u64 nbytes_memor
 		else if (tid <= params.inserters_per_node)
 			role = INSERTER;
 		shared.ctx[tid] = std::make_unique<ThreadContext>(role, cpu, numa_node,
-		                                                 params.thread_group[tid], params);
+		                                                 params.place.thread_group[tid], params);
 		if (role == INSERTER) {
 			shared.shards[tid - 1] = std::make_unique<PcsDict>(params.jbits, params.w_shard);
 			shared.coll_q[tid - 1] = std::make_unique<CollisionQueue>(params.coll_queue_capacity);
@@ -477,8 +477,14 @@ optional<tuple<u64,u64,u64>> run(const ProblemWrapper &wrapper, u64 nbytes_memor
 
 		#pragma omp barrier             /* now we can inspect the shared context */
 
-		if (tid == 0 && params.verbose)
-			Controller::placement(params, shared);
+		if (tid == 0 && params.verbose) {
+			std::vector<int> numa(params.n_threads), role(params.n_threads);
+			for (int t = 0; t < params.n_threads; t++) {
+				numa[t] = shared.ctx[t]->numa_node;
+				role[t] = shared.ctx[t]->role;
+			}
+			params.place.report_measured(numa, role);
+		}
 
 		for (;;) {
 			me.state = RUNNING;

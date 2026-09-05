@@ -147,8 +147,8 @@ void probe_benchmark(const Problem& pb, const Options &opts, u64 nbytes_memory)
 #pragma omp parallel num_threads(I)
 	{
 		int tid = omp_get_thread_num();
-		if (params.bind_threads && pin_to_cpu(params.thread_cpu[1 + tid]) < 0)
-			warn("probe_benchmark: cannot pin thread %d to CPU %d", tid, params.thread_cpu[1 + tid]);
+		if (params.bind_threads && pin_to_cpu(params.place.thread_cpu[1 + tid]) < 0)
+			warn("probe_benchmark: cannot pin thread %d to CPU %d", tid, params.place.thread_cpu[1 + tid]);
 		PcsDict dict(params.jbits, params.w_shard);   /* zero-filled here: NUMA first touch */
 		u64 nhit = 0;
 		u64 i = 0;
@@ -300,7 +300,7 @@ static void staging_row(const Parameters &params, u64 n_dest, u64 cap, u64 &chec
 #pragma omp parallel num_threads(W)
 	{
 		int tid = omp_get_thread_num();
-		int cpu = params.thread_cpu[1 + params.inserters_per_node + tid];
+		int cpu = params.place.thread_cpu[1 + params.inserters_per_node + tid];
 		if (params.bind_threads && pin_to_cpu(cpu) < 0)
 			warn("staging_benchmark: cannot pin thread %d to CPU %d", tid, cpu);
 		std::vector<u64> wc(n_dest * STAGING_LINE);       /* this thread's lines, its own first touch */
@@ -398,7 +398,7 @@ void staging_benchmark(const Problem& pb, const Options &opts, u64 nbytes_memory
 	u64 checksum = 0;
 	for (int words = 3; words >= 2; words--) {
 		printf("  %d words per point (%d B%s), %" PRIu64 " points per write-combining line\n",
-		       words, 8 * words, (words == 3) ? ", the engine's DP" : ", the destination implying the rest",
+		       words, 8 * words, (words == 3) ? ", a length of its own" : ", the engine's DP",
 		       STAGING_LINE / words);
 		printf("        dest     buffer      line |      local      direct        line |"
 		       " per point, per thread\n");

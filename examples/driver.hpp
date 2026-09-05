@@ -26,6 +26,8 @@ static void usage(const char *argv0)
 	printf("  --alpha A        auto-tuning: theta = A*sqrt(w/n)\n");
 	printf("  --beta B         use each version of the function for B*w distinguished points\n");
 	printf("  --nrounds R      give up after R versions of the function\n");
+	printf("  --dp-len-bits N  bits of trail length shipped with a distinguished point.  A length that\n");
+	printf("                   does not fit is re-walked when a collision needs it.  0 == all that fit\n");
 	printf("\n");
 	printf("  --walkers-per-node W     default: fill the affinity mask\n");
 	printf("  --inserters-per-node I   dictionary shards per node, one per thread group.  Default: 1\n");
@@ -51,7 +53,8 @@ static void process_command_line_options(int argc, char **argv, Options &opts,
                                          u64 &nbytes_memory, int &n, u64 &seed)
 {
 	enum {OPT_WALKER_QUEUE = 1000, OPT_INSERTER_QUEUE, OPT_COLL_QUEUE, OPT_COLL_PER_CHUNK,
-	      OPT_BUFFER, OPT_IN_BUFFERS, OPT_CHUNK, OPT_CACHE_LEVEL, OPT_NO_BIND, OPT_HELP};
+	      OPT_BUFFER, OPT_IN_BUFFERS, OPT_CHUNK, OPT_CACHE_LEVEL, OPT_NO_BIND, OPT_DP_LEN_BITS,
+	      OPT_HELP};
 
 	struct option longopts[] = {
 		{"ram",                required_argument, NULL, 'r'},
@@ -61,6 +64,7 @@ static void process_command_line_options(int argc, char **argv, Options &opts,
 		{"alpha",              required_argument, NULL, 'a'},
 		{"beta",               required_argument, NULL, 'b'},
 		{"nrounds",            required_argument, NULL, 'o'},
+		{"dp-len-bits",        required_argument, NULL, OPT_DP_LEN_BITS},
 		{"walkers-per-node",   required_argument, NULL, 'W'},
 		{"inserters-per-node", required_argument, NULL, 'I'},
 		{"walker-queue",       required_argument, NULL, OPT_WALKER_QUEUE},
@@ -97,6 +101,7 @@ static void process_command_line_options(int argc, char **argv, Options &opts,
 		case OPT_IN_BUFFERS:     opts.n_in_buffers = std::stoi(optarg);              break;
 		case OPT_CHUNK:          opts.chunk_size = std::stoull(optarg);              break;
 		case OPT_CACHE_LEVEL:    opts.cache_level = std::stoi(optarg);               break;
+		case OPT_DP_LEN_BITS:    opts.dp_lenbits = std::stoi(optarg);                break;
 		case OPT_NO_BIND:        opts.bind_threads = false;                          break;
 		case OPT_HELP:           usage(argv[0]);                                     break;
 		default:

@@ -43,8 +43,9 @@ domains instead of sitting inside one; and a group left with no CPU for a walker
 then borrows one from the fullest group.  Fewer walkers than inserters is refused
 outright -- every collision queue needs a walker to drain it (§3.2, §4.5).
 
-**Placement, and what SMT is for.**  Every thread takes the **emptiest core of its
-group**, the service threads first: the comm thread, then inserter `j` in group `j`,
+**Placement, and what SMT is for.**  All of this lives in `placement.hpp`, in the
+`Placement` that `Parameters` holds; the engine reads `thread_cpu` and `thread_group`
+from it and nothing else.  Every thread takes the **emptiest core of its group**, the service threads first: the comm thread, then inserter `j` in group `j`,
 then the walkers spread over the groups, emptiest group first.  Two properties come out
 of that one rule.  Each service thread lands on a core of its own while cores last --
 two threads that spend their time waiting, one on queues and one on random DRAM, would
@@ -99,14 +100,23 @@ apart by its tag, never by its length.
 
 ### 2.1 `TAG_POINTS`: distinguished points, node to node
 
-**Bulk DP message.**  `3k` words, `1 <= k <= buffer_capacity` (default 1500 DPs, so at
-most 36 000 bytes).  Each triple is one `DP`:
+**Bulk DP message.**  `2k` words, `1 <= k <= buffer_capacity` (default 1500 DPs, so at
+most 24 000 bytes).  Each pair is one `DP`:
 
 | word | field | meaning |
 |---|---|---|
-| `3t+0` | `seed` | chain index `j` the trail was started from |
-| `3t+1` | `x` | the **full** endpoint (the distinguished point itself) |
-| `3t+2` | `len` | trail length |
+| `2t+0` | `x` | the **full** endpoint (the distinguished point itself) |
+| `2t+1` | `jl` | chain index `j` in the low `jbits`, trail length in the `lenbits` above it |
+
+**Why two words and not three.**  A 64-byte write-combining line holds four points
+instead of two, which is worth 2x on the producer-side staging a large node needs
+(`PROBLEM.md` §9.1) and cuts the message, both SPSC rings and the double buffers by a
+third.  The length is what has to give: it gets `lenbits = 64 - jbits` bits by default
+(`--dp-len-bits` narrows it, which is how the paths below are exercised at test scale),
+it is shipped as `min(len, len_sat)` where `len_sat = 2^lenbits - 1`, and `len_sat` on
+the wire therefore means **"at least that long, exact length unknown"**.  A trail always
+has `len >= 1`, so a packed word is never zero.  Recovering an unknown length costs the
+walker a re-walk of that trail, §3.2.
 
 Sent with `MPI_Isend` from `OutBuffers`, which keeps one double buffer per
 destination: `ready[dst]` accumulates, `outgoing[dst]` is in flight.  When `ready`
@@ -174,7 +184,7 @@ earlier.  Nothing depends on that order: both only feed the controller's decisio
 close the round, which is taken once per `service()` call after both receives have
 been drained.
 
-**Progress report** (node -> rank 0, `TAG_REPORT`, `N_COUNTERS == 16` words).  The
+**Progress report** (node -> rank 0, `TAG_REPORT`, `N_COUNTERS == 17` words).  The
 node's counters -- every thread's `ctr[N_COUNTERS]` summed (§3.4), in `enum counter`
 order (`comm.hpp`) -- as **deltas since the node's previous report**; the
 controller sums them into `reported[]`.  Only two of them act during the round:
@@ -190,6 +200,7 @@ alike.
 | `N_COLLISIONS` | collisions located | walkers |
 | `COLLIDING_LEN_MIN` | sum of the shorter trail length of each colliding pair | walkers |
 | `COLLIDING_LEN_MAX` | ... and of the longer one | walkers |
+| `N_MEASURE` | trails re-walked because their length had saturated (§3.2) | walkers |
 | `BAD_DP` | trail gave up before a distinguished point, walking or re-walked to be measured (§3.2) | walkers |
 | `BAD_COLLISION` | the two trails "collide" on the same value | walkers |
 | `BAD_WALK_ROBINHOOD` | one trail is a suffix of the other | walkers |
@@ -240,7 +251,7 @@ All on `mpi_comm`, all issued by thread 0, all `MPI_UINT64_T` unless stated.
 | driver `mitm::init`, if the seed was not given | `MPI_Bcast` | 1 word: PRNG seed (this is in `examples/driver.hpp`, not the library) | 0 |
 | `run()`, before the team exists | `MPI_Bcast` | 3 words: `x`, `y`, `mixf(x, y)`; every rank asserts it computes the same value | 0 |
 | start of every round | `MPI_Bcast` | 3 words: `i` (function version), `root_seed`, `stop` | 0 |
-| end of every round | `MPI_Reduce`, `MPI_SUM` | `N_COUNTERS == 16` words: the node's `ctr` arrays summed over its threads, in `enum counter` order (the layout of a report, totals instead of deltas) | 0 |
+| end of every round | `MPI_Reduce`, `MPI_SUM` | `N_COUNTERS == 17` words: the node's `ctr` arrays summed over its threads, in `enum counter` order (the layout of a report, totals instead of deltas) | 0 |
 | end of every round | `MPI_Reduce`, `MPI_MAX` | `HLL_REGISTERS == 65 536` `MPI_UINT8_T`: the node's HyperLogLog of this round's collisions (its walkers' arrays merged once every one of them is quiescent) | 0 |
 | after the last round | `MPI_Bcast` | 4 words: `found`, `i`, `x0`, `x1` | 0 |
 
@@ -259,7 +270,7 @@ startup.  The per-round ones are reached only after every node has finished its 
 | `ThreadContext::ctr` | the thread (the comm thread's own drops in `ctx[0]`) | comm | plain `u64[N_COUNTERS]`, no atomics, see §3.4 | | |
 | `SharedContext::i`, `root_seed`, `stop` | comm (thread 0) | everyone | plain `u64`, published by an OpenMP barrier | | |
 | `ThreadContext::hll` | the walker itself | comm, after the round | plain `u8[HLL_REGISTERS]`, no atomics, see §3.4 | | never full |
-| `SharedContext::shards[r]` | inserter `r` | inserter `r` | `PcsDict`: built, probed and flushed by its inserter alone | `w_shard` slots | a dictionary: a slot is overwritten by a trail at least as long (`pop_insert`) |
+| `SharedContext::shards[r]` | inserter `r` | inserter `r` | `PcsDict`: built, probed and flushed by its inserter alone | `w_shard` slots | a dictionary: a slot is overwritten by a trail at least as long (`pop_insert`), a trail of unknown length counting as the longest |
 | `SharedContext::golden` | any walker | comm | mutex + `atomic<bool>` flag | | first one wins |
 
 Where state lives, per rank: private to a worker thread and never touched by the comm
@@ -309,9 +320,18 @@ its own `SharedContext::coll_q[r]`, on a dictionary hit:
 | field | meaning |
 |---|---|
 | `i` | function version; `service_collision` asserts it equals the current round's |
-| `seed0`, `len0` | the incoming point's chain index and trail length |
-| `end` | the shared endpoint, as the dictionary key `x / n_inserters` |
-| `seed1`, `len1_maybe` | the point already in the slot; `len1_maybe == 0` means the stored length had saturated (8 bits), so the walker re-walks that trail to recover its length |
+| `seed0`, `len0_maybe` | the incoming point's chain index and trail length; `len0_maybe == 0` means the length had saturated **on the wire** (§2.1) |
+| `end` | the shared endpoint, in full: what a re-walked trail must reach |
+| `seed1`, `len1_maybe` | the point already in the slot; `len1_maybe == 0` means the stored length had saturated (8 bits) |
+
+**Either length can be unknown, or both.**  A slot holds 8 bits of length, the wire
+holds `lenbits`, and `0` means "unknown" on both sides -- free as a marker because a
+trail's length is at least 1.  A length that saturated on the wire is stored as unknown
+whatever the 8-bit field could have held, so the two are consistent: the dictionary never
+reports an exact length it does not have.  The walker recovers an unknown length by
+re-walking that trail to its distinguished point, which must be `end` and must be reached
+within `dp_max_it` steps; `N_MEASURE` counts the re-walks, `BAD_DP` and
+`BAD_WALK_NONCOLLIDING` the two ways one fails.
 
 **One queue per inserter, and candidates cross it in runs.**  Collisions are not rare
 events: at `beta = 8` a fair fraction of every probe hits, so the queue carries a fixed
@@ -334,16 +354,20 @@ a walker with `vlen > 1` keeps `vlen/2` candidates in flight in a `VecResolver` 
 steps them all with a single `vmixf`.  A candidate walks its two chains through three
 phases, one lane per chain that is moving:
 
-| phase | lanes | what it does |
-|---|---|---|
-| `MEASURE` | 1 | only when `len1_maybe == 0`: re-walk chain 1 to its distinguished point to learn its length, chain 0 parked at its start.  Gives up after `dp_max_it` steps (`BAD_DP`), and abandons the candidate if the endpoint is not the key the dictionary hit on (`BAD_WALK_NONCOLLIDING`) |
-| `ALIGN` | 1 | step the longer chain until both are the same distance from their shared endpoint; the other chain stays parked at its start and costs no lane |
-| `MARCH` | 2 | step both and compare, until they meet (the collision) or the shorter trail runs out (`BAD_WALK_NONCOLLIDING`).  Equal points on entry mean one trail is a suffix of the other (`BAD_WALK_ROBINHOOD`) |
+| phase | what it does |
+|---|---|
+| `MEASURE` | entered when either length is unknown: re-walk that chain -- or both at once -- to its distinguished point to learn its length.  A chain gives up after `dp_max_it` steps (`BAD_DP`), and abandons the candidate if it lands on a point other than `end` (`BAD_WALK_NONCOLLIDING`).  A chain that arrives first simply stops being committed while the other finishes |
+| `ALIGN` | rewind both chains and step the longer one until both are the same distance from their shared endpoint; the other waits at its start |
+| `MARCH` | step both and compare, until they meet (the collision) or the shorter trail runs out (`BAD_WALK_NONCOLLIDING`).  Equal points on entry mean one trail is a suffix of the other (`BAD_WALK_ROBINHOOD`) |
 
-`MEASURE` and `ALIGN` hold one lane and `MARCH` two, so `vlen/2` candidates never ask
-for more than `vlen` lanes and the lane pool cannot run dry.  Recovering an unknown
-length by re-walking the trail rather than recording it costs a few evaluations and
-bounds what a lane needs to hold.  `N_EVAL` counts the evaluations a one-at-a-time
+**A busy slot owns two lanes from `fill()` to `release()`**, whatever phase it is in, so
+`n_free == 2 * (nslots - n_busy)` at all times and an empty slot always finds its pair:
+with `nslots == vlen/2` the pool cannot run dry.  A chain that is not moving is still
+stepped by `vmixf`, its lane simply not committed -- which costs nothing, since a step
+is a full-width `vmixf` however many lanes are live.  Every length is exact by the time
+`ALIGN` begins, so the march's step budget `min(len0, len1)` is never zero.  Recovering
+an unknown length by re-walking the trail rather than recording it costs a few
+evaluations and bounds what a lane needs to hold.  `N_EVAL` counts the evaluations a one-at-a-time
 resolver would have made, not the lanes spent, so it stays comparable across the two
 paths; the idle lanes are the price of the batch and about a third of them are idle.
 
@@ -356,7 +380,13 @@ parked candidate holds nothing but its own two chain indices, so parking it is f
 
 A problem with `vlen == 1` has no vector implementation to batch: its walkers resolve
 one candidate at a time, in `resolve_collision`.  They draw from the same private run,
-which lives in the `VecResolver` for both paths.
+which lives in the `VecResolver` for both paths.  That path makes the opposite trade on
+an unknown length: `walk_recorded()` **records** the trail it re-walks, in one buffer of
+`dp_max_it + 1` points owned by the walker thread, so its march reads the recorded chain
+and costs one evaluation per step instead of two.  It records the chain whose length is
+unknown and steps the other; when both are unknown, `measure_trail()` re-walks the
+stepped one first, without recording it, because `walk_recorded()` has to know how far to
+step it.  The march is bounded by the shorter trail, exactly as `MARCH` is.
 
 ### 3.3 Per-thread wind-down state
 
@@ -443,8 +473,10 @@ comm:      RUNNING -> COLLECTING -> FLUSHING -> WAITING -> DRAINING_INSERTERS ->
 1. The driver calls `MPI_Init_thread(MPI_THREAD_FUNNELED)`; `run()` refuses a lower
    level.  Every rank must use the same PRNG seed (the driver broadcasts it).
 2. `run()`, on the main thread: `Parameters` is built on every rank from identical
-   inputs (rank and size come from `MPI_Comm_rank/size`); it loads the hwloc topology
-   once, to lay out `thread_cpu` over the NUMA nodes of the affinity mask (§1).  Then
+   inputs (rank and size come from `MPI_Comm_rank/size`).  Its `Placement` member
+   (`placement.hpp`, which owns everything in §1) is built first: it loads the hwloc
+   topology once, cuts the affinity mask into groups and fills `thread_cpu` and
+   `thread_group`, and resolves `walkers_per_node` when the user left it at 0.  Then
    the engine's `MPI_Bsend` buffer (§2.2) is attached, as a local of `run()`: MPI has one per
    process, so whatever the caller had attached is detached first --
    `MPI_Buffer_detach` waits for that buffer's pending sends -- and remembered, to be
@@ -545,7 +577,7 @@ comm thread (sender):  node = x % n_nodes
 deliver_local()   <-----------------  comm thread (receiver): poll_incoming()
    |  slot = (x / n_nodes) % inserters_per_node, SPSC
    v
-inserter r:  key = x / n_inserters, probe the shard
+inserter r:  key = x / n_inserters, unpack (j, len) from jl, probe the shard
    |  hit: CollisionCandidate, staged in a private run of 64
    v
 coll_q[r]  -->  a walker of group r: takes a run, then vlen/2 at a time,

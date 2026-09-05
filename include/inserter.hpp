@@ -46,7 +46,8 @@ public:
 
 	/*
 	 * Probe-and-insert: the (chain index, length) already at this endpoint's slot, if its key matches;
-	 * length 0 == it had saturated.  A slot is overwritten only by a trail at least as long.
+	 * length 0 == it had saturated.  A slot is overwritten only by a trail at least as long.  `len0`
+	 * arrives saturated by the wire format already, so the clamp below only narrows 8 bits further.
 	 */
 	optional<pair<u64, u64>> pop_insert(u64 end, u64 start, u64 len0)
 	{
@@ -92,6 +93,7 @@ inline void inserter_thread(ThreadContext &ctx, const Parameters &params, Shared
 	PcsDict &dict = *shared.shards[inserter_index];
 	CollisionQueue &coll_q = *shared.coll_q[inserter_index];
 	u64 *ctr = ctx.ctr;
+	u64 jmask = make_mask(params.jbits);
 	static const size_t BATCH = 64;
 	DP staging[BATCH];
 	CollisionCandidate pending[BATCH];    /* hits waiting for the run to be handed over */
@@ -103,14 +105,19 @@ inline void inserter_thread(ThreadContext &ctx, const Parameters &params, Shared
 			for (size_t t = 0; t < k; t++) {
 				const DP &p = staging[t];
 				u64 key = p.x / params.n_inserters;
+				u64 seed0 = p.jl & jmask;
+				u64 len = (p.jl >> params.jbits) & params.len_sat;
+				u64 len0_maybe = (len == params.len_sat) ? 0 : len;
+				/* unknown on the wire stays unknown in the slot, whatever the 8-bit field could hold */
+				u64 dict_len = len0_maybe ? len0_maybe : 0xffffffffffffffffull;
 				ctr[N_PROBE] += 1;
-				auto hit = dict.pop_insert(key, p.seed, p.len);
+				auto hit = dict.pop_insert(key, seed0, dict_len);
 				if (not hit) {
 					ctr[BAD_PROBE] += 1;
 					continue;
 				}
 				auto [seed1, len1_maybe] = *hit;
-				pending[n_pending] = {shared.i, p.seed, p.len, key, seed1, len1_maybe};
+				pending[n_pending] = {shared.i, seed0, len0_maybe, p.x, seed1, len1_maybe};
 				n_pending += 1;
 				if (n_pending == BATCH) {
 					ctr[DROP_COLL] += n_pending - coll_q.push_bulk(pending, n_pending);
