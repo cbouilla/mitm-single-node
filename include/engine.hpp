@@ -56,13 +56,28 @@ public:
 	bool golden_sent = false;
 	bool round_over = false;           /* our TAG_END_ROUND has arrived */
 
+	/*
+	 * A lossless scheme's backlog (Scheme::LOSSLESS, PROTOCOL.md §5): what found its channel full waits
+	 * here and is retried first on the next turn, instead of being dropped.  The carry holds at most one
+	 * batch, because nothing new is popped while it is not empty; a received buffer waits in `in_ready`
+	 * until every point of it is delivered, and is reposted only then.  A dropping scheme leaves all of
+	 * this empty, so the drain tests that read it (§4.5, steps 2 and 5) cost it nothing.
+	 */
+	std::vector<Point> carry;          /* points popped from a producer ring that found their channel full */
+	size_t carry_n = 0;
+	std::vector<int> in_ready;         /* received buffers not yet fully delivered: a ring of indices into in_data */
+	std::vector<int> in_count;         /* words received into each buffer */
+	size_t in_ready_head = 0;          /* the oldest */
+	size_t in_ready_n = 0;
+	size_t in_off = 0;                 /* how far the oldest has been delivered, in words */
+
 	CommThread(const Params &params, PRNG &prng, SharedContext<Scheme> &shared)
 		: params(params), prng(prng), shared(shared), ctx(shared.ctx),
 		  outbuf(params.mpi_comm, params.n_nodes, params.buffer_capacity),
 		  in_cap(POINT_WORDS * params.buffer_capacity), in_data(params.n_in_buffers),
 		  in_req(params.n_in_buffers, MPI_REQUEST_NULL),
 		  in_done_idx(params.n_in_buffers), in_done_st(params.n_in_buffers),
-		  controller(params)
+		  controller(params), carry(64), in_ready(params.n_in_buffers), in_count(params.n_in_buffers, 0)
 	{
 		bucket.resize((size_t) params.dicts_per_node * BUCKET_CAP);
 		bucket_n.assign(params.dicts_per_node, 0);
@@ -80,23 +95,31 @@ public:
 	 * A point is staged in its destination shard's bucket and handed to the dict thread in runs, never
 	 * one at a time: a push per point is one release store on a line the consumer is spinning on, and
 	 * one sweep of the producer queues scatters over every shard of the node, so each ring's lines
-	 * ping-pong between the two cores once per point (PROBLEM.md §3, §5.C).  A bucket never outlives
-	 * the call that filled it -- route_producer_queues() and poll_incoming() both flush before
-	 * returning -- so the drain of PROTOCOL.md §4.5 sees exactly what it did before.
+	 * ping-pong between the two cores once per point (PROBLEM.md §3, §5.C).  For a dropping scheme a
+	 * bucket never outlives the call that filled it -- route_producer_queues() and poll_incoming() both
+	 * flush before returning; a lossless one keeps what did not fit in the ring, and the drain waits for
+	 * the buckets to empty (PROTOCOL.md §3.1, §4.5).
 	 */
 	static constexpr size_t BUCKET_CAP = 128;             /* points staged per shard */
 	std::vector<Point> bucket;                            /* dicts_per_node runs of BUCKET_CAP */
 	std::vector<size_t> bucket_n;                         /* points staged for each shard */
 
-	/* hand shard `slot`'s staged run to its dict thread, dropping whatever did not fit */
+	/* hand shard `slot`'s staged run to its dict thread.  What did not fit is dropped, or kept for the next turn */
 	void flush_bucket(int slot)
 	{
 		size_t n = bucket_n[slot];
 		if (n == 0)
 			return;
-		size_t k = ctx[1 + slot]->q->push_bulk(&bucket[slot * BUCKET_CAP], n);   /* dict thread `slot` is thread 1 + slot */
-		ctx[0]->ctr[Scheme::DROP_DICTQ] += n - k;
-		bucket_n[slot] = 0;
+		Point *run = &bucket[slot * BUCKET_CAP];
+		size_t k = ctx[1 + slot]->q->push_bulk(run, n);          /* dict thread `slot` is thread 1 + slot */
+		if constexpr (Scheme::LOSSLESS) {
+			for (size_t t = k; t < n; t++)
+				run[t - k] = run[t];
+			bucket_n[slot] = n - k;
+		} else {
+			ctx[0]->ctr[Scheme::DROP_DICTQ] += n - k;
+			bucket_n[slot] = 0;
+		}
 	}
 
 	void flush_local()
@@ -105,19 +128,59 @@ public:
 			flush_bucket(slot);
 	}
 
-	/* stage a point for the dict thread that owns its shard, on this node */
-	void deliver_local(const Point &p)
+	/* stage a point for the dict thread that owns its shard, on this node.  false == bucket and ring both full */
+	bool deliver_local(const Point &p)
 	{
 		int slot = (int) ((p.key / params.n_nodes) % params.dicts_per_node);
-		if (bucket_n[slot] == BUCKET_CAP)
+		if (bucket_n[slot] == BUCKET_CAP) {
 			flush_bucket(slot);
+			if (bucket_n[slot] == BUCKET_CAP)
+				return false;
+		}
 		bucket[slot * BUCKET_CAP + bucket_n[slot]] = p;
 		bucket_n[slot] += 1;
+		return true;
 	}
 
-	/* pull whatever the producer threads have produced and route it */
+	/* route one point, to a local bucket or to an outgoing buffer.  false == its channel is full */
+	bool place(const Point &p)
+	{
+		int dst = (int) (p.key % params.n_nodes);
+		if (dst == params.rank)
+			return deliver_local(p);
+		return outbuf.push(p, dst);
+	}
+
+	/* is anything received or staged still waiting for a dict ring?  Always false for a dropping scheme */
+	bool local_pending()
+	{
+		if (in_ready_n > 0)
+			return true;
+		for (int slot = 0; slot < params.dicts_per_node; slot++)
+			if (bucket_n[slot] > 0)
+				return true;
+		return false;
+	}
+
+	/*
+	 * Pull whatever the producer threads have produced and route it.  A lossless scheme first retries
+	 * what the last turn could not place -- the held buckets, then the carry -- and pops nothing new
+	 * while the carry is not empty; a batch that stalls ends the sweep and the other rings wait a turn.
+	 */
 	bool route_producer_queues()
 	{
+		if constexpr (Scheme::LOSSLESS) {
+			flush_local();
+			size_t kept = 0;
+			for (size_t t = 0; t < carry_n; t++)
+				if (not place(carry[t]))
+					carry[kept++] = carry[t];
+			carry_n = kept;
+			if (carry_n > 0) {
+				ctx[0]->ctr[Scheme::STALL_OUT] += 1;
+				return false;
+			}
+		}
 		Point batch[64];
 		bool moved = false;
 		for (int s = 0; s < params.producers_per_node; s++) {
@@ -125,42 +188,72 @@ public:
 			size_t k = ctx[t]->q->pop_bulk(batch, 64);
 			if (k > 0)
 				moved = true;
-			for (size_t t = 0; t < k; t++) {
-				int dst = (int) (batch[t].key % params.n_nodes);
-				if (dst == params.rank)
-					deliver_local(batch[t]);
-				else if (not outbuf.push(batch[t], dst))
-					ctx[0]->ctr[Scheme::DROP_OUT] += 1;
+			for (size_t u = 0; u < k; u++) {
+				if (place(batch[u]))
+					continue;
+				if constexpr (Scheme::LOSSLESS)
+					carry[carry_n++] = batch[u];
+				else
+					ctx[0]->ctr[Scheme::DROP_OUT] += 1;   /* a bucket always takes a point here: a remote refusal */
 			}
+			if constexpr (Scheme::LOSSLESS)
+				if (carry_n > 0)
+					break;
 		}
 		flush_local();
 		return moved;
 	}
 
-	/* take delivery of whatever arrived over MPI, and repost each completed receive */
+	/* post buffer k's receive again */
+	void repost(int k)
+	{
+		MPI_Irecv(in_data[k].data(), in_cap, MPI_UINT64_T, MPI_ANY_SOURCE, TAG_POINTS, params.mpi_comm, &in_req[k]);
+	}
+
+	/*
+	 * Take delivery of whatever arrived over MPI, oldest buffer first, and repost each receive once its
+	 * buffer is fully delivered.  A sentinel is counted at once.  A lossless scheme's delivery stops at
+	 * a point whose dict ring is full and resumes there on the next turn, which is why the WAITING exit
+	 * also asks for every received buffer to be delivered (PROTOCOL.md §4.5, §5).
+	 */
 	void poll_incoming()
 	{
 		int outcount = 0;
 		MPI_Testsome(in_req.size(), in_req.data(), &outcount, in_done_idx.data(), in_done_st.data());
-		if (outcount == MPI_UNDEFINED || outcount <= 0)
-			return;
-
-		for (int t = 0; t < outcount; t++) {
-			int k = in_done_idx[t];
-			int count = 0;
-			MPI_Get_count(&in_done_st[t], MPI_UINT64_T, &count);
-			if (count == 0) {
-				n_sentinels += 1;             /* that node has finished the round */
-			} else {
-				for (int off = 0; off + POINT_WORDS <= count; off += POINT_WORDS) {
-					Point p = {in_data[k][off], in_data[k][off + 1]};
-					deliver_local(p);
+		if (outcount != MPI_UNDEFINED)
+			for (int t = 0; t < outcount; t++) {
+				int k = in_done_idx[t];
+				MPI_Get_count(&in_done_st[t], MPI_UINT64_T, &in_count[k]);
+				if (in_count[k] == 0) {
+					n_sentinels += 1;             /* that node has finished the round */
+					repost(k);
+				} else {
+					in_ready[(in_ready_head + in_ready_n) % in_ready.size()] = k;
+					in_ready_n += 1;
 				}
 			}
-			MPI_Irecv(in_data[k].data(), in_cap, MPI_UINT64_T, MPI_ANY_SOURCE, TAG_POINTS,
-			          params.mpi_comm, &in_req[k]);
+
+		while (in_ready_n > 0) {
+			int k = in_ready[in_ready_head];
+			bool stalled = false;
+			for (; in_off + POINT_WORDS <= (size_t) in_count[k]; in_off += POINT_WORDS) {
+				Point p = {in_data[k][in_off], in_data[k][in_off + 1]};
+				if (not deliver_local(p)) {
+					stalled = true;
+					break;
+				}
+			}
+			if (stalled)
+				break;
+			repost(k);
+			in_ready_head = (in_ready_head + 1) % in_ready.size();
+			in_ready_n -= 1;
+			in_off = 0;
 		}
 		flush_local();
+		if constexpr (Scheme::LOSSLESS)
+			if (local_pending())
+				ctx[0]->ctr[Scheme::STALL_IN] += 1;
 	}
 
 	/*
@@ -296,7 +389,7 @@ public:
 				break;
 
 			case COLLECTING:                                     /* step 2 */
-				if (all_in_state(PRODUCER, HELD) && not moved && producer_queues_empty())
+				if (all_in_state(PRODUCER, HELD) && not moved && producer_queues_empty() && carry_n == 0)
 					st = FLUSHING;
 				break;
 
@@ -308,7 +401,7 @@ public:
 				break;
 
 			case WAITING:                                        /* steps 5, 6 */
-				if (n_sentinels == params.n_nodes) {
+				if (n_sentinels == params.n_nodes && not local_pending()) {
 					set_state(DICT, DRAIN);
 					st = DRAINING_DICTS;
 				}

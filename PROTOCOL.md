@@ -132,8 +132,9 @@ producer a re-walk of that trail, §3.2.
 Sent with `MPI_Isend` from `OutBuffers`, which keeps one double buffer per
 destination: `ready[dst]` accumulates, `outgoing[dst]` is in flight.  When `ready`
 is full and the previous send to that node has not completed, the point is
-**dropped** (the comm thread tallies it, `DROP_OUT`), never blocked on.  A buffer is
-never sent empty.  An `Isend` is tested only when its slot is wanted (`rotate()`) and
+**refused**, never blocked on: a dropping scheme (PCS) loses it and tallies `DROP_OUT`,
+a lossless scheme holds it in the comm thread's carry and retries it next turn (§5).  A
+buffer is never sent empty.  An `Isend` is tested only when its slot is wanted (`rotate()`) and
 at the end of the round (`flush_poll()`); MPI progress is per process, so the receive
 tests of every loop turn drive the sends as well, and nothing polls them for their own
 sake.
@@ -141,7 +142,9 @@ sake.
 Received into a pool of `n_in_buffers` (default 8) always-posted `MPI_Irecv`s with
 `MPI_ANY_SOURCE` (`CommThread::in_req`, one buffer `in_data[k]` each).  The comm
 thread's `poll_incoming()` runs `MPI_Testsome` over the pool, scatters each completed
-buffer to the local dict queues, and reposts the receive.
+buffer, oldest first, to the local dict queues, and reposts its receive once the buffer
+is fully delivered -- at once for a dropping scheme; for a lossless one a point whose
+dict ring is full stops the delivery, and the buffer waits (§5).
 
 **End-of-round sentinel.**  A **zero-length** `TAG_POINTS` message, one to every node
 (itself included), sent with `MPI_Bsend` by `OutBuffers::send_sentinels()`.  Meaning:
@@ -279,8 +282,8 @@ startup.  The per-round ones are reached only after every node has finished its 
 
 | channel | producer | consumer | type | capacity (`Options`) | when full |
 |---|---|---|---|---|---|
-| `shared.ctx[R+1+w]->q` | producer `w` | comm | `SPSCQueue` of `DP` | `producer_queue_capacity` (1024) | producer drops the DP, tallies `DROP_PRODUCERQ` |
-| `shared.ctx[1+r]->q` | comm | dict thread `r` | `SPSCQueue` of `DP`, filled from a per-shard bucket (§3.1) | `dict_queue_capacity` (4096) | comm drops the points of the run that did not fit, tallies `DROP_DICTQ` |
+| `shared.ctx[R+1+w]->q` | producer `w` | comm | `SPSCQueue` of `Point` | `producer_queue_capacity` (1024) | PCS: the producer drops the DP, tallies `DROP_PRODUCERQ`.  A lossless scheme's producer waits for room (§5) |
+| `shared.ctx[1+r]->q` | comm | dict thread `r` | `SPSCQueue` of `Point`, filled from a per-shard bucket (§3.1) | `dict_queue_capacity` (4096) | PCS: comm drops the points of the run that did not fit, tallies `DROP_DICTQ`.  Lossless: they stay in the bucket (§5) |
 | (PCS) `shared.scheme.coll_q[r]` | dict thread `r` | the producers of group `r` | `CollisionQueue` (mutex, bounded), transferred in runs both ways | `coll_queue_capacity` (8192), **per dict thread** | dict thread drops what did not fit, tallies `DROP_COLL` |
 | `ThreadContext::state` | comm and the thread itself (thread 0's: itself alone) | the other side | `atomic<int>` | | see §3.3 |
 | `ThreadContext::ctr` | the thread (the comm thread's own drops in `ctx[0]`) | comm | plain `u64[N_COUNTERS]`, no atomics, see §3.4 | | |
@@ -324,11 +327,13 @@ each local point in a bucket of `CommThread::BUCKET_CAP` (128) per shard and cal
 call that filled it returns.  One sweep of the producer queues scatters over every shard
 of the node, so a push per point would make each ring's lines ping-pong between the
 producer and the consumer once per point; a run of `k` costs one store for `k` points.
-`push_bulk` pushes a prefix and reports how many fit, so a full queue still drops the
-tail of the run rather than blocking.  **The buckets never outlive the call that filled
-them**: `route_producer_queues()` and `poll_incoming()` each flush every bucket before
-returning, so no point is held across a turn of the comm loop and the drain (§4.5) is
-unchanged -- the phase tests of steps 2 and 6 see exactly what they saw before.
+`push_bulk` pushes a prefix and reports how many fit, so a full queue never blocks: a
+dropping scheme drops the tail of the run, a lossless one keeps it in the bucket.  **For a
+dropping scheme the buckets never outlive the call that filled them**:
+`route_producer_queues()` and `poll_incoming()` each flush every bucket before
+returning, so no point is held across a turn of the comm loop.  For a lossless scheme a
+bucket keeps what did not fit in its ring until the next turn, and the drain's `WAITING`
+exit waits for every bucket to be empty (§4.5, §5).
 
 ### 3.2 The collision queues (PCS)
 
@@ -549,12 +554,15 @@ comm:      RUNNING -> COLLECTING -> FLUSHING -> WAITING -> DRAINING_DICTS -> DRA
 node is quiescent; its body is the same in every phase (the phase is `ctx[0]->state`,
 §3.3), and only the exit test at the end of a turn depends on it:
 
-1. `route_producer_queues()`: pop up to 64 DPs from each producer queue; local points go
+1. `route_producer_queues()`: pop up to 64 points from each producer queue; local points go
    to `deliver_local()`, which stages them per shard (§3.1), remote ones to
-   `outbuf.push()`.  Every bucket is flushed before the call returns.
-2. `poll_incoming()`: `MPI_Testsome` on the receive pool; scatter completed buffers to
-   the dict queues through the same per-shard buckets, count sentinels, repost,
-   flush the buckets.
+   `outbuf.push()`.  Every bucket is flushed before the call returns.  A lossless scheme
+   first retries the held buckets and its carry, pops nothing while the carry is not
+   empty, and stops the sweep at the first batch that could not be placed in full (§5).
+2. `poll_incoming()`: `MPI_Testsome` on the receive pool; count the sentinels; scatter the
+   completed buffers, oldest first, to the dict queues through the same per-shard buckets,
+   and repost each once it is delivered; flush the buckets.  A lossless scheme's delivery
+   stops at a point whose ring is full and resumes there next turn (§5).
 3. `service_control()`: `MPI_Test` the end-of-round receive; if it completed, set
    `round_over` (and repost it for the next round).  On rank 0, then
    `controller.service()`: drain the solution receive (the first solution is kept and
@@ -624,9 +632,9 @@ airtight: no thread declares itself finished while something can still arrive fo
 | step | phase | passes when | then | guarantee once it passes |
 |---|---|---|---|---|
 | 1 | `RUNNING` | `round_over` | `state(PRODUCER) := HOLD`; phase `COLLECTING` | producers will stop producing at their next chunk boundary; they keep resolving collisions |
-| 2 | `COLLECTING` | every producer is `HELD`, this turn's `route_producer_queues()` moved nothing, and every producer queue has `head == tail` | phase `FLUSHING` | every DP this node produced this round has been routed (delivered locally or handed to `OutBuffers`).  The `HELD` load is acquire and a producer's last push happens-before its `HELD` store, so the queue test that follows sees it; a `HELD` producer never pushes again |
+| 2 | `COLLECTING` | every producer is `HELD`, this turn's `route_producer_queues()` moved nothing, every producer queue has `head == tail`, and the comm thread's carry is empty (always, for a dropping scheme) | phase `FLUSHING` | every DP this node produced this round has been routed (delivered locally or handed to `OutBuffers`).  The `HELD` load is acquire and a producer's last push happens-before its `HELD` store, so the queue test that follows sees it; a `HELD` producer never pushes again |
 | 3, 4 | `FLUSHING` | `outbuf.flush_poll()`: nothing left to send, every `Isend` completed | `outbuf.send_sentinels()`; phase `WAITING` | every DP bound for another node has left this node -- receiving went on throughout, so the peers we waited on could complete their sends too -- and every node (self included) will learn that we are done sending; the sentinel cannot overtake the data it follows |
-| 5, 6 | `WAITING` | `n_sentinels == n_nodes` | `state(DICT) := DRAIN`; phase `DRAINING_DICTS` | every node has finished sending to us, and everything they sent has been scattered to the dict queues.  Every node was sent its end-of-round signal before rank 0 could even enter its drain, so nobody is waiting on rank 0 here; it keeps digesting reports so the round's tallies cover what the others produced meanwhile |
+| 5, 6 | `WAITING` | `n_sentinels == n_nodes`, every received buffer is delivered and every bucket is empty (the last two always hold for a dropping scheme) | `state(DICT) := DRAIN`; phase `DRAINING_DICTS` | every node has finished sending to us, and everything they sent has been scattered to the dict queues.  Every node was sent its end-of-round signal before rank 0 could even enter its drain, so nobody is waiting on rank 0 here; it keeps digesting reports so the round's tallies cover what the others produced meanwhile |
 | 6, 7 | `DRAINING_DICTS` | every dict thread is `QUIESCENT` | `state(PRODUCER) := DRAIN`; phase `DRAINING_PRODUCERS` | every DP of the round has been probed and every dict thread's private run has been handed to its queue (§3.3); no new candidate can appear in any of them |
 | 7 | `DRAINING_PRODUCERS` | every producer is `QUIESCENT` | phase `QUIESCENT`: the epilogue (§4.6), then `comm_round()` returns | every producer has finished what it held.  PCS: every collision queue is empty, and so is every producer's private run and resolver batch, so every candidate of the round has been resolved; each queue has at least one producer of its own group to drain it, which is why fewer producers than dict threads is refused at startup (§1).  Doing this last is what keeps a golden pair found on the very last candidate from being lost |
 
@@ -697,6 +705,22 @@ output-buffer / dict-queue / collision-queue`):
 | control channel (end-of-round signals, reports, solutions) | **never** | buffered send, buffer sized for the bounded traffic plus slack (§2.2); a full buffer is a fatal error, not a drop |
 | sentinels | **never** | same buffer |
 | collectives | n/a | |
+
+**A lossless scheme (`Scheme::LOSSLESS`) loses nothing**: the same three point channels
+apply back-pressure instead.  A producer whose ring is full waits for room.  The comm
+thread pops from a producer ring only what it can place: what it cannot -- a remote node's
+`ready` buffer full with the previous send still in flight, or a local bucket full over a
+full dict ring -- goes to a small **carry**, retried first on the next turn, and nothing new
+is popped until the carry is empty, so it never holds more than one batch.  A received
+buffer whose delivery stops at a full dict ring waits, undelivered points and all, and is
+reposted only once it is delivered; a bucket keeps what did not fit in its ring.  The loop
+body runs on throughout -- receiving, the control channel, the golden pair -- which is what
+keeps two stalled nodes live, exactly as below; and the drain asks for an empty carry at
+step 2, and for every received buffer delivered and every bucket empty at step 5 (§4.5).
+Two counters of the scheme, `STALL_OUT` and `STALL_IN`, count the comm thread's turns that
+ended with a carry, and with a pending delivery.  No deadlock is possible: producers wait
+on their comm thread, comm threads wait on dict rings and on remote receive pools, and a
+dict thread waits on nobody -- it only consumes.
 
 **What is enforced per round.**
 
@@ -782,7 +806,7 @@ dictionary slot means, or when a search is over.
 | `enum counter`, `N_COUNTERS`, `PACING` | its tallies -- the report and reduction layout -- and the one that paces the reports | 17 counters, `N_DP` |
 | `ThreadStats`, `RoundStats` | statistics beyond the counters: a thread's, and the round's with `collect()`, `reduce()`, `fold()` (§3.4, §4.6) | a producer's HyperLogLog; the merged registers |
 | `Shared` | state hung on the `SharedContext` | the collision queues (§3.2) |
-| `LOSSLESS`, `DROP_OUT`, `DROP_DICTQ` | the overflow policy, and the comm thread's drop tallies (§5) | drops |
+| `LOSSLESS`; `DROP_OUT`, `DROP_DICTQ` or `STALL_OUT`, `STALL_IN` | the overflow policy (§5), and the comm thread's two tallies: dropped points for a dropping scheme, stalled turns for a lossless one | drops |
 | `producer_per_dict` (to `Parameters`) | whether `Placement` must give every dict thread a producer (§1) | yes |
 | `next_header()` | rank 0's next header and `stop`, from the previous ones (§4.2) | a fresh `i` and `root_seed` |
 | `build_dict()`, `after_round()` | a dict thread's shard, built once pinned (§4.1); what it does after the epilogue barrier (§4.6) | shard and collision queue; `flush()` |
