@@ -10,7 +10,8 @@ int main(int argc, char* argv[])
     u64 ram = 0;         // RAM per node for the dictionary (--ram, mandatory)
     int n = 56;
     u64 seed = 1337;
-    mitm::init(argc, argv, opts, ram, n, seed);
+    std::string engine = "pcs";   // --engine: the search scheme
+    mitm::init(argc, argv, opts, ram, n, seed, engine);
 
     mitm::PRNG prng(seed);
     mitm::DoubleDES_Problem pb(n, prng);

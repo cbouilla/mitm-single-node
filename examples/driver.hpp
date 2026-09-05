@@ -5,6 +5,7 @@
 #include <getopt.h>
 #include <err.h>
 #include <cstdlib>
+#include <string>
 
 #include "tools.hpp"
 #include "parameters.hpp"
@@ -20,6 +21,7 @@ static void usage(const char *argv0)
 {
 	printf("usage: %s --ram <bytes> [options]\n\n", argv0);
 	printf("  --ram B          RAM for the dictionary, per node (accepts 512M, 4G, ...).  MANDATORY\n");
+	printf("  --engine S       the search scheme: pcs (default) or direct\n");
 	printf("  --n BITS         problem size.  Small == easy\n");
 	printf("  --seed S         PRNG seed.  0 == draw a fresh one from /dev/urandom\n");
 	printf("  --difficulty T   proportion theta of distinguished points.  Default: auto\n");
@@ -46,18 +48,19 @@ static void usage(const char *argv0)
 }
 
 /*
- * `nbytes_memory`, `n` and `seed` come in holding the driver's own defaults and are
+ * `nbytes_memory`, `n`, `seed` and `engine` come in holding the driver's own defaults and are
  * overwritten if the command line says so.  Everything else goes into `opts`.
  */
 static void process_command_line_options(int argc, char **argv, Options &opts,
-                                         u64 &nbytes_memory, int &n, u64 &seed)
+                                         u64 &nbytes_memory, int &n, u64 &seed, std::string &engine)
 {
-	enum {OPT_PRODUCER_QUEUE = 1000, OPT_DICT_QUEUE, OPT_COLL_QUEUE, OPT_COLL_PER_CHUNK,
+	enum {OPT_ENGINE = 999, OPT_PRODUCER_QUEUE = 1000, OPT_DICT_QUEUE, OPT_COLL_QUEUE, OPT_COLL_PER_CHUNK,
 	      OPT_BUFFER, OPT_IN_BUFFERS, OPT_CHUNK, OPT_CACHE_LEVEL, OPT_NO_BIND, OPT_DP_LEN_BITS,
 	      OPT_HELP};
 
 	struct option longopts[] = {
 		{"ram",                required_argument, NULL, 'r'},
+		{"engine",             required_argument, NULL, OPT_ENGINE},
 		{"n",                  required_argument, NULL, 'n'},
 		{"seed",               required_argument, NULL, 's'},
 		{"difficulty",         required_argument, NULL, 'd'},
@@ -85,6 +88,7 @@ static void process_command_line_options(int argc, char **argv, Options &opts,
 		switch (ch) {
 		case -1:                   return;
 		case 'r': nbytes_memory = human_parse(optarg);                   break;
+		case OPT_ENGINE:         engine = optarg;                                    break;
 		case 'n': n = std::stoi(optarg);                                 break;
 		case 's': seed = std::stoull(optarg, 0, 0);                      break;
 		case 'd': opts.theta = std::stof(optarg);                        break;
@@ -112,16 +116,19 @@ static void process_command_line_options(int argc, char **argv, Options &opts,
 
 /*
  * MPI_Init_thread(FUNNELED), the command line, verbose on rank 0 only, and one seed for every rank
- * (drawn by rank 0 and broadcast, if none was given).
+ * (drawn by rank 0 and broadcast, if none was given).  `engine` names the scheme the driver runs.
  */
-static void init(int argc, char **argv, Options &opts, u64 &nbytes_memory, int &n, u64 &seed)
+static void init(int argc, char **argv, Options &opts, u64 &nbytes_memory, int &n, u64 &seed,
+                 std::string &engine)
 {
 	int provided;
 	MPI_Init_thread(NULL, NULL, MPI_THREAD_FUNNELED, &provided);
 	if (provided < MPI_THREAD_FUNNELED)
 		errx(1, "MPI: this MPI does not provide MPI_THREAD_FUNNELED");
 
-	process_command_line_options(argc, argv, opts, nbytes_memory, n, seed);
+	process_command_line_options(argc, argv, opts, nbytes_memory, n, seed, engine);
+	if (engine != "pcs")
+		errx(1, "--engine %s: unknown scheme (pcs)", engine.c_str());
 
 	int rank;
 	MPI_Comm_rank(MPI_COMM_WORLD, &rank);

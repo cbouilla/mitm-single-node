@@ -8,7 +8,7 @@
 namespace mitm {
 
 /*
- * Lamport's single-producer / single-consumer ring of DPs: no mutex, no CAS, each side owns one index
+ * Lamport's single-producer / single-consumer ring of points: no mutex, no CAS, each side owns one index
  * and caches the other's (PROTOCOL.md §3.1).  Capacity rounds up to a power of two.  One between each
  * walker and the comm thread, one between the comm thread and each inserter.
  */
@@ -21,7 +21,7 @@ public:
 private:
 	size_t capacity;                           /* a power of two */
 	size_t mask;                               /* capacity - 1 */
-	std::vector<DP> buf;
+	std::vector<Point> buf;
 
 	alignas(64) size_t cached_head;            /* producer-private copy of head */
 	alignas(64) size_t cached_tail;            /* consumer-private copy of tail */
@@ -41,7 +41,7 @@ public:
 	{}
 
 	/* producer side.  Returns false if the queue is full (the caller drops the item). */
-	bool push(const DP &x)
+	bool push(const Point &x)
 	{
 		size_t t = tail.load(std::memory_order_relaxed);
 		if (t - cached_head == capacity) {
@@ -60,7 +60,7 @@ public:
 	 * line ping-pong between the two cores once per point (PROBLEM.md §3).  Returns how many were
 	 * pushed; the caller drops the rest.
 	 */
-	size_t push_bulk(const DP *in, size_t n)
+	size_t push_bulk(const Point *in, size_t n)
 	{
 		size_t t = tail.load(std::memory_order_relaxed);
 		size_t free = capacity - (t - cached_head);
@@ -78,7 +78,7 @@ public:
 	}
 
 	/* consumer side */
-	bool pop(DP &x)
+	bool pop(Point &x)
 	{
 		size_t h = head.load(std::memory_order_relaxed);
 		if (h == cached_tail) {
@@ -92,7 +92,7 @@ public:
 	}
 
 	/* consumer side.  Grab up to `max` items at once, amortizing the atomics. */
-	size_t pop_bulk(DP *out, size_t max)
+	size_t pop_bulk(Point *out, size_t max)
 	{
 		size_t h = head.load(std::memory_order_relaxed);
 		if (h == cached_tail) {

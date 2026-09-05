@@ -7,9 +7,9 @@
 #include <vector>
 
 #include "parameters.hpp"
-#include "comm.hpp"
+#include "pcs_common.hpp"
 
-namespace mitm {
+namespace mitm::pcs {
 
 /* The walker side: trails, the collision behind a dictionary hit, and the walker thread. */
 
@@ -24,10 +24,10 @@ inline bool is_distinguished_point(u64 x, u64 threshold)
  * True == it was the golden pair, already published.
  */
 template<class ProblemWrapper>
-bool retire_collision(const ProblemWrapper &wrapper, u64 ctr[], u8 hll[], SharedContext &shared,
+bool retire_collision(const ProblemWrapper &wrapper, u64 ctr[], u8 hll[], SharedContext<Scheme> &shared,
                       u64 seed0, u64 seed1, u64 x0, u64 x1, u64 len0, u64 len1)
 {
-	const u64 i = shared.i;
+	const u64 i = shared.header.i;
 	if (x0 == x1) {
 		ctr[BAD_COLLISION] += 1;
 		return false;
@@ -49,7 +49,7 @@ bool retire_collision(const ProblemWrapper &wrapper, u64 ctr[], u8 hll[], Shared
 	if (not wrapper.mix_good_pair(i, x0, x1))
 		return false;
 	printf("\nFound golden collision! i=%" PRIx64 " root_seed=%" PRIx64 " seed0=%" PRIx64
-	       ". Dict --> seed1=%" PRIx64 "\n", i, shared.root_seed, seed0, seed1);
+	       ". Dict --> seed1=%" PRIx64 "\n", i, shared.header.root_seed, seed0, seed1);
 	shared.set_golden(i, x0, x1);
 	return true;
 }
@@ -60,7 +60,7 @@ bool retire_collision(const ProblemWrapper &wrapper, u64 ctr[], u8 hll[], Shared
  * positive).  Trusts the lengths, not that the trails end at the same DP.
  */
 template<class ProblemWrapper>
-optional<pair<u64,u64>> walk(const ProblemWrapper &wrapper, u64 ctr[], const Parameters &params,
+optional<pair<u64,u64>> walk(const ProblemWrapper &wrapper, u64 ctr[], const Params &params,
 	u64 i, u64 x0, u64 len0, u64 x1, u64 len1)
 {
 	assert(not is_distinguished_point(x1, params.threshold));
@@ -99,7 +99,7 @@ optional<pair<u64,u64>> walk(const ProblemWrapper &wrapper, u64 ctr[], const Par
  * the chain reaches no distinguished point within dp_max_it steps, or reaches one other than `end`.
  */
 template<class ProblemWrapper>
-optional<u64> measure_trail(const ProblemWrapper &wrapper, u64 ctr[], const Parameters &params,
+optional<u64> measure_trail(const ProblemWrapper &wrapper, u64 ctr[], const Params &params,
 	u64 i, u64 x, u64 end)
 {
 	assert(not is_distinguished_point(x, params.threshold));
@@ -128,7 +128,7 @@ optional<u64> measure_trail(const ProblemWrapper &wrapper, u64 ctr[], const Para
  */
 template<class ProblemWrapper>
 optional<tuple<u64,u64,u64>> walk_recorded(const ProblemWrapper &wrapper, u64 ctr[],
-	const Parameters &params, u64 i, u64 x_step, u64 len_step, u64 x_rec, u64 end, u64 trail[])
+	const Params &params, u64 i, u64 x_step, u64 len_step, u64 x_rec, u64 end, u64 trail[])
 {
 	assert(not is_distinguished_point(x_step, params.threshold));
 	assert(not is_distinguished_point(x_rec, params.threshold));
@@ -187,11 +187,11 @@ optional<tuple<u64,u64,u64>> walk_recorded(const ProblemWrapper &wrapper, u64 ct
  * steps it and has to know how far.
  */
 template<class ProblemWrapper>
-void resolve_collision(const ProblemWrapper &wrapper, u64 ctr[], u8 hll[], const Parameters &params,
-                       SharedContext &shared, const CollisionCandidate &c, u64 trail[])
+void resolve_collision(const ProblemWrapper &wrapper, u64 ctr[], u8 hll[], const Params &params,
+                       SharedContext<Scheme> &shared, const CollisionCandidate &c, u64 trail[])
 {
-	const u64 i = shared.i;
-	const u64 root_seed = shared.root_seed;
+	const u64 i = shared.header.i;
+	const u64 root_seed = shared.header.root_seed;
 	u64 start0 = (root_seed + params.multiplier * c.seed0) & wrapper.out_mask;
 	u64 start1 = (root_seed + params.multiplier * c.seed1) & wrapper.out_mask;
 	u64 len0 = c.len0_maybe;
@@ -369,7 +369,7 @@ struct alignas(sizeof(u64) * ProblemWrapper::vlen) VecResolver {
 	 * One step of a chain re-walking to its distinguished point to recover its length.  False == the
 	 * candidate is gone and the slot has been released, so the caller must not touch it again.
 	 */
-	bool measure_chain(int s, int l, u64 &len, bool &measuring, const Parameters &params, u64 ctr[])
+	bool measure_chain(int s, int l, u64 &len, bool &measuring, const Params &params, u64 ctr[])
 	{
 		x[l] = y[l];
 		len += 1;
@@ -392,7 +392,7 @@ struct alignas(sizeof(u64) * ProblemWrapper::vlen) VecResolver {
 	}
 
 	/* start queued candidates in the empty slots.  Returns how many, so a caller can tell an empty queue */
-	int fill(const ProblemWrapper &wrapper, u64 ctr[], const Parameters &params, SharedContext &shared,
+	int fill(const ProblemWrapper &wrapper, u64 ctr[], const Params &params, SharedContext<Scheme> &shared,
 	         CollisionQueue &coll_q)
 	{
 		/* the lane budget: two lanes per busy slot, so an empty slot always finds its pair */
@@ -406,7 +406,7 @@ struct alignas(sizeof(u64) * ProblemWrapper::vlen) VecResolver {
 				break;                     /* nothing in hand and nothing queued */
 			CollisionCandidate c = pending[first++];
 			n_pending -= 1;
-			assert(c.i == shared.i);
+			assert(c.i == shared.header.i);
 			seed0[s] = c.seed0;
 			seed1[s] = c.seed1;
 			len0[s] = c.len0_maybe;            /* 0 == it saturated: MEASURE counts it up from there */
@@ -414,8 +414,8 @@ struct alignas(sizeof(u64) * ProblemWrapper::vlen) VecResolver {
 			measuring0[s] = (c.len0_maybe == 0);
 			measuring1[s] = (c.len1_maybe == 0);
 			end[s] = c.end;
-			start0[s] = (shared.root_seed + params.multiplier * c.seed0) & wrapper.out_mask;
-			start1[s] = (shared.root_seed + params.multiplier * c.seed1) & wrapper.out_mask;
+			start0[s] = (shared.header.root_seed + params.multiplier * c.seed0) & wrapper.out_mask;
+			start1[s] = (shared.header.root_seed + params.multiplier * c.seed1) & wrapper.out_mask;
 			assert(not is_distinguished_point(start0[s], params.threshold));
 			assert(not is_distinguished_point(start1[s], params.threshold));
 			lane0[s] = free_lane[--n_free];
@@ -440,10 +440,10 @@ struct alignas(sizeof(u64) * ProblemWrapper::vlen) VecResolver {
 	 * One vmixf over every lane, then one step of every slot.  N_EVAL counts the evaluations a scalar
 	 * resolver would have made, not the lanes burnt, so that it stays comparable across the two paths.
 	 */
-	void step(const ProblemWrapper &wrapper, u64 ctr[], u8 hll[], const Parameters &params,
-	          SharedContext &shared)
+	void step(const ProblemWrapper &wrapper, u64 ctr[], u8 hll[], const Params &params,
+	          SharedContext<Scheme> &shared)
 	{
-		wrapper.vmixf(shared.i, x, y);
+		wrapper.vmixf(shared.header.i, x, y);
 
 		for (int s = 0; s < nslots; s++) {
 			if (phase[s] == SLOT_MEASURE) {
@@ -483,7 +483,7 @@ struct alignas(sizeof(u64) * ProblemWrapper::vlen) VecResolver {
 };
 
 /* start chain k from the next chain index j (stepping by jinc) that is not itself a DP.  theta == 1: never returns */
-static void start_chain(const Parameters &params, u64 out_mask, u64 root_seed, u64 &j,
+static inline void start_chain(const Params &params, u64 out_mask, u64 root_seed, u64 &j,
                         u64 x[], u64 len[], u64 seed[], u64 jinc, int k)
 {
 	u64 start;
@@ -509,8 +509,8 @@ static void start_chain(const Parameters &params, u64 out_mask, u64 root_seed, u
  * PROTOCOL.md §3.2, §3.3.
  */
 template <class ProblemWrapper>
-void service_collisions(const ProblemWrapper &wrapper, u64 ctr[], u8 hll[], const Parameters &params,
-                        SharedContext &shared, CollisionQueue &coll_q,
+void service_collisions(const ProblemWrapper &wrapper, u64 ctr[], u8 hll[], const Params &params,
+                        SharedContext<Scheme> &shared, CollisionQueue &coll_q,
                         VecResolver<ProblemWrapper> &resolver, size_t budget, bool drain, u64 trail[])
 {
 	constexpr int vlen = ProblemWrapper::vlen;
@@ -521,7 +521,7 @@ void service_collisions(const ProblemWrapper &wrapper, u64 ctr[], u8 hll[], cons
 				return;
 			CollisionCandidate cand = resolver.pending[resolver.first++];
 			resolver.n_pending -= 1;
-			assert(cand.i == shared.i);
+			assert(cand.i == shared.header.i);
 			resolve_collision(wrapper, ctr, hll, params, shared, cand, trail);
 		}
 		return;
@@ -548,17 +548,17 @@ void service_collisions(const ProblemWrapper &wrapper, u64 ctr[], u8 hll[], cons
  * Wind-down: ctx.state, PROTOCOL.md §3.3.
  */
 template <class ProblemWrapper>
-void walker_thread(ThreadContext &ctx, const ProblemWrapper &wrapper, const Parameters &params,
-                   SharedContext &shared, int walker_index)
+void walker_thread(ThreadContext<Scheme> &ctx, const ProblemWrapper &wrapper, const Params &params,
+                   SharedContext<Scheme> &shared, int walker_index)
 {
 	constexpr int vlen = ProblemWrapper::vlen;
 	SPSCQueue &out = *ctx.q;
-	CollisionQueue &coll_q = *shared.coll_q[ctx.group];
+	CollisionQueue &coll_q = *shared.scheme.coll_q[ctx.group];
 	u64 *ctr = ctx.ctr;
-	u8 *hll = ctx.hll.data();
+	u8 *hll = ctx.scheme.hll.data();
 
-	const u64 i = shared.i;
-	const u64 root_seed = shared.root_seed;
+	const u64 i = shared.header.i;
+	const u64 root_seed = shared.header.root_seed;
 
 	int jbits = params.jbits;
 	u64 jmask = make_mask(jbits);
@@ -620,7 +620,7 @@ void walker_thread(ThreadContext &ctx, const ProblemWrapper &wrapper, const Para
 					ctr[N_DP] += 1;
 					ctr[N_POINTS_TRAILS] += len[k];
 					u64 l = std::min(len[k], params.len_sat);
-					DP p = {x[k], (seed[k] & jmask) | (l << jbits)};
+					Point p = {x[k], (seed[k] & jmask) | (l << jbits)};
 					if (not out.push(p))
 						ctr[DROP_PRODUCERQ] += 1;
 				}

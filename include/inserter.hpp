@@ -5,9 +5,9 @@
 
 #include "tools.hpp"
 #include "parameters.hpp"
-#include "comm.hpp"
+#include "pcs_common.hpp"
 
-namespace mitm {
+namespace mitm::pcs {
 
 /******************************* dictionary shard *****************************/
 
@@ -86,16 +86,16 @@ public:
  * so that many misses are outstanding at once).  Measured at about 5% on a laptop with a 256 MB
  * dictionary, not worth its ring buffer; retry on cluster hardware before dismissing it.
  */
-inline void inserter_thread(ThreadContext &ctx, const Parameters &params, SharedContext &shared,
+inline void inserter_thread(ThreadContext<Scheme> &ctx, const Params &params, SharedContext<Scheme> &shared,
                             int inserter_index)
 {
 	SPSCQueue &in = *ctx.q;
 	PcsDict &dict = *shared.shards[inserter_index];
-	CollisionQueue &coll_q = *shared.coll_q[inserter_index];
+	CollisionQueue &coll_q = *shared.scheme.coll_q[inserter_index];
 	u64 *ctr = ctx.ctr;
 	u64 jmask = make_mask(params.jbits);
 	static const size_t BATCH = 64;
-	DP staging[BATCH];
+	Point staging[BATCH];
 	CollisionCandidate pending[BATCH];    /* hits waiting for the run to be handed over */
 	size_t n_pending = 0;
 
@@ -103,10 +103,10 @@ inline void inserter_thread(ThreadContext &ctx, const Parameters &params, Shared
 		while (not in.empty()) {
 			size_t k = in.pop_bulk(staging, BATCH);
 			for (size_t t = 0; t < k; t++) {
-				const DP &p = staging[t];
-				u64 key = p.x / params.n_dicts;
-				u64 seed0 = p.jl & jmask;
-				u64 len = (p.jl >> params.jbits) & params.len_sat;
+				const Point &p = staging[t];
+				u64 key = p.key / params.n_dicts;
+				u64 seed0 = p.val & jmask;
+				u64 len = (p.val >> params.jbits) & params.len_sat;
 				u64 len0_maybe = (len == params.len_sat) ? 0 : len;
 				/* unknown on the wire stays unknown in the slot, whatever the 8-bit field could hold */
 				u64 dict_len = len0_maybe ? len0_maybe : 0xffffffffffffffffull;
@@ -117,7 +117,7 @@ inline void inserter_thread(ThreadContext &ctx, const Parameters &params, Shared
 					continue;
 				}
 				auto [seed1, len1_maybe] = *hit;
-				pending[n_pending] = {shared.i, seed0, len0_maybe, p.x, seed1, len1_maybe};
+				pending[n_pending] = {shared.header.i, seed0, len0_maybe, p.key, seed1, len1_maybe};
 				n_pending += 1;
 				if (n_pending == BATCH) {
 					ctr[DROP_COLL] += n_pending - coll_q.push_bulk(pending, n_pending);

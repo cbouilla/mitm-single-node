@@ -2,6 +2,7 @@
 #define MITM_ENGINE
 
 #include <cassert>
+#include <cstring>
 #include <mpi.h>
 #include <omp.h>
 #include <pthread.h>
@@ -15,8 +16,6 @@
 #include "parameters.hpp"
 #include "spsc.hpp"
 #include "comm.hpp"
-#include "walker.hpp"
-#include "inserter.hpp"
 #include "controller.hpp"
 
 namespace mitm {
@@ -27,14 +26,19 @@ namespace mitm {
 /*
  * Thread 0's object: all of the rank's MPI.  Routing, the receive pool, the control channel, the
  * round's state machine (comm_round), the end-of-round reductions and, on rank 0, the controller.
- * Built by run() on the main thread, before the team.  PROTOCOL.md §2 and §4.
+ * Built by run() on the main thread, before the team.  The scheme supplies its parameters, its
+ * counters and its overflow policy; the routing is the same for every scheme.  PROTOCOL.md §2 and §4.
  */
+template <class Scheme>
 class CommThread {
 public:
-	const Parameters &params;
+	using Params = typename Scheme::Params;
+	static constexpr int N = Scheme::N_COUNTERS;
+
+	const Params &params;
 	PRNG &prng;
-	SharedContext &shared;
-	std::vector<std::unique_ptr<ThreadContext>> &ctx;     /* == shared.ctx: n_threads, indexed by tid */
+	SharedContext<Scheme> &shared;
+	std::vector<std::unique_ptr<ThreadContext<Scheme>>> &ctx;   /* == shared.ctx: n_threads, indexed by tid */
 
 	OutBuffers outbuf;
 
@@ -47,15 +51,15 @@ public:
 	int n_sentinels = 0;                                  /* nodes done sending this round */
 
 	MPI_Request req_end_round = MPI_REQUEST_NULL;         /* the TAG_END_ROUND receive, always posted */
-	Controller controller;
+	Controller<Scheme> controller;
 
 	bool golden_sent = false;
 	bool round_over = false;           /* our TAG_END_ROUND has arrived */
 
-	CommThread(const Parameters &params, PRNG &prng, SharedContext &shared)
+	CommThread(const Params &params, PRNG &prng, SharedContext<Scheme> &shared)
 		: params(params), prng(prng), shared(shared), ctx(shared.ctx),
 		  outbuf(params.mpi_comm, params.n_nodes, params.buffer_capacity),
-		  in_cap(DP_WORDS * params.buffer_capacity), in_data(params.n_in_buffers),
+		  in_cap(POINT_WORDS * params.buffer_capacity), in_data(params.n_in_buffers),
 		  in_req(params.n_in_buffers, MPI_REQUEST_NULL),
 		  in_done_idx(params.n_in_buffers), in_done_st(params.n_in_buffers),
 		  controller(params)
@@ -81,7 +85,7 @@ public:
 	 * returning -- so the drain of PROTOCOL.md §4.5 sees exactly what it did before.
 	 */
 	static constexpr size_t BUCKET_CAP = 128;             /* points staged per shard */
-	std::vector<DP> bucket;                               /* dicts_per_node runs of BUCKET_CAP */
+	std::vector<Point> bucket;                            /* dicts_per_node runs of BUCKET_CAP */
 	std::vector<size_t> bucket_n;                         /* points staged for each shard */
 
 	/* hand shard `slot`'s staged run to its dict thread, dropping whatever did not fit */
@@ -91,7 +95,7 @@ public:
 		if (n == 0)
 			return;
 		size_t k = ctx[1 + slot]->q->push_bulk(&bucket[slot * BUCKET_CAP], n);   /* dict thread `slot` is thread 1 + slot */
-		ctx[0]->ctr[DROP_DICTQ] += n - k;
+		ctx[0]->ctr[Scheme::DROP_DICTQ] += n - k;
 		bucket_n[slot] = 0;
 	}
 
@@ -102,9 +106,9 @@ public:
 	}
 
 	/* stage a point for the dict thread that owns its shard, on this node */
-	void deliver_local(const DP &p)
+	void deliver_local(const Point &p)
 	{
-		int slot = (int) ((p.x / params.n_nodes) % params.dicts_per_node);
+		int slot = (int) ((p.key / params.n_nodes) % params.dicts_per_node);
 		if (bucket_n[slot] == BUCKET_CAP)
 			flush_bucket(slot);
 		bucket[slot * BUCKET_CAP + bucket_n[slot]] = p;
@@ -114,7 +118,7 @@ public:
 	/* pull whatever the producer threads have produced and route it */
 	bool route_producer_queues()
 	{
-		DP batch[64];
+		Point batch[64];
 		bool moved = false;
 		for (int s = 0; s < params.producers_per_node; s++) {
 			int t = 1 + params.dicts_per_node + s;              /* producer s is thread t */
@@ -122,11 +126,11 @@ public:
 			if (k > 0)
 				moved = true;
 			for (size_t t = 0; t < k; t++) {
-				int dst = (int) (batch[t].x % params.n_nodes);
+				int dst = (int) (batch[t].key % params.n_nodes);
 				if (dst == params.rank)
 					deliver_local(batch[t]);
 				else if (not outbuf.push(batch[t], dst))
-					ctx[0]->ctr[DROP_OUT] += 1;
+					ctx[0]->ctr[Scheme::DROP_OUT] += 1;
 			}
 		}
 		flush_local();
@@ -148,8 +152,8 @@ public:
 			if (count == 0) {
 				n_sentinels += 1;             /* that node has finished the round */
 			} else {
-				for (int off = 0; off + DP_WORDS <= count; off += DP_WORDS) {
-					DP p = {in_data[k][off], in_data[k][off + 1]};
+				for (int off = 0; off + POINT_WORDS <= count; off += POINT_WORDS) {
+					Point p = {in_data[k][off], in_data[k][off + 1]};
 					deliver_local(p);
 				}
 			}
@@ -179,29 +183,34 @@ public:
 	/******************* one round *******************/
 
 	/* the node's tallies as they stand: approximate mid-round, exact once every worker is QUIESCENT (§3.4) */
-	void snapshot(u64 sum[N_COUNTERS])
+	void snapshot(u64 sum[N])
 	{
 		#pragma omp flush
-		for (int k = 0; k < N_COUNTERS; k++)
+		for (int k = 0; k < N; k++)
 			sum[k] = 0;
 		for (int t = 0; t < params.n_threads; t++)
-			for (int k = 0; k < N_COUNTERS; k++)
+			for (int k = 0; k < N; k++)
 				sum[k] += ctx[t]->ctr[k];
 	}
 
-	/* the round header: drawn by rank 0, broadcast, stored in the SharedContext (PROTOCOL.md §4.2) */
-	void begin_round(u64 out_mask)
+	/*
+	 * The round header: the scheme's words plus `stop`, drawn by rank 0 from the previous header and
+	 * the controller's verdict, broadcast, stored in the SharedContext (PROTOCOL.md §4.2).
+	 */
+	template <class Wrapper>
+	void begin_round(const Wrapper &wrapper)
 	{
-		u64 msg[3];
+		constexpr int HW = sizeof(typename Scheme::Header) / sizeof(u64);
+		u64 msg[HW + 1];
 		if (params.rank == 0) {
-			msg[0] = prng.rand() & out_mask;     /* i */
-			msg[1] = prng.rand();                /* root_seed */
-			msg[2] = controller.stop;
+			u64 stop = controller.stop;
+			Scheme::next_header(params, wrapper, prng, shared.header, stop);
+			memcpy(msg, &shared.header, sizeof(shared.header));
+			msg[HW] = stop;
 		}
-		MPI_Bcast(msg, 3, MPI_UINT64_T, 0, params.mpi_comm);
-		shared.i = msg[0];
-		shared.root_seed = msg[1];
-		shared.stop = msg[2];
+		MPI_Bcast(msg, HW + 1, MPI_UINT64_T, 0, params.mpi_comm);
+		memcpy(&shared.header, msg, sizeof(shared.header));
+		shared.stop = msg[HW];
 
 		if (params.rank == 0 && not shared.stop)
 			controller.begin_round();
@@ -244,13 +253,7 @@ public:
 		double last_ping = wtime();
 		round_over = false;
 
-		u64 prev[N_COUNTERS] = {0};        /* the tallies at the previous report */
-
-		/* report by volume too: on a timer alone a short round overshoots beta*w and runs j past jbits */
-		u64 dp_report_threshold = params.points_per_version
-		                        / ((u64) params.reports_per_round * params.n_nodes);
-		if (dp_report_threshold < 1)
-			dp_report_threshold = 1;
+		u64 prev[N] = {0};                 /* the tallies at the previous report */
 		u64 poll_tick = 0;
 
 		for (;;) {
@@ -263,18 +266,20 @@ public:
 				golden_sent = true;
 			}
 
+			/* report by time, and by volume too: on a timer alone a short round overshoots (§2.2) */
 			if ((++poll_tick & 0xff) == 0) {
-				u64 cur[N_COUNTERS];
+				u64 cur[N];
 				snapshot(cur);
-				bool due = cur[N_DP] - prev[N_DP] >= dp_report_threshold || wtime() - last_ping >= params.ping_delay;
+				bool due = cur[Scheme::PACING] - prev[Scheme::PACING] >= params.report_points
+				        || wtime() - last_ping >= params.ping_delay;
 				if (due) {
 					last_ping = wtime();
-					u64 msg[N_COUNTERS];
-					for (int k = 0; k < N_COUNTERS; k++) {
+					u64 msg[N];
+					for (int k = 0; k < N; k++) {
 						msg[k] = cur[k] - prev[k];
 						prev[k] = cur[k];
 					}
-					MPI_Bsend(msg, N_COUNTERS, MPI_UINT64_T, 0, TAG_REPORT, params.mpi_comm);
+					MPI_Bsend(msg, N, MPI_UINT64_T, 0, TAG_REPORT, params.mpi_comm);
 				}
 			}
 
@@ -331,34 +336,42 @@ public:
 	/******************* end-of-round statistics *******************/
 
 	/*
-	 * The round's statistics, once every worker is QUIESCENT: merge the producers' HyperLogLogs, reduce
-	 * them (MAX) and the tallies (SUM) to rank 0, then zero everything round-scoped.  The reductions
-	 * block; every rank reaches them after its drain (PROTOCOL.md §4.6).
+	 * The round's statistics, once every worker is QUIESCENT: the tallies (SUM) and the scheme's own
+	 * statistics to rank 0, then every node's golden slot, so that a pair found during the drain is
+	 * never lost (PROTOCOL.md §4.6); then zero everything round-scoped.  The collectives block; every
+	 * rank reaches them after its drain.
 	 */
 	void end_round()
 	{
-		u64 sum[N_COUNTERS];
+		u64 sum[N];
 		snapshot(sum);
-		u8 hll[HLL_REGISTERS] = {};
-		for (int t = 0; t < params.n_threads; t++)
-			if (ctx[t]->role == PRODUCER)
-				hll_merge(hll, ctx[t]->hll.data());
+		typename Scheme::RoundStats stats;
+		stats.collect(ctx);                /* the producers' own statistics, merged and zeroed */
+
+		if (params.rank == 0)
+			MPI_Reduce(MPI_IN_PLACE, sum, N, MPI_UINT64_T, MPI_SUM, 0, params.mpi_comm);
+		else
+			MPI_Reduce(sum, NULL, N, MPI_UINT64_T, MPI_SUM, 0, params.mpi_comm);
+		stats.reduce(params.mpi_comm, params.rank);
+
+		/* the answer, exactly: (found, i, x0, x1) from every node; rank 0 keeps the first one found */
+		constexpr int GW = 1 + SOL_NWORDS;
+		u64 mine[GW] = {shared.golden_found.load(std::memory_order_acquire),
+		                shared.golden[SOL_I], shared.golden[SOL_X0], shared.golden[SOL_X1]};
+		std::vector<u64> every((params.rank == 0) ? GW * params.n_nodes : 0);
+		MPI_Gather(mine, GW, MPI_UINT64_T, every.data(), GW, MPI_UINT64_T, 0, params.mpi_comm);
 
 		if (params.rank == 0) {
-			MPI_Reduce(MPI_IN_PLACE, sum, N_COUNTERS, MPI_UINT64_T, MPI_SUM, 0, params.mpi_comm);
-			MPI_Reduce(MPI_IN_PLACE, hll, HLL_REGISTERS, MPI_UINT8_T, MPI_MAX, 0, params.mpi_comm);
-			controller.end_round(sum, hll);
-		} else {
-			MPI_Reduce(sum, NULL, N_COUNTERS, MPI_UINT64_T, MPI_SUM, 0, params.mpi_comm);
-			MPI_Reduce(hll, NULL, HLL_REGISTERS, MPI_UINT8_T, MPI_MAX, 0, params.mpi_comm);
+			for (int r = 0; r < params.n_nodes; r++)
+				if (every[GW * r])
+					controller.record(every[GW * r + 1 + SOL_I], every[GW * r + 1 + SOL_X0],
+					                  every[GW * r + 1 + SOL_X1]);
+			controller.end_round(sum, stats);
 		}
 
-		for (int t = 0; t < params.n_threads; t++) {
-			for (int k = 0; k < N_COUNTERS; k++)
+		for (int t = 0; t < params.n_threads; t++)
+			for (int k = 0; k < N; k++)
 				ctx[t]->ctr[k] = 0;
-			for (int k = 0; k < (int) ctx[t]->hll.size(); k++)
-				ctx[t]->hll[k] = 0;
-		}
 		n_sentinels = 0;
 	}
 
@@ -398,45 +411,43 @@ public:
 /******************* the whole computation *******************/
 
 /*
- * The one entry point of the engine.  Returns (i, x0, x1) --- the mixing function index and the two
- * colliding points --- or nothing if the search gave up after opts.max_versions rounds.  Threads pin
+ * The one entry point of the engine core, for any scheme.  Returns (i, x0, x1) --- the scheme's round
+ * word and the two colliding points --- or nothing if the search stopped without one.  Threads pin
  * before they allocate: first touch places each object on its owner's NUMA node (PROTOCOL.md §4.1).
  */
-template <class ProblemWrapper>
-optional<tuple<u64,u64,u64>> run(const ProblemWrapper &wrapper, u64 nbytes_memory,
-                                 const Options &opts, PRNG &prng)
+template <class Scheme, class Wrapper>
+optional<tuple<u64,u64,u64>> run(const Wrapper &wrapper, u64 nbytes_memory, const Options &opts, PRNG &prng)
 {
 	int provided;
 	MPI_Query_thread(&provided);
 	if (provided < MPI_THREAD_FUNNELED)
 		errx(1, "MPI: MPI_THREAD_FUNNELED is required (got %d).  Use MPI_Init_thread.", provided);
 
-	const Parameters params(opts, nbytes_memory, wrapper.n, wrapper.m);
+	const typename Scheme::Params params(opts, nbytes_memory, wrapper.n, wrapper.m);
 
 	/* The MPI_Bsend buffer of the engine (preserving the previous one) */
-	static_assert((int) N_COUNTERS >= (int) SOL_NWORDS, "the Bsend slots are sized for a report");
+	static_assert((int) Scheme::N_COUNTERS >= (int) SOL_NWORDS, "the Bsend slots are sized for a report");
 	void *prev_bsend_buf = NULL;
 	int prev_bsend_size = 0;
 	MPI_Buffer_detach(&prev_bsend_buf, &prev_bsend_size);
 	size_t slots = 2 * (size_t) params.n_nodes + params.bsend_slack;
-	size_t msg = N_COUNTERS * sizeof(u64) + MPI_BSEND_OVERHEAD;
+	size_t msg = Scheme::N_COUNTERS * sizeof(u64) + MPI_BSEND_OVERHEAD;
 	std::vector<char> bsend_buf(slots * msg);
 	MPI_Buffer_attach(bsend_buf.data(), (int) bsend_buf.size());
 
 	/* safety check: all ranks evaluate the same function (no uninitialized state) */
 	u64 test[3];
-	u64 mask = make_mask(wrapper.m);
-	test[0] = prng.rand() & mask;
-	test[1] = prng.rand() & mask;
-	test[2] = wrapper.mixf(test[0], test[1]);
+	test[0] = prng.rand();
+	test[1] = prng.rand();
+	test[2] = wrapper.self_test(test[0], test[1]);
 	MPI_Bcast(test, 3, MPI_UINT64_T, 0, params.mpi_comm);
-	assert(test[2] == wrapper.mixf(test[0], test[1]));
+	assert(test[2] == wrapper.self_test(test[0], test[1]));
 
 	if (params.verbose)
-		Controller::banner(params, prng.seed);
+		Scheme::banner(params, prng.seed);
 
-	SharedContext shared(params);
-	CommThread comm(params, prng, shared);
+	SharedContext<Scheme> shared(params);
+	CommThread<Scheme> comm(params, prng, shared);
 	int n_unpinned = 0;                 /* threads not where Parameters put them: fatal */
 
 	#pragma omp parallel num_threads(params.n_threads)
@@ -467,13 +478,11 @@ optional<tuple<u64,u64,u64>> run(const ProblemWrapper &wrapper, u64 nbytes_memor
 			role = COMM;
 		else if (tid <= params.dicts_per_node)
 			role = DICT;
-		shared.ctx[tid] = std::make_unique<ThreadContext>(role, cpu, numa_node,
-		                                                 params.place.thread_group[tid], params);
-		if (role == DICT) {
-			shared.shards[tid - 1] = std::make_unique<PcsDict>(params.jbits, params.w_shard);
-			shared.coll_q[tid - 1] = std::make_unique<CollisionQueue>(params.coll_queue_capacity);
-		}
-		ThreadContext &me = *shared.ctx[tid];
+		shared.ctx[tid] = std::make_unique<ThreadContext<Scheme>>(role, cpu, numa_node,
+		                                                         params.place.thread_group[tid], params);
+		if (role == DICT)
+			Scheme::build_dict(shared, params, tid - 1);
+		ThreadContext<Scheme> &me = *shared.ctx[tid];
 
 		#pragma omp barrier             /* now we can inspect the shared context */
 
@@ -490,7 +499,7 @@ optional<tuple<u64,u64,u64>> run(const ProblemWrapper &wrapper, u64 nbytes_memor
 			me.state = RUNNING;
 
 			#pragma omp master
-			comm.begin_round(wrapper.out_mask);
+			comm.begin_round(wrapper);
 
 			#pragma omp barrier         /* makes the round header visible to all threads */
 
@@ -500,14 +509,14 @@ optional<tuple<u64,u64,u64>> run(const ProblemWrapper &wrapper, u64 nbytes_memor
 			if (me.role == COMM)
 				comm.comm_round();          /* ends with end_round(), the statistics */
 			else if (me.role == DICT)
-				inserter_thread(me, params, shared, tid - 1);
+				Scheme::dict_thread(me, wrapper, params, shared, tid - 1);
 			else
-				walker_thread(me, wrapper, params, shared, tid - 1 - params.dicts_per_node);
+				Scheme::producer_thread(me, wrapper, params, shared, tid - 1 - params.dicts_per_node);
 
 			#pragma omp barrier         /* every thread is back.  Nothing depends on it */
 
-			if (me.role == DICT)            /* later: a collective flush */
-				shared.shards[tid - 1]->flush();
+			if (me.role == DICT)
+				Scheme::after_round(shared, params, tid - 1);
 		}
 	}
 

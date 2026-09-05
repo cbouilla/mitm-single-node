@@ -11,7 +11,7 @@
 
 #include "tools.hpp"
 #include "parameters.hpp"
-#include "inserter.hpp"
+#include "pcs.hpp"
 
 /*
  * How fast do a problem's f / g (and vfg) iterate, per rank and over the ranks?  For the *_bench
@@ -121,7 +121,7 @@ void probe_benchmark(const Problem& pb, const Options &opts, u64 nbytes_memory)
 {
 	int rank;
 	MPI_Comm_rank(opts.mpi_comm, &rank);
-	Parameters params(opts, nbytes_memory, pb.n, pb.m);
+	pcs::Params params(opts, nbytes_memory, pb.n, pb.m);
 	if (rank != 0)
 		return;                     /* every rank is doing the same thing; one of them reports */
 
@@ -149,7 +149,7 @@ void probe_benchmark(const Problem& pb, const Options &opts, u64 nbytes_memory)
 		int tid = omp_get_thread_num();
 		if (params.bind_threads && pin_to_cpu(params.place.thread_cpu[1 + tid]) < 0)
 			warn("probe_benchmark: cannot pin thread %d to CPU %d", tid, params.place.thread_cpu[1 + tid]);
-		PcsDict dict(params.jbits, params.w_shard);   /* zero-filled here: NUMA first touch */
+		pcs::PcsDict dict(params.jbits, params.w_shard);   /* zero-filled here: NUMA first touch */
 		u64 nhit = 0;
 		u64 i = 0;
 		for (int b = 0; b < n_batches; b++) {
@@ -381,7 +381,7 @@ void staging_benchmark(const Problem& pb, const Options &opts, u64 nbytes_memory
 {
 	int rank;
 	MPI_Comm_rank(opts.mpi_comm, &rank);
-	Parameters params(opts, nbytes_memory, pb.n, pb.m);
+	pcs::Params params(opts, nbytes_memory, pb.n, pb.m);
 	if (rank != 0)
 		return;                     /* every rank is doing the same thing; one of them reports */
 

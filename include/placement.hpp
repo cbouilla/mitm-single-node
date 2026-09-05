@@ -237,9 +237,10 @@ struct Placement {
 	 * same size to within one core; the comm thread and dict thread j then take the emptiest core of group
 	 * 0 (resp. j), and the producers fill the groups evenly, emptiest core first -- so every service
 	 * thread gets a core of its own and the SMT siblings it leaves go to producers.  `producers == 0` asks
-	 * for as many as the mask holds.
+	 * for as many as the mask holds.  `producer_per_dict` is the scheme's: PCS needs a producer in every
+	 * group to drain its dict thread's collision queue, the direct scheme does not.
 	 */
-	Placement(int rank, int dicts, int producers, bool bind, int level)
+	Placement(int rank, int dicts, int producers, bool bind, int level, bool producer_per_dict)
 		: rank(rank), n_groups(dicts), bind(bind), n_producers(producers)
 	{
 		cpu_set_t mask;
@@ -258,7 +259,7 @@ struct Placement {
 		if (bind && n_groups > n_avail_cpu)
 			errx(1, "MPI: rank %d: %d shards cannot each own a thread group in a mask of %d CPUs"
 			        " (use --no-bind, or fewer shards)", rank, n_groups, n_avail_cpu);
-		if (n_producers < n_groups)
+		if (producer_per_dict && n_producers < n_groups)
 			errx(1, "MPI: %d producers cannot serve %d collision queues: every dict thread needs a producer"
 			        " of its own group to resolve for it (raise --producers-per-node, or lower"
 			        " --dicts-per-node)", n_producers, n_groups);
@@ -332,7 +333,7 @@ struct Placement {
 			cmin = std::min(cmin, (int) group_cores[j].size());
 			cmax = std::max(cmax, (int) group_cores[j].size());
 		}
-		if (rank == 0 && cmax > cmin + 1)
+		if (producer_per_dict && rank == 0 && cmax > cmin + 1)
 			warnx("MPI: thread groups of %d to %d cores: the collision queues are unevenly served",
 			      cmin, cmax);
 
@@ -392,7 +393,7 @@ struct Placement {
 		}
 
 		/* a group whose CPUs ran out borrows a producer from the fullest one: every queue keeps a consumer */
-		for (int j = 0; j < n_groups; j++) {
+		for (int j = 0; producer_per_dict && j < n_groups; j++) {
 			if (n_walk[j] > 0)
 				continue;
 			int from = 0;
@@ -453,19 +454,19 @@ struct Placement {
 				numa_ids.push_back(numa[tid]);
 		std::sort(numa_ids.begin(), numa_ids.end());
 		for (size_t k = 0; k < numa_ids.size(); k++) {
-			int n_comm = 0, n_ins = 0, n_walk = 0;
+			int n_comm = 0, n_dict = 0, n_prod = 0;
 			for (size_t tid = 0; tid < numa.size(); tid++) {
 				if (numa[tid] != numa_ids[k])
 					continue;
 				if (role[tid] == COMM)
 					n_comm++;
 				else if (role[tid] == DICT)
-					n_ins++;
+					n_dict++;
 				else
-					n_walk++;
+					n_prod++;
 			}
-			printf("NUMA node %d: %s%d ins + %d walk\n", numa_ids[k], n_comm ? "comm + " : "",
-				n_ins, n_walk);
+			printf("NUMA node %d: %s%d dict + %d prod\n", numa_ids[k], n_comm ? "comm + " : "",
+				n_dict, n_prod);
 		}
 		if (cache_level > 0 && n_groups >= n_caches && n_groups <= 32)
 			for (int c = 0; c < n_caches; c++) {
