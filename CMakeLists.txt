@@ -28,6 +28,15 @@ set_target_properties(hwloc::hwloc PROPERTIES IMPORTED_LOCATION "${HWLOC_LIBRARY
                       INTERFACE_INCLUDE_DIRECTORIES "${HWLOC_INCLUDE_DIR}")
 message(STATUS "hwloc: ${HWLOC_LIBRARY}")
 
+# The router tests run under ctest (examples/CMakeLists.txt).  Open MPI binds a rank to one core at
+# np <= 2, which serialises a spinning OpenMP team: unbind by default there.
+enable_testing()
+execute_process(COMMAND ${MPIEXEC_EXECUTABLE} --version OUTPUT_VARIABLE MPIEXEC_VERSION_OUTPUT
+                ERROR_QUIET OUTPUT_STRIP_TRAILING_WHITESPACE)
+if(MPIEXEC_VERSION_OUTPUT MATCHES "Open MPI" AND NOT MPIEXEC_PREFLAGS)
+    set(MPIEXEC_PREFLAGS "--bind-to;none" CACHE STRING "mpiexec flags before the program" FORCE)
+endif()
+
 add_subdirectory(examples)
 
 include("config/avx2.cmake")

@@ -34,3 +34,19 @@ mitm_example(double_aes_bench aes.c)
 mitm_example(sha2_claw_demo sha256.c)
 mitm_example(sha2_collision_demo sha256.c)
 
+
+
+###### The Router: its test suite and its benchmark
+
+mitm_example(router_test)
+target_compile_definitions(router_test PRIVATE ROUTER_PARANOID)
+mitm_example(router_bench)
+
+# one rank, two ranks, four ranks: 8 spinning threads in all on an 8-core laptop (12 at np 4, the
+# minimum of one service thread, one sender and one receiver per rank)
+add_test(NAME router_np1 COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 1 ${MPIEXEC_PREFLAGS}
+         $<TARGET_FILE:router_test> --senders 4 --receivers 3 --quiet)
+add_test(NAME router_np2 COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 2 ${MPIEXEC_PREFLAGS}
+         $<TARGET_FILE:router_test> --senders 2 --receivers 1 --quiet)
+add_test(NAME router_np4 COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 4 ${MPIEXEC_PREFLAGS}
+         $<TARGET_FILE:router_test> --senders 1 --receivers 1 --quiet)

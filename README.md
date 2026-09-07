@@ -69,6 +69,7 @@ include/
   problem.hpp     the interface a cipher implements: f, g, is_good_pair, vfg
   parameters.hpp  Options (user knobs, all defaulted) and Parameters (derived once from them + RAM budget + problem size; data only)
   spsc.hpp        wait-free single-producer/single-consumer queue
+  router.hpp      the Router, standalone
   comm.hpp        queues, bulk DP buffers, the counter enum, the control-channel payloads, ThreadContext and SharedContext
   walker.hpp      the walker thread; walking trails, turning a dictionary hit into a collision
   inserter.hpp    the inserter thread; PcsDict, the dictionary shard it builds and probes (held in SharedContext::shards)
@@ -100,7 +101,7 @@ as the starting point for porting that baseline back.
 
 ## Testing
 
-There is no CTest suite.  The demos self-check: each plants a golden pair, and both
-the problem wrappers and the search entry points `assert` their way to it
-(`assert(pb.f(x0) == pb.g(x1))`).  Running `double_speck64_demo` on a small `--n` is
-the closest thing to a smoke test.
+CTest runs the Router's test suite only (`ctest --test-dir build`).  The
+engine's demos self-check: each plants a golden pair, and both the problem wrappers and
+the search entry points `assert` their way to it (`assert(pb.f(x0) == pb.g(x1))`).
+Running `double_speck64_demo` on a small `--n` is the closest thing to a smoke test.
