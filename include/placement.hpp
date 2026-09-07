@@ -3,128 +3,21 @@
 
 #include <err.h>
 #include <sched.h>
-#include <pthread.h>
-#include <cerrno>
 #include <cstdio>
 #include <algorithm>
 #include <vector>
-#include <hwloc.h>
+
+#include "router/topology.hpp"
 
 /*
- * Where the threads of a rank go, and nothing else.  The hwloc topology, the partition of the
- * affinity mask into thread groups, the CPU each thread is pinned to, and the reports of both the
- * plan and what the kernel actually did.  PROTOCOL.md §1 is the specification.
+ * Where the threads of a rank go, and nothing else.  On top of the shared hwloc primitives (topology.hpp),
+ * the partition of the affinity mask into thread groups, the CPU each thread is pinned to, and the reports
+ * of both the plan and what the kernel actually did.  PROTOCOL.md §1 is the specification.
  */
-
-static_assert(HWLOC_API_VERSION >= 0x00020000, "hwloc 2.x is required (NUMA nodes as memory children)");
 
 namespace mitm {
 
 enum thread_role {COMM, DICT, PRODUCER};
-
-
-/********************************* the topology ******************************/
-
-/* pin the calling thread to `cpu`.  Returns cpu, or -1 with errno set: a failure, or cpu < 0 */
-static inline int pin_to_cpu(int cpu)
-{
-	if (cpu < 0)
-		return -1;
-	cpu_set_t set;
-	CPU_ZERO(&set);
-	CPU_SET(cpu, &set);
-	int rc = pthread_setaffinity_np(pthread_self(), sizeof(set), &set);
-	if (rc != 0) {
-		errno = rc;
-		return -1;
-	}
-	return cpu;
-}
-
-/*
- * The lowest cache level shared by several CORES, which is what a thread group is built around; 0 when
- * every cache is private to one core.  Depths run from the machine down to the PUs, so walking them
- * backwards visits the caches from the smallest up and stops at the first shared one.
- */
-static inline int lowest_shared_cache_level(hwloc_topology_t topo)
-{
-	for (int depth = hwloc_topology_get_depth(topo) - 1; depth >= 0; depth--) {
-		hwloc_obj_t obj = hwloc_get_obj_by_depth(topo, depth, 0);
-		if (obj == NULL || not hwloc_obj_type_is_dcache(obj->type))
-			continue;
-		if (hwloc_get_nbobjs_inside_cpuset_by_type(topo, obj->cpuset, HWLOC_OBJ_CORE) > 1)
-			return (int) obj->attr->cache.depth;
-	}
-	return 0;
-}
-
-/*
- * NUMA node (hwloc os_index), cache domain and physical core (both a dense index, ascending) of every
- * CPU of `mask`, from one topology load; -1 outside the mask, or in no such object.  `level` is the
- * cache level that defines a domain, or 0 to take the lowest one shared by several cores; the level
- * used is returned.  The core map is what makes SMT siblings visible to the placement.
- * No topology flag on purpose: RESTRICT_TO_CPUBINDING would defeat the HWLOC_SYNTHETIC test path.
- */
-static inline int topology_of_cpus(const cpu_set_t &mask, int level, std::vector<int> &numa_node_of_cpu,
-                                   std::vector<int> &cache_of_cpu, std::vector<int> &core_of_cpu)
-{
-	numa_node_of_cpu.assign(CPU_SETSIZE, -1);
-	cache_of_cpu.assign(CPU_SETSIZE, -1);
-	core_of_cpu.assign(CPU_SETSIZE, -1);
-	hwloc_topology_t topo;
-	if (hwloc_topology_init(&topo) != 0)
-		err(1, "hwloc_topology_init");
-	if (hwloc_topology_load(topo) != 0)
-		err(1, "hwloc_topology_load");
-
-	hwloc_obj_t node = NULL;
-	while ((node = hwloc_get_next_obj_by_type(topo, HWLOC_OBJ_NUMANODE, node)) != NULL) {
-		unsigned cpu;
-		hwloc_bitmap_foreach_begin(cpu, node->cpuset)
-			if (cpu < CPU_SETSIZE && CPU_ISSET(cpu, &mask) && numa_node_of_cpu[cpu] < 0)
-				numa_node_of_cpu[cpu] = (int) node->os_index;
-		hwloc_bitmap_foreach_end();
-	}
-
-	hwloc_obj_t core = NULL;
-	int n_core = 0;
-	while ((core = hwloc_get_next_obj_by_type(topo, HWLOC_OBJ_CORE, core)) != NULL) {
-		bool used = false;
-		unsigned cpu;
-		hwloc_bitmap_foreach_begin(cpu, core->cpuset)
-			if (cpu < CPU_SETSIZE && CPU_ISSET(cpu, &mask) && core_of_cpu[cpu] < 0) {
-				core_of_cpu[cpu] = n_core;
-				used = true;
-			}
-		hwloc_bitmap_foreach_end();
-		if (used)
-			n_core += 1;
-	}
-
-	if (level == 0)
-		level = lowest_shared_cache_level(topo);
-	int id = 0;                        /* only domains holding a CPU of the mask are numbered */
-	for (int depth = hwloc_topology_get_depth(topo) - 1; level > 0 && depth >= 0; depth--) {
-		unsigned nobj = hwloc_get_nbobjs_by_depth(topo, depth);
-		for (unsigned k = 0; k < nobj; k++) {
-			hwloc_obj_t obj = hwloc_get_obj_by_depth(topo, depth, k);
-			if (not hwloc_obj_type_is_dcache(obj->type) || (int) obj->attr->cache.depth != level)
-				continue;
-			bool used = false;
-			unsigned cpu;
-			hwloc_bitmap_foreach_begin(cpu, obj->cpuset)
-				if (cpu < CPU_SETSIZE && CPU_ISSET(cpu, &mask) && cache_of_cpu[cpu] < 0) {
-					cache_of_cpu[cpu] = id;
-					used = true;
-				}
-			hwloc_bitmap_foreach_end();
-			if (used)
-				id += 1;
-		}
-	}
-	hwloc_topology_destroy(topo);
-	return (id > 0) ? level : 0;
-}
 
 
 /********************************* thread groups *****************************/
@@ -186,27 +79,6 @@ static void merge_caches(const std::vector<std::vector<int>> &cache_cores, int n
 		done += take;
 	}
 }
-
-/*
- * The group's emptiest core that still has a free CPU, or -1.  Handing every thread the emptiest core
- * is what puts the comm thread and the dict threads on cores of their own, and then fills the siblings
- * they left with producers: a producer is compute-bound and fills the issue slots a thread waiting on
- * memory leaves idle, whereas two waiting threads on one core would only slow each other down.
- */
-static int emptiest_core(const std::vector<int> &cores, const std::vector<std::vector<int>> &core_cpus,
-                         const std::vector<size_t> &next_cpu)
-{
-	int best = -1;
-	for (size_t t = 0; t < cores.size(); t++) {
-		int k = cores[t];
-		if (next_cpu[k] == core_cpus[k].size())
-			continue;
-		if (best < 0 || next_cpu[k] < next_cpu[best])
-			best = k;
-	}
-	return best;
-}
-
 
 /********************************* the placement *****************************/
 
@@ -294,26 +166,8 @@ struct Placement {
 
 		/* the mask's CPUs by core, and the cores by cache domain; one domain when no cache is shared */
 		std::vector<std::vector<int>> core_cpus;    /* the mask's CPUs of each core, dense index */
-		std::vector<int> core_cache;                /* cache domain of each core */
-		std::vector<int> dense(CPU_SETSIZE, -1);    /* hwloc's core index -> ours */
-		n_caches = 0;
-		for (int cpu = 0; cpu < CPU_SETSIZE; cpu++) {
-			if (!CPU_ISSET(cpu, &mask))
-				continue;
-			int c = (cache_level > 0) ? cache_of_cpu[cpu] : 0;
-			int hw = core_of_cpu[cpu];
-			if (hw < 0 || dense[hw] < 0) {      /* a core not seen yet, or a CPU hwloc puts in none */
-				if (hw >= 0)
-					dense[hw] = core_cpus.size();
-				core_cpus.push_back(std::vector<int>());
-				core_cache.push_back(c);
-			}
-			core_cpus[(hw >= 0) ? dense[hw] : (int) core_cpus.size() - 1].push_back(cpu);
-			n_caches = std::max(n_caches, c + 1);
-		}
-		std::vector<std::vector<int>> cache_cores(n_caches);
-		for (size_t k = 0; k < core_cpus.size(); k++)
-			cache_cores[core_cache[k]].push_back(k);
+		std::vector<std::vector<int>> cache_cores;  /* the dense core indices of each cache domain */
+		n_caches = cores_by_domain(mask, cache_level, cache_of_cpu, core_of_cpu, core_cpus, cache_cores);
 
 		std::vector<std::vector<int>> group_cores;
 		if (n_groups >= n_caches) {

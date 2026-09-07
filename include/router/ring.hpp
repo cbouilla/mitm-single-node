@@ -1,0 +1,119 @@
+#ifndef MITM_ROUTER_RING
+#define MITM_ROUTER_RING
+
+#include <atomic>
+#include <cstddef>
+
+#include "../parameters.hpp"
+
+namespace mitm {
+
+/******************************** the ring ********************************/
+
+/*
+ * Lamport's single-producer / single-consumer ring of points: no
+ * mutex, no CAS, each side owns one index and caches the other's.  Capacity rounds up to a
+ * power of two.  Three cache lines: the consumer's, the producer's, and a read-only one for the geometry.
+ * A receiver's inbox is one: block ids travel as points, `(block, count)`.
+ */
+class RouterRing {
+public:
+	/* public: Router_Dump reads head and tail from outside */
+	alignas(64) std::atomic<size_t> head;      /* written by the consumer only */
+	size_t cached_tail;                        /* consumer-private copy of tail */
+	alignas(64) std::atomic<size_t> tail;      /* written by the producer only */
+	size_t cached_head;                        /* producer-private copy of head */
+
+private:
+	alignas(64) const size_t capacity;         /* a power of two */
+	const size_t mask;                         /* capacity - 1 */
+	std::vector<Point> buf;                    /* the slots */
+
+	static size_t round_up_pow2(size_t x)
+	{
+		size_t n = 1;
+		while (n < x)
+			n *= 2;
+		return n;
+	}
+
+public:
+	/* built by its owner: the zero-fill of `buf` is the first touch */
+	RouterRing(size_t requested) : head(0), cached_tail(0), tail(0), cached_head(0),
+	                               capacity(round_up_pow2(requested)), mask(capacity - 1), buf(capacity)
+	{}
+
+	/* producer side.  Returns false if the ring is full (the caller drops the item). */
+	bool push(const Point &x)
+	{
+		size_t t = tail.load(std::memory_order_relaxed);
+		if (t - cached_head == capacity) {
+			cached_head = head.load(std::memory_order_acquire);
+			if (t - cached_head == capacity)
+				return false;                 /* really full */
+		}
+		buf[t & mask] = x;
+		tail.store(t + 1, std::memory_order_release);
+		return true;
+	}
+
+	/* producer side.  The whole run or nothing, with ONE tail.store: false == not enough room. */
+	bool push_all(const Point *in, size_t n)
+	{
+		size_t t = tail.load(std::memory_order_relaxed);
+		size_t free = capacity - (t - cached_head);
+		if (free < n) {
+			cached_head = head.load(std::memory_order_acquire);
+			free = capacity - (t - cached_head);
+			if (free < n)
+				return false;
+		}
+		for (size_t i = 0; i < n; i++)
+			buf[(t + i) & mask] = in[i];
+		tail.store(t + n, std::memory_order_release);
+		return true;
+	}
+
+	/* consumer side */
+	bool pop(Point &x)
+	{
+		size_t h = head.load(std::memory_order_relaxed);
+		if (h == cached_tail) {
+			cached_tail = tail.load(std::memory_order_acquire);
+			if (h == cached_tail)
+				return false;                 /* really empty */
+		}
+		x = buf[h & mask];
+		head.store(h + 1, std::memory_order_release);
+		return true;
+	}
+
+	/* consumer side.  Grab up to `max` items at once, amortizing the atomics. */
+	size_t pop_bulk(Point *out, size_t max)
+	{
+		size_t h = head.load(std::memory_order_relaxed);
+		if (h == cached_tail) {
+			cached_tail = tail.load(std::memory_order_acquire);
+			if (h == cached_tail)
+				return 0;
+		}
+		size_t avail = cached_tail - h;
+		size_t n = (avail < max) ? avail : max;
+		for (size_t k = 0; k < n; k++)
+			out[k] = buf[(h + k) & mask];
+		head.store(h + n, std::memory_order_release);
+		return n;
+	}
+
+	/* consumer side */
+	bool empty()
+	{
+		size_t h = head.load(std::memory_order_relaxed);
+		if (h == cached_tail)
+			cached_tail = tail.load(std::memory_order_acquire);
+		return (h == cached_tail);
+	}
+};
+
+}
+#endif

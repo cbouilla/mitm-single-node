@@ -6,7 +6,7 @@
 #include <inttypes.h>
 
 #include "tools.hpp"
-#include "router.hpp"
+#include "router/router.hpp"
 #include "router_driver.hpp"
 
 /*
@@ -65,16 +65,18 @@ static void raw_report(const Router_thread &rt)
 	       nsend, raw_s, 1e9 * nsend / total, folded);
 }
 
-static void bench_sender(Router_thread &rt, double t_end)
+static void bench_sender(Router_thread &rt, const RouterArgs &a, double t_end)
 {
 	int F = rt.node.F;                          /* destinations: the receivers, or --dests' virtual fan-out */
+	int per = rt.node.per_node;                 /* local-only: destinations on this node, [base, base + per) */
+	int base = rt.node.rank * per;
 	PRNG prng(seed, (u64) Router_rank(rt));
 	u64 n = 0;
 	double t0 = wtime();
 	for (;;) {
 		for (int j = 0; j < 1024; j++) {
 			u64 x = prng.rand();
-			int d = (int) (x % (u64) F);
+			int d = a.local_only ? base + (int) (x % (u64) per) : (int) (x % (u64) F);
 			Router_Push(x, n, d, rt);
 			n += 1;
 		}
@@ -179,7 +181,7 @@ int main(int argc, char **argv)
 	{
 		int tid = omp_get_thread_num();
 		int role = (tid == 0) ? ROUTER_SERVICE : (tid <= R ? ROUTER_RECEIVER : ROUTER_SENDER);
-		Router_thread rt = Router_Init(role, MPI_COMM_WORLD, 42, a.lossy, &a.opts);
+		Router_thread rt = Router_Init(role, ROUTER_GROUP_AUTO, MPI_COMM_WORLD, 42, a.lossy, &a.opts);
 		if (role == ROUTER_SENDER)
 			bench_raw(rt);
 		#pragma omp barrier
@@ -197,7 +199,7 @@ int main(int argc, char **argv)
 			} else if (role == ROUTER_RECEIVER) {
 				bench_receiver(rt);
 			} else {
-				bench_sender(rt, t0 + a.seconds);
+				bench_sender(rt, a, t0 + a.seconds);
 			}
 			#pragma omp barrier
 			if (tid == 0) {

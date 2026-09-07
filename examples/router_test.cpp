@@ -6,7 +6,7 @@
 #include <cstring>
 #include <inttypes.h>
 
-#include "router.hpp"
+#include "router/router.hpp"
 #include "router_driver.hpp"
 
 /*
@@ -44,6 +44,10 @@ struct Shared {
 	std::vector<u64> seen;           /* per local receiver: a bitmap over (node, s, i) */
 	u64 max_points = 0;
 	int pop_max = 1024;
+	std::vector<int> t_group;        /* per thread: its Router_group, gathered after Init */
+	std::vector<int> t_cpu;          /* per thread: its Router_cpu */
+	std::vector<int> t_domain;       /* per thread: its Router_domain */
+	std::vector<int> t_grcv;         /* per sender thread: its group's first receiver, or -1 */
 };
 
 static u64 points_of(const RouterArgs &a, int s)
@@ -169,8 +173,56 @@ static void check_round(const Router_thread &rt, const RouterArgs &a, Shared &sh
 		       tot[ROUTER_MSGS_SENT], tot[ROUTER_BLOCKS], tot[ROUTER_TURNS], tot[ROUTER_IDLE_TURNS]);
 }
 
+/* rank-local, on thread 0 after Init: the plan the Router built for this node -- the group ids, the pinning,
+ * and that each producer's group holds the receiver it will pair with. */
+static void check_placement(const Router_thread &rt, const RouterArgs &a, Shared &sh, bool use_colors)
+{
+	int S = a.senders;
+	int R = a.receivers;
+	int nt = 1 + S + R;
+	int G = Router_num_groups(rt);
+	int D = Router_num_domains(rt);
+	CHECK(G >= 1);
+	CHECK(sh.t_group[0] == -1);                 /* the service has no group */
+	std::vector<int> gs(G, 0);
+	std::vector<int> gr(G, 0);
+	for (int t = 1; t < nt; t++) {
+		CHECK(sh.t_group[t] >= 0 && sh.t_group[t] < G);
+		if (sh.t_group[t] < 0 || sh.t_group[t] >= G)
+			continue;
+		if (t <= R)
+			gr[sh.t_group[t]] += 1;
+		else
+			gs[sh.t_group[t]] += 1;
+	}
+	if (a.opts.pin) {
+		for (int t = 0; t < nt; t++) {
+			CHECK(sh.t_domain[t] >= 0 && sh.t_domain[t] < D);
+			for (int u = t + 1; u < nt; u++)
+				CHECK(sh.t_cpu[t] != sh.t_cpu[u]);   /* every thread on a CPU of its own */
+		}
+	} else {
+		CHECK(D == 0);
+		for (int t = 0; t < nt; t++)
+			CHECK(sh.t_domain[t] == -1);
+	}
+	if (use_colors) {
+		CHECK(G == ((S >= 2 && R >= 2) ? 2 : 1));
+	} else if (S >= G && R >= G) {
+		for (int g = 0; g < G; g++) {               /* enough of each role for one of each per group */
+			CHECK(gs[g] >= 1);
+			CHECK(gr[g] >= 1);
+		}
+		for (int t = R + 1; t < nt; t++) {          /* a sender's group's first receiver is in its group */
+			int rcv = sh.t_grcv[t];
+			if (rcv >= 0)
+				CHECK(sh.t_group[1 + rcv] == sh.t_group[t]);
+		}
+	}
+}
+
 /* one configuration, start to finish: a team, its Router, `rounds` rounds; everything dies with the region */
-static void run_config(const RouterArgs &a, const char *name)
+static void run_config(const RouterArgs &a, const char *name, bool use_colors = false)
 {
 	if (g_rank == 0 && a.opts.verbose)
 		printf("== %s (%s, %d senders, %d receivers, %" PRIu64 " points, %d rounds)\n", name,
@@ -183,12 +235,29 @@ static void run_config(const RouterArgs &a, const char *name)
 	sh.sent_to.assign((size_t) S * R * g_nodes, 0);
 	sh.got.assign(R, 0);
 	sh.seen.assign((size_t) R * ((g_nodes * S * sh.max_points + 63) / 64), 0);
+	sh.t_group.assign(nt, 0);
+	sh.t_cpu.assign(nt, 0);
+	sh.t_domain.assign(nt, 0);
+	sh.t_grcv.assign(nt, -1);
 
 	#pragma omp parallel num_threads(nt)
 	{
 		int tid = omp_get_thread_num();
 		int role = (tid == 0) ? ROUTER_SERVICE : (tid <= R ? ROUTER_RECEIVER : ROUTER_SENDER);
-		Router_thread rt = Router_Init(role, MPI_COMM_WORLD, 42, a.lossy, &a.opts);
+		int li = (role == ROUTER_RECEIVER) ? (tid - 1) : (tid - 1 - R);   /* the caller's color, in colors mode */
+		int group = ROUTER_GROUP_AUTO;
+		if (use_colors && role != ROUTER_SERVICE)
+			group = (S >= 2 && R >= 2) ? (li % 2) : 0;
+		Router_thread rt = Router_Init(role, group, MPI_COMM_WORLD, 42, a.lossy, &a.opts);
+		sh.t_group[tid] = Router_group(rt);
+		sh.t_cpu[tid] = Router_cpu(rt);
+		sh.t_domain[tid] = Router_domain(rt);
+		if (role == ROUTER_SENDER && Router_group_num_receivers(rt) > 0)
+			sh.t_grcv[tid] = Router_group_receiver(0, rt);
+		#pragma omp barrier
+		if (tid == 0)
+			check_placement(rt, a, sh, use_colors);
+		#pragma omp barrier
 		for (int round = 0; round < a.rounds; round++) {
 			if (tid == 0) {
 				const int schedule[4] = {1, 3, 7, 1000};
@@ -313,6 +382,16 @@ int main(int argc, char **argv)
 		c.slow_recv = true;
 		c.points = a.points / 20;
 		run_config(c, "slow_recv");
+	}
+	if (all || a.test == "groups") {
+		RouterArgs c = a;
+		c.opts.pin = false;             /* one L3 domain on a laptop: exercise several groups without pinning */
+		c.opts.group_size = 2;
+		run_config(c, "groups");
+	}
+	if (all || a.test == "colors") {
+		RouterArgs c = a;
+		run_config(c, "colors", true);
 	}
 	if ((all && g_nodes == 1) || a.test == "asymmetric") {
 		RouterArgs c = a;
