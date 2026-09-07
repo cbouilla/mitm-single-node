@@ -15,29 +15,55 @@
  * destinations; receivers hash every point they pop (murmur128) and fold the hashes by XOR; the service thread
  * runs until quiescent.  Prints, per round, the aggregate rate of points routed (delivered to a receiver), then
  * per node the push and pop rates, the network traffic, the drops, the service thread's duty cycle, the cost of
- * a point on a sender (the PRNG call included) and the XOR of every hash folded over the receivers and the
- * nodes: it keeps the hashes from being optimised away, and in lossless mode it depends on the points alone,
- * not on their order or their route.  Before the rounds, the raw benchmark: the senders clock the PRNG for a
- * second without pushing, and the aggregate rate of points generated is what the routed rate compares to.
+ * a point on a sender (the PRNG call and the destination pick included) and the XOR of every hash folded over
+ * the receivers and the nodes: it keeps the hashes from being optimised away, and in lossless mode it depends
+ * on the points alone, not on their order or their route.  Before the rounds, the raw benchmark: the senders
+ * run that same loop for a second with Router_Push taken out of it, so the difference between the raw rate and
+ * the routed rate is the router and nothing else.
  */
 using namespace mitm;
 
 static const u64 seed = 1337;       /* the senders' PRNG streams: this key, Router_rank as the sequence */
-std::vector<double> ns_per_point;   /* per sender: what a point costs it, the PRNG call included */
+std::vector<double> ns_per_point;   /* per sender: a point's cost, the PRNG call and the destination pick included */
 u64 xor_hash = 0;                   /* the node's receivers' hashes, folded; the raw run's outputs */
 double raw_rate = 0;                /* points/s the node's senders generate without pushing, summed */
 
-/* a sender clocks the PRNG for a second without pushing: the generation rate the routing is measured against */
-static void bench_raw(Router_thread &rt)
+/* Where a point goes: the sender's fan-out, and the raw run's, so that the two cannot drift apart.  The modulo
+ * is deliberately 32-bit: a 64-bit divq is microcoded on Skylake (36-95 cycles against 26 for divl) and costs
+ * more than the push it feeds, which throttles the senders below the router's own rate and hides it.  F and per
+ * are tiny, so folding x to 32 bits first biases nothing that matters here. */
+struct Fanout {
+	int F;                      /* destinations: the receivers, or --dests' virtual fan-out */
+	int per;                    /* local-only: destinations on this node, [base, base + per) */
+	int base;
+	bool local_only;
+
+	Fanout(const Router_thread &rt, const RouterArgs &a)
+	    : F(rt.node.F), per(rt.node.per_node), base(rt.node.rank * rt.node.per_node), local_only(a.local_only)
+	{
+	}
+
+	int operator()(u64 x) const
+	{
+		return local_only ? base + (int) ((u32) x % (u32) per) : (int) ((u32) x % (u32) F);
+	}
+};
+
+/* a sender runs the sending loop without Router_Push for a second: the generation rate the routing is measured
+ * against.  Everything the sender does per point but the push itself, the destination pick included */
+static void bench_raw(Router_thread &rt, const RouterArgs &a)
 {
+	Fanout fan(rt, a);
 	PRNG prng(seed, (u64) Router_rank(rt));
-	u64 x = 0;
+	u64 acc = 0;
 	u64 n = 0;
 	double t0 = wtime();
 	double t;
 	for (;;) {
-		for (int j = 0; j < 1024; j++)
-			x ^= prng.rand();
+		for (int j = 0; j < 1024; j++) {
+			u64 x = prng.rand();
+			acc ^= x ^ (u64) fan(x);   /* consumed, or the destination pick is optimised away */
+		}
 		n += 1024;
 		t = wtime();
 		if (t >= t0 + 1)
@@ -46,7 +72,7 @@ static void bench_raw(Router_thread &rt)
 	#pragma omp atomic
 	raw_rate += (double) n / (t - t0);
 	#pragma omp atomic
-	xor_hash ^= x;
+	xor_hash ^= acc;
 }
 
 /* rank 0 prints the raw benchmark: the senders' aggregate generation rate over all nodes */
@@ -67,17 +93,14 @@ static void raw_report(const Router_thread &rt)
 
 static void bench_sender(Router_thread &rt, const RouterArgs &a, double t_end)
 {
-	int F = rt.node.F;                          /* destinations: the receivers, or --dests' virtual fan-out */
-	int per = rt.node.per_node;                 /* local-only: destinations on this node, [base, base + per) */
-	int base = rt.node.rank * per;
+	Fanout fan(rt, a);
 	PRNG prng(seed, (u64) Router_rank(rt));
 	u64 n = 0;
 	double t0 = wtime();
 	for (;;) {
 		for (int j = 0; j < 1024; j++) {
 			u64 x = prng.rand();
-			int d = a.local_only ? base + (int) (x % (u64) per) : (int) (x % (u64) F);
-			Router_Push(x, n, d, rt);
+			Router_Push(x, n, fan(x), rt);
 			n += 1;
 		}
 		if (wtime() >= t_end)
@@ -183,7 +206,7 @@ int main(int argc, char **argv)
 		int role = (tid == 0) ? ROUTER_SERVICE : (tid <= R ? ROUTER_RECEIVER : ROUTER_SENDER);
 		Router_thread rt = Router_Init(role, ROUTER_GROUP_AUTO, MPI_COMM_WORLD, 42, a.lossy, &a.opts);
 		if (role == ROUTER_SENDER)
-			bench_raw(rt);
+			bench_raw(rt, a);
 		#pragma omp barrier
 		if (tid == 0)
 			raw_report(rt);

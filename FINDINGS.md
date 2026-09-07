@@ -472,3 +472,244 @@ perf report -i r.data --stdio --no-children -g none --sort srcline
 # the service thread is only visible with kernel symbols (kptr_restrict=0)
 perf record -F 499 -o k.data -- mpirun -np 2 ...
 ```
+
+---
+
+# Session 3 -- grvingt, the router after `4a706a1` ("router with thread placement")
+
+Re-run of the campaign on **grvingt-12** again (Grid'5000, Nancy) -- the *same machine as
+session 1*, so session 1's numbers are a direct A/B and session 2's (AMD, 256 cores) are
+not.  2 sockets x Intel Xeon Gold 6130, 32 cores / 64 PU, 2 NUMA nodes, 2 L3 domains of
+22 MB, Open MPI 5.0.7.  `cmake -DCMAKE_BUILD_TYPE=release`, `perf_event_paranoid = -1`,
+`kptr_restrict = 0` (`sudo-g5k`).
+
+**Both binaries are stock**, built from the same tree: "OLD" is `a3b5ded` (the code
+sessions 1 and 2 measured, in a `git worktree`), "NEW" is `4a706a1`.  Every number is the
+median of 3 rounds of 3 s unless stated.  OLD is run `--no-bind`-equivalent (it pins
+nothing); NEW pins by default -- §4 shows that makes no difference here.
+
+What changed in `4a706a1`, of the things session 2 §7 asked for: the free stack is now
+popped **32 blocks at a time** (`ROUTER_BATCH`, `free_pop_many`) into a **per-sender
+cache**, which is exactly the "per-sender cache of a few blocks" recommended there.  The
+defaults `credit = 4` and `block_points = 4096` were **not** raised, and the bench still
+does not read `--local-only`... it does now, but `x % F` is still there (§6).
+
+## Summary
+
+**The convoy is fixed, and on this machine that buys nothing, because this machine never
+had it.**
+
+| claim | session 1/2 | now |
+|---|---|---|
+| senders in the install wait (`stage_line`) | 28.0 % (S1, np2) / 49.7 % (S2, np1 204 senders) | **0.00 %** |
+| senders in the free stack (`take_fresh` / `free_pop`) | 13.5 % (S1) / 9.4 % (S2) | **0.00 %** |
+| `--dests`, the convoy-shortening knob | helps 1.7x (S2) | **hurts**, monotonically (§3) |
+| lossy vs lossless | -- | **identical** (35.8 vs 35.9): senders never wait |
+| np1 throughput vs OLD, 12..54 senders | -- | **3-6 % worse** (§2) |
+| np1 throughput vs OLD, 56 senders | -- | ~4 % better |
+
+The fix is real and verifiable, but its target regime -- hundreds of threads convoying on
+one `free_top` cache line -- does not exist on 32 cores.  What is left here is its cost:
+a bigger, colder block pool (§4), and a **new bistable collapse at small `--block`** that
+OLD did not have (§5).
+
+## 1. The convoy is gone
+
+`perf record -F 499 --all-user`, np 1, 50 senders + 12 receivers, 152 K samples, source
+lines summed by region of `include/router/workers.hpp`:
+
+| region | share of all samples |
+|---|---|
+| free stack (`free_push` / `free_pop_many` / `refill`, `:13-80`) | **0.00 %** |
+| the install wait (`stage_line`'s `k > L` spin, `cpu_relax` at `:153`) | **0.00 %** |
+| `Router_Push` body (`:157-175`) | 23.07 % |
+| everything else in `workers.hpp` | 0.60 % |
+
+The only free-stack samples anywhere are `workers.hpp:18/19` at 0.00 %.  For comparison
+session 1 measured 28.0 % + 13.5 % and session 2 measured 49.7 % + 9.4 % in exactly these
+two regions.
+
+Two independent corroborations, no profiler needed:
+
+- **`--dests` has flipped sign.**  Session 2 §4 used it to shorten the convoy and got
+  1.7x.  Here it only adds destinations to stage into: 12 -> 35.5, 24 -> 36.8, 48 -> 38.9,
+  96 -> 40.2, 192 -> 42.7 ns/point.
+- **Lossy is not faster than lossless** (35.8 vs 35.9 ns/point, 0.76 % dropped).  If
+  senders were waiting, dropping instead would show.
+
+The rest of the profile is real work: `router_bench.cpp:79` (the `x % F` divider, §6) at
+23.3 %, `Router_Push`'s two stores into the private line (`workers.hpp:163/164`) at
+10.7 % + 5.1 %, then the PRNG, `murmur128` and `memmove`.
+
+## 2. A/B against the old router, np 1
+
+Median of 3, and OLD reproduces session 1's 25+6 number (20.9) exactly, which validates
+the harness:
+
+| senders + receivers | OLD ns/pt | NEW ns/pt | NEW routed |
+|---|---|---|---|
+| 12 + 3 | 17.9 | 19.1 | 0.63 G |
+| 25 + 6 | **20.9** (S1: 20.9) | 22.3 | 1.1 G |
+| 36 + 9 | 28.2 | 29.1 | 1.3 G |
+| 44 + 11 | 32.6 | 33.6 | 1.4 G |
+| 50 + 12 | 34.8 | 35.7 | 1.4 G |
+| 54 + 9 | 35.3-35.7 | 36.4-36.7 | 1.5 G |
+| 56 + 7 | 44.6-46.1 | 43.2-44.8 | 1.3 G |
+| 58 + 5 | 60.6-72.9 | 63.7-66.7 | 0.9 G |
+
+Run-to-run spread is under 1 % up to 54 senders for both, so the 3-6 % gap is real.  NEW
+wins only at 56 + 7, by ~4 % -- the first pass suggested 20 % there, but repeats put it at
+4 %; do not quote the single run.  At 58 + 5 both collapse (too few receivers) and the
+difference is noise.
+
+There is **no session-2-style cliff on this node**: throughput rises to ~1.4-1.5 G pts/s
+and stays there.  32 physical cores cannot reach the ~100-sender regime where session 2
+saw 2.3 G fall to 1.3 G.
+
+## 3. Where the 3-6 % goes: a colder pool
+
+The per-sender cache is charged to the block pool.  Same run, 50 + 12, from the banners:
+
+| | blocks | pool |
+|---|---|---|
+| OLD | 2570 | 168.6 MB |
+| NEW | 4170 | 273.6 MB |
+
+The difference is exactly 50 x 32 = 1600 blocks: `connect.hpp:220` adds
+`S * (ROUTER_BATCH + 1)` on top of the old `slack = max(F, 32 * S)`.  Both pools are far
+past the 44 MB of L3, so the extra 105 MB is pure cold DRAM, and it shows on the memory
+controllers (`uncore_imc` CAS counts, 3 s, 50 + 12):
+
+| | DRAM read + write | per point |
+|---|---|---|
+| OLD | 149.9 GiB | ~35 bytes |
+| NEW | 166.9 GiB | ~42 bytes |
+
++20 % of DRAM bytes per point for 4 % fewer points.  (Session 1 measured 43 bytes/point at
+25 + 6; the shape is the same.)
+
+## 4. Placement is a no-op on this node
+
+`4a706a1` gives the Router its own pinning and grouping.  At 50 + 12 it is worth nothing
+measurable: NEW pinned 35.8-36.0, NEW `--no-bind` 35.8-36.0 ns/point.  Expected -- two L3
+domains and a flat mask; session 2 §6.5 saw binding matter at 256 cores, not here.
+`--group` (4 / 8 / 16 cores per group) is equally flat: 36.1 / 35.9 / 36.0.
+
+The placer's refusal is correct and its message is good: `--senders 50 --receivers 20`
+(71 threads for 64 CPUs) is rejected with the three ways out rather than silently
+oversubscribing.
+
+## 5. New: a bistable collapse at small `--block`
+
+**This is a regression, and it is the one thing here worth acting on.**  At
+`--block 1024`, 50 + 12, NEW lands in one of two modes; OLD is stable:
+
+| | runs |
+|---|---|
+| NEW | 38.6, 41.3, 41.4, **123.1**, 53.6, **130.3** ns/point |
+| OLD | 48.5, 49.0, 52.3 ns/point |
+
+The good mode (~40) beats OLD; the bad mode (~110-130, throughput 1.4 G -> 0.49 G) is 2.5x
+worse than OLD.  It is stochastic and it **latches**: 2 s rounds never collapsed in 18
+tries, 3-4 s rounds do.  `--block 2048` is stable (36.2-37.0) and the **default 4096 is
+rock stable** at every sender count tried -- 25 / 36 / 50 senders, 6 repeats each, all
+within 1 %.  So no shipped configuration is exposed today.
+
+The mechanism, from a profile of a caught bad run (108 ns/point), addresses resolved
+through the inline chain with `addr2line -i`:
+
+| site | samples (of 152 K) |
+|---|---|
+| **`refill`, `workers.hpp:78` -- the retry `free_pop_many` in the "wait for a block" loop** | **49.9 K (33 %)** |
+| **`free_push`, `workers.hpp:19` -- the CAS, reached from `Router_Pop`** | 9.8 K (6.4 %) |
+| `router_bench.cpp:79` (the divider) | 11.8 K |
+
+Region sums for that run: free stack / refill **4.78 %** (against 0.02 % in the good mode),
+install wait 0.01 %, `Router_Push` down to 6.43 %.  So:
+
+1. 50 senders x 32 cached blocks = 1600 blocks are **parked in sender caches**, out of
+   4170.  The pool is sized to cover that, but the *distribution* is not: a sender holding
+   32 idle blocks starves one that has none.
+2. The free stack empties.  Starved senders spin in `refill`'s `while (n == 0)` loop --
+   and that loop calls `free_pop_many`, i.e. it **re-loads the contended `free_top` on
+   every iteration** rather than backing off on a private word.
+3. That load traffic on `free_top` is what the receivers' `free_push` CAS has to win to
+   *return* blocks.  It cannot, so the stack stays empty.  **Positive feedback -- which is
+   why the state latches instead of passing.**
+
+Note this is the *same* head-of-line coupling through one global free stack that sessions
+1 and 2 both blamed; batching moved it from the steady state into a rarer but far worse
+metastable state.  A backoff on a private word in `refill`'s wait, or reserving blocks the
+receivers can always push into, would break step 3.
+
+## 6. Unchanged from session 1
+
+- **`x % F` is still in the bench** (`router_bench.cpp:79`, now covering `--local-only`
+  too) and is still the top single source line at np 1: **23.3 %** of samples.  Session 1
+  §3's warning stands on Intel, and every np 1 ns/point here still includes it -- the
+  `raw` line puts the sender's PRNG + divider loop at 5.8 ns/point at 25 senders and
+  9.5 at 50.  Against that floor NEW's marginal push cost at 50 + 12 is 26.4 ns/point.
+- **`--local-only` now works** (it was dead in session 1): np 2, 12 + 3 node-local gives
+  20.2 ns/point against 34.9 uniform, consistent with session 1's patched 11.9 + the
+  ~8.8 ns divider.
+
+## 7. np 2, for the record
+
+Not the target topology any more -- with the placer forming groups per cache domain, one
+rank per node is the intended shape -- but the numbers were taken before that was settled,
+and they confirm session 2 §6.3 on Intel:
+
+| np 2, 12 + 3, uniform | ns/point |
+|---|---|
+| defaults (S1: 34.7) | 34.8 |
+| `--credit 16` | 30.5 |
+| `--credit 64` | 30.0 |
+| `--block 65536` | 34.9 |
+| **`--credit 16 --block 65536`** | **23.0** |
+
+The inter-rank path is **unchanged at defaults** (34.8 vs session 1's 34.7, 2.77 GB/s,
+42 K msgs/s) -- as expected, since it is the service thread, not the senders, that is
+saturated there, and nothing in `4a706a1` touches it.  Session 2's "the knobs compose"
+holds here too: 34.8 -> 23.0, a 1.5x that costs one flag pair.
+
+## 8. Everything still works
+
+`ctest` passes all three (`router_np1/2/4`).  The engine, whose `placement.hpp` this commit
+rewrote on top of the new shared `router/topology.hpp`, passes all three smoke tests of
+CLAUDE.md: PCS (`--n 20`), direct (`--engine direct`), and the `--dp-len-bits 1` resolver
+torture test, each finding its golden pair.
+
+## What to change
+
+- **Fix `refill`'s wait loop** (§5): back off on a private word instead of re-loading
+  `free_top` every iteration, so a starved sender cannot block the receivers from
+  refilling the stack.  This is the only defect found.
+- **`ROUTER_BATCH = 32` is a lot to park per sender**, and it is charged twice to the pool
+  (`slack` is already `32 * S`, and `connect.hpp:220` then adds `S * (ROUTER_BATCH + 1)`).
+  Worth checking whether 8 keeps the session-2 win at 256 cores while giving back the
+  3-6 % and the 105 MB here.
+- Session 2 §7's other two items are still open: `credit = 4` is still the default and is
+  still worth 1.5x at np 2 (§7), and the bench still divides (§6).
+
+## Reproducing
+
+```bash
+git worktree add /tmp/old-router a3b5ded && cmake -S /tmp/old-router -B /tmp/old-router/build \
+    -DCMAKE_BUILD_TYPE=release && make -C /tmp/old-router/build router_bench
+
+# the A/B
+mpirun -np 1 --bind-to none /tmp/old-router/build/examples/router_bench --senders 50 --receivers 12 --no-bind
+mpirun -np 1 --bind-to none build/examples/router_bench --senders 50 --receivers 12
+
+# the bistable collapse: repeat, 3 s rounds or longer, and watch for ~110 ns/point
+for i in $(seq 6); do mpirun -np 1 --bind-to none build/examples/router_bench \
+    --senders 50 --receivers 12 --block 1024 --seconds 3 --rounds 1; done
+
+# DRAM per point
+perf stat -a -e uncore_imc/cas_count_read/,uncore_imc/cas_count_write/ -- mpirun ...
+
+# the inline chain (PIE: file_off = ip - mmap_vaddr + mmap_pgoff, from --show-mmap-events)
+perf record -F 499 --all-user -o r.data -- mpirun ...
+perf report -i r.data --stdio --no-children -g none --sort srcline
+addr2line -i -f -C -e build/examples/router_bench 0x<file offset>
+```
