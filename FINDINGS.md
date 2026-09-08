@@ -1550,3 +1550,123 @@ taskset -c 0-63,128-191 mpirun -np 1 --bind-to none build/examples/router_bench 
 # Intel's RFOs
 perf stat -a -e l2_rqsts.all_rfo,offcore_requests.demand_rfo -- mpirun ...
 ```
+
+---
+
+# Session 7 -- the non-temporal staging copy, shipped and A/B'd on both nodes
+
+2026-09-08, **grdix-2** and **grvingt-12** (Grid'5000 Nancy), release builds of the committed
+tree at `ba8b1eb` ("router: stage lines with non-temporal stores") against its parent
+`6b26941` in a second worktree, same node, same flags, median of 3-4 rounds of 3 s.  Session 6
+measured this change as an out-of-tree patch; this is the version in the tree, which differs
+in shape only: `router_stream_copy` in `common.hpp`, with an AVX-512 path, an AVX2 path for
+Rome-class machines and a `memcpy` fallback, and the `sfence` that orders the streaming stores
+before the release store publishing the line.  `ctest` passes on both nodes; the engine's three
+smoke tests pass.
+
+## Summary
+
+**It ships unconditional, because it wins in every configuration the engine can actually
+run.**  The one regime where it loses is receiver-heavy, which the engine cannot reach: it
+runs one dict thread per cache domain and puts everything else on producers.
+
+| grdix-2, 256 cores, 32 L3 domains | before | after | |
+|---|---|---|---|
+| 220 + 32 (the engine's shape here) | 2.4 G pts/s, 191.4 ns | **6.9 G, 31.6 ns** | **2.9x** |
+| 192 + 63 | 2.4 G, 79.8 ns | **7.1 G, 27.0 ns** | **3.0x** |
+| 240 + 15 | 2.0 G, 189.6 ns | 5.2 G, 160.0 ns | 2.6x |
+| 150 + 105 | 2.8 G, 54.0 ns | 6.6 G, 22.5 ns | 2.4x |
+| 127 + 128 | 2.8 G, 45.5 ns | 6.2 G, 20.4 ns | 2.2x |
+
+| grvingt-12, 32 cores, 2 L3 domains, one thread per core | before | after | |
+|---|---|---|---|
+| 29 + 2 (the engine's shape here) | 518 M pts/s, 55.9 ns | **558 M, 52.3 ns** | **+7.6 %** |
+| 28 + 3 | 773 M, 36.4 ns | **837 M, 33.3 ns** | **+8.3 %** |
+| 26 + 5 | 1.3 G, 20.6 ns | **1.4 G, 18.8 ns** | **+8.7 %** |
+| 24 + 7 | 1.5 G, 16.0 ns | 1.4 G, 16.6 ns | **-3.8 %** |
+| 20 + 11 | 1.2 G, 16.35 ns | 1.2 G, 17.2 ns | -5.0 % |
+| 16 + 15 | 16.1 ns | 17.3 ns | **-7.2 %** |
+
+Both machines are stable to under 1 % round to round at these sizes, so the small numbers are
+real, not noise.
+
+## 1. The crossover, and why it is only on the small node
+
+On grvingt the sign flips at about **four senders per receiver**.  Below that the streaming
+store is a loss of 4-7 %, above it a gain of 8-9 %.  The mechanism follows from what the two
+machines do with a staged block:
+
+- grvingt has **two L3 domains of 22 MB**, one per socket, and a destination's active block is
+  64 KB.  With few senders the handoff often stays inside a socket's L3, so the write
+  allocation the old `memcpy` paid was an L3 hit and the receiver's read was another.  Pushing
+  the line to DRAM instead trades two cache hits for two DRAM accesses.
+- grdix has **32 domains of 16 MB** over two sockets, and the destination is picked uniformly,
+  so the reader is in the writer's domain about one time in 32.  Session 6 measured what that
+  costs: 2.27 G DRAM fills per round on the sender side, 49 % of them from the far socket, and
+  1.53 G cross-socket cache probes on the receiver side.  There is no cache hit to lose.
+
+The engine's shape is what settles it.  `--dicts-per-node` is meant to be the number of cache
+domains and never more than `--producers-per-node`, so a node runs **14 producers per dict
+thread on grvingt and 7 on grdix** -- deep in the region where the streaming store wins on
+both.  A receiver-heavy Router team is legal and pointless.
+
+## 2. Lossy mode delivers nothing inside a node
+
+Measured because the question was asked directly, and the answer is unambiguous.  `routed` is
+the delivered rate; the printed ns/point is **per pushed point**, so a lossy run that throws a
+quarter of its points away looks 20 % cheaper per point while delivering no more:
+
+| grvingt 26 + 5 | routed | ns/point | dropped |
+|---|---|---|---|
+| lossless, before | 1.2 G | 21.0 | 0.000 % |
+| lossy, before | 1.2 G | 16.5 | **23.8 %** |
+| lossless, after | 1.4 G | 18.7 | 0.000 % |
+| lossy, after | 1.4 G | 16.5 | **12.5 %** |
+
+Same delivered rate, a quarter of the work wasted.  At 24 + 7 lossy is slightly *worse*
+(1.4 G against 1.5 G lossless), and session 5 §1 has the extreme case: grdix 192 + 63 lossy
+delivers 1.8 G with 51 % dropped where lossless is clean at 2.5-2.8 G.  Across sessions 3, 5
+and 7 there is **not one single-node configuration where lossy delivers more than lossless**.
+
+Why there is nothing to gain: the free ring is the only flow control the Router has.  In
+lossless mode a sender that finds no block waits, which paces the senders to the receivers'
+drain rate, keeps the queues short and the handoff cache-warm.  Dropping returns the block at
+once, so senders never wait, the inboxes stay full, the write-to-read delay grows past cache
+residency and the receivers slow down -- which drops more (session 4 §2).  Lossy earns its
+place on the inter-node path, where the algorithm tolerates loss and the alternative is
+blocking on the network.
+
+**As a diagnostic it is useful but perturbing.**  The three drop counters do localise the
+imbalance -- `svc` for no block installed, `net` for credit exhausted, `recv` for a full inbox
+-- but what they report is the imbalance of a system with no flow control: 192 + 63 reads as
+"51 % dropped at the receivers" while the lossless run at that split is clean.  The
+non-perturbing form of the same signal is already counted and simply not printed:
+`ROUTER_STALL_OUT` (a block parked because a receiver's inbox was full) and `ROUTER_STALL_IN`
+(no free block to repost a receive).  Adding them to the round line, and a per-receiver spread
+of delivered points beside the per-node push spread, would make a lossless run self-diagnosing;
+the service thread already walks the per-thread counters to aggregate them, so only a small
+API addition is missing.
+
+## What to change
+
+- Nothing about the copy: it is in the tree and verified on both machines.
+- **Print the two stall counters** on the bench's round line, and stop reading single-node
+  lossy runs as performance numbers (§2).
+- Still open from session 6: **partition the pool per NUMA node** so a sender streams into
+  memory local to its destination.  62 % of the receivers' DRAM reads were far after this
+  change, and on one socket alone the router already runs at 88 % of that socket's bandwidth
+  (session 6 §5), so page placement is what the next factor has to come from.
+
+## Reproducing
+
+```bash
+# the A/B, on the node, against the parent commit -- the worktree registration lives in the
+# shared .git, so give the path the node's name or `git worktree prune` first
+git worktree add /tmp/pre-nt-$(hostname -s) 6b26941
+cmake -S /tmp/pre-nt-$(hostname -s) -B /tmp/pre-nt-$(hostname -s)/build -DCMAKE_BUILD_TYPE=release
+make -C /tmp/pre-nt-$(hostname -s)/build router_bench
+
+for b in /tmp/pre-nt-$(hostname -s)/build build; do
+    mpirun -np 1 --bind-to none $b/examples/router_bench --senders 220 --receivers 32 --rounds 3
+done
+```
