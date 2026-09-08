@@ -280,13 +280,6 @@ struct Placement {
 		else
 			printf("MPI: %d thread group(s) of %d..%d CPUs; no cache is shared by several cores,"
 			       " so the mask is one domain\n", n_groups, gmin, gmax);
-		if (n_numa_nodes != 1) {
-			printf("***** WARNING *****\n");
-			printf("---> rank %d spans %d NUMA nodes: the engine wants ONE MPI RANK PER NUMA NODE\n",
-				rank, n_numa_nodes);
-			printf("---> (mpirun --map-by numa --bind-to numa, or the launcher's equivalent)\n");
-			printf("***** WARNING *****\n");
-		}
 		if (bind) {
 			printf("MPI: dict threads on CPUs");
 			for (int j = 0; j < n_groups; j++)

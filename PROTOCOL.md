@@ -30,10 +30,11 @@ producers_per_node` threads, laid out by thread id:
 (`R == dicts_per_node`.)  MPI is initialised with `MPI_THREAD_FUNNELED`
 and **only thread 0 ever calls MPI** (its code is the `CommThread` class).
 
-**One rank per NUMA node.**  The engine assumes it, and rank 0 prints a loud warning
-when its own affinity mask spans more than one (`Placement::report()`, in the banner).  Nothing
-enforces it and nothing breaks without it; the placement below simply stops meaning
-what it says, because a thread group would then straddle two memory domains.
+**A rank may span several NUMA nodes.**  Nothing assumes one rank per NUMA node.  A thread
+group lives inside one cache domain and a cache domain inside one NUMA node, so the groups of
+a rank holding a whole machine are each memory-local anyway, and every per-thread object is
+first-touched by the thread that owns it.  The banner reports how many nodes the mask covers
+(`Placement::report()`) as information, not as a warning.
 
 **Thread groups.**  The mask's **cores** are partitioned into **one group per
 dict thread**, each group inside a single cache domain and all of them the same size to

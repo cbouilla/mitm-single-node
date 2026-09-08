@@ -307,12 +307,6 @@ struct RouterPlacement {
 		}
 		printf("; %d group(s) of %d..%d senders and %d..%d receivers, threads pinned\n",
 		       n_groups, smin, smax, rmin, rmax);
-		if (n_numa_nodes != 1) {
-			printf("***** WARNING *****\n");
-			printf("---> a rank spans %d NUMA nodes: one MPI rank per NUMA node is wanted\n", n_numa_nodes);
-			printf("---> (mpirun --map-by numa --bind-to numa, or the launcher's equivalent)\n");
-			printf("***** WARNING *****\n");
-		}
 	}
 
 	/*
