@@ -29,13 +29,22 @@ inline void Router_node::free_push(const u32 *blks, u32 n)
  * element at free_out is not there (nothing free, or a push under way), never a wait.  A ready cell changes only
  * when claimed, and a claim moves free_out, which fails the CAS: the ids read before it are the blocks.  The
  * acquire loads pair with the pushers' release stores: what they did to a block is visible to whoever pops it.
- * Reached from Router_Push (a sender's refill) and from the service whenever its stash runs empty.
+ * `floor` blocks are left in the ring for the caller who passes zero, the service: a node that cannot post a
+ * receive stalls every peer that sends to it, and a peer's send holds a block until it completes, so senders
+ * taking the last block deadlock the whole run.  The receivers' releases refill the ring without the network.
+ * Nothing is held back with one node: nothing arrives, so a posted receive never needs replacing.
+ * Reached from Router_Push (a sender's refill, floor n_recv) and from the service whenever its stash runs empty.
  */
-inline u32 Router_node::free_pop_many(u32 k, u32 *out)
+inline u32 Router_node::free_pop_many(u32 k, u32 *out, u32 floor)
 {
 	u64 pos = free_out.load(std::memory_order_relaxed);
 	u32 n = 0;
 	while (n == 0) {
+		u64 avail = free_in.load(std::memory_order_relaxed) - pos;
+		if (avail <= (u64) floor)
+			return 0;
+		if ((u64) k > avail - floor)
+			k = (u32) (avail - floor);
 		u64 c = free_cell[pos & free_mask].load(std::memory_order_acquire);
 		int32_t dif = (int32_t) ((u32) (c >> 32) - (u32) (pos + 1));
 		if (dif < 0)
@@ -72,10 +81,10 @@ inline u32 Router_node::free_pop_many(u32 k, u32 *out)
  */
 inline void Router_node::refill(Router_thread &s)
 {
-	u32 n = free_pop_many(ROUTER_BATCH, s.cache);
+	u32 n = free_pop_many(ROUTER_BATCH, s.cache, n_nodes > 1 ? (u32) opt.n_recv : 0);
 	while (n == 0 && not lossy) {
 		cpu_relax();
-		n = free_pop_many(ROUTER_BATCH, s.cache);
+		n = free_pop_many(ROUTER_BATCH, s.cache, n_nodes > 1 ? (u32) opt.n_recv : 0);
 	}
 	for (u32 i = 0; i < n; i++)
 		zero_valid(s.cache[i]);
@@ -197,11 +206,11 @@ inline void Router_Close(Router_thread &rt)
 /******************************** the receiver's calls ********************************/
 
 /*
- * Receiver.  The next block the inbox names, to be read in place: where its points are, and how many; 0 and
- * NULL when nothing is there.  One block out at a time -- Router_Release gives it back, and a second Grab before
- * that is a bug, not a queue.  Grab/Release and Router_Pop do not mix on one receiver.
+ * Receiver.  The next block the inbox names, to be read in place: where its points are, two u64 each (key then
+ * val), and how many; 0 and NULL when nothing is there.  One block out at a time -- Router_Release gives it back,
+ * and a second Grab before that is a bug, not a queue.  Grab/Release and Router_Pop do not mix on one receiver.
  */
-inline size_t Router_Grab(const Point **pts, Router_thread &rt)
+inline size_t Router_Grab(const u64 **pts, Router_thread &rt)
 {
 	if (rt.cur_blk != ROUTER_NONE)
 		errx(1, "Router_Grab: a block is out already");
@@ -213,7 +222,7 @@ inline size_t Router_Grab(const Point **pts, Router_thread &rt)
 	Router_node &rn = rt.node;
 	rt.cur_blk = (u32) e.key;
 	rt.cur_count = (u32) e.val;
-	rt.cur_pts = (const Point *) (rn.pool + (size_t) rt.cur_blk * rn.block_bytes + ROUTER_HDR_BYTES);
+	rt.cur_pts = (const u64 *) (rn.pool + (size_t) rt.cur_blk * rn.block_bytes + ROUTER_HDR_BYTES);
 	rt.cur_off = 0;
 	rt.ctr[ROUTER_POPPED] += rt.cur_count;
 	*pts = rt.cur_pts;
@@ -237,12 +246,12 @@ inline void Router_Release(Router_thread &rt)
 inline bool Router_Pop(u64 *a, u64 *b, Router_thread &rt)
 {
 	if (rt.cur_blk == ROUTER_NONE) {
-		const Point *pts;
+		const u64 *pts;
 		if (Router_Grab(&pts, rt) == 0)
 			return false;
 	}
-	*a = rt.cur_pts[rt.cur_off].key;
-	*b = rt.cur_pts[rt.cur_off].val;
+	*a = rt.cur_pts[2 * rt.cur_off];
+	*b = rt.cur_pts[2 * rt.cur_off + 1];
 	rt.cur_off += 1;
 	if (rt.cur_off == rt.cur_count)
 		Router_Release(rt);

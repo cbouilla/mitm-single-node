@@ -157,7 +157,7 @@ struct alignas(64) Router_thread {
 	/* a receiver's */
 	RouterRing inbox;                    /* from the service: (block, count), blocks it now holds */
 	u32 cur_blk = ROUTER_NONE;           /* the block out: grabbed, not yet released; NONE when none */
-	const Point *cur_pts = NULL;         /* its points, in block memory */
+	const u64 *cur_pts = NULL;           /* its points, in block memory, two words each: key then val */
 	u32 cur_count = 0;                   /* how many */
 	u32 cur_off = 0;                     /* Router_Pop's cursor into it */
 
@@ -280,7 +280,7 @@ public:
 	/* the free ring: any thread.  Router_Release pushes the block a receiver read through, a sender's cache takes a
 	 * batch, the stash trades them */
 	void free_push(const u32 *blks, u32 n);
-	u32 free_pop_many(u32 k, u32 *out);
+	u32 free_pop_many(u32 k, u32 *out, u32 floor);
 
 	/* the sender path: Router_Push, by the push that fills a private line; refill also from Router_Init */
 	void stage_line(Router_thread &s, int d, const Point *line);

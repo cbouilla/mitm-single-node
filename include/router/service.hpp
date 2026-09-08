@@ -14,7 +14,7 @@ inline u32 Router_node::stash_pop()
 {
 	if (free_list.empty()) {
 		u32 got[ROUTER_BATCH];
-		u32 n = free_pop_many(ROUTER_BATCH, got);
+		u32 n = free_pop_many(ROUTER_BATCH, got, 0);   /* the service takes the last block: its receives come first */
 		for (u32 i = 0; i < n; i++)
 			free_list.push_back(got[i]);
 		if (n == 0)
