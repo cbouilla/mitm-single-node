@@ -1123,3 +1123,194 @@ awk '/N0=/ {print}' /proc/$(pgrep -f '^build/examples/router_bench')/numa_maps
 # which side of the stack costs: sweep the batch, which sets both the walk length and the CAS rate
 sed -i 's/ROUTER_BATCH = 32/ROUTER_BATCH = 8/' include/router/common.hpp   # then rebuild
 ```
+
+---
+
+# Session 5 -- both nodes at `739b7ea`: the free ring works, and how far the memory wall is
+
+Session of 2026-09-08 on **grvingt-11** (2 x Xeon Gold 6130, 32 cores / 64 PU, 2 NUMA nodes,
+2 L3 of 22 MB, 187 GB) and **grdix-5** (2 x EPYC 9754 Bergamo, 256 cores / 512 PU, 2 NUMA
+nodes, 32 L3 of 16 MB, 1 TB), Grid'5000 Nancy, Open MPI 5.0.7.  Stock tree at `739b7ea`,
+`cmake -DCMAKE_BUILD_TYPE=release` in a worktree per cluster; `perf` with
+`perf_event_paranoid = -1` and `kptr_restrict = 0` (`sudo-g5k`).  Median of 3 rounds of 3 s.
+
+**np 1 only.**  One rank now holds the whole machine, so the np 2 columns of sessions 1-4 are
+not re-measured here.
+
+What changed since session 4 measured this code: `3747c82` made the free stack a bounded MPMC
+ring of block ids, `4dd6316` first-touches the pool in parallel, `e75ff5f` gave the receiver a
+zero-copy path.  Sessions 3 and 4 asked for the first two by name.
+
+## Summary
+
+1. **Session 4's ceiling is gone.**  `free_pop_many` was 30-59 % of sender cycles there and
+   the node was pinned at 460-830 K blocks/s.  The free ring is now **0.13 % (grvingt) and
+   0.38 % (grdix) of all samples**, and what is left in the profile is real work.
+2. **The baselines improve where the stack used to bind and are flat elsewhere**: grvingt
+   50 + 12 goes 35.7 -> **31.7 ns/point** against session 3 (+12 %), grdix 150 + 105 goes
+   47.4-48.2 -> **46.0-47.3** and 127 + 128 stays at 39.7 (session 4: 37.1).
+3. **The memory wall is a factor 2.4 away on grvingt and 5 away on grdix** (§3).  Each point
+   is written to DRAM once and read once, which costs **48.7 measured bytes of DRAM traffic
+   per 16-byte point on grvingt** and **~28 on grdix**; the router's baseline uses 41 % of
+   grvingt's sustainable bandwidth and 19 % of grdix's.
+4. **`192 + 63 --lossy` still collapses** and no longer recovers: 51 % dropped in every round
+   (session 4 §2 saw it latch per round).  Lossless at the same split is clean.
+
+## 1. Baselines, np 1
+
+grvingt-11, 50 senders + 12 receivers (the reference split of sessions 1 and 3):
+
+| mode | routed | ns/point | blocks/s | dropped |
+|---|---|---|---|---|
+| lossless | 1.6 G | 31.5 / 32.2 / 32.2 | 380-389 K | 0.000 % |
+| lossy | 1.5-1.6 G | 31.4 / 31.8 / 31.8 | 385-390 K | 3.2-3.3 % |
+
+grdix-5, three splits of the 255-worker team, lossless and lossy:
+
+| split | mode | routed | ns/point | blocks/s | dropped |
+|---|---|---|---|---|---|
+| 150 + 105 | lossless | 3.2 G | 46.1 / 46.8 / 47.3 | 772-793 K | 0.000 % |
+| 150 + 105 | lossy | 3.2-3.3 G | 45.8-46.1 | 794-799 K | 0.008-0.066 % |
+| 192 + 63 | lossless | 2.5-2.8 G | 73.4 / 76.4 / 76.9 | 611-676 K | 0.000 % |
+| 192 + 63 | lossy | **1.8 G** (push 3.7 G) | 52.1-52.4 | 890-895 K | **51 %** |
+| 127 + 128 | lossless | 3.2 G | 39.7 / 39.7 / 39.8 | 777-779 K | 0.000 % |
+| 127 + 128 | lossy | 3.2 G | 39.6-39.7 | 778-780 K | 0.005 % |
+
+The senders' floor, for scale: 13.0 ns/point on grvingt, 10.4 on grdix (the `raw` line, PRNG
+and the benchmark's destination pick, no push).  **Do not compare ns/point across the two
+nodes**, only ratios.
+
+## 2. Where the cycles go now
+
+`perf record -F 499 --all-user` on one 3 s round, source lines summed by region of
+`include/router/workers.hpp` (line ranges from the function boundaries), 99.8 % accounted:
+
+| region | grvingt 50 + 12 | grdix 150 + 105 |
+|---|---|---|
+| **the free ring** (`free_push` / `free_pop_many` / `refill`) | **0.13 %** | **0.38 %** |
+| `seal` + `stage_line` (the install wait) | 0.44 % | 1.23 % |
+| `Router_Push` body | 23.00 % | 12.70 % |
+| `Router_Grab` / `Router_Release` / `Router_Pop` | 3.80 % | 29.30 % |
+| `memmove` (private line -> block, block -> out) | 5.42 % | 25.69 % |
+| `tools.hpp` (PRNG, `murmur128`) | 34.82 % | 24.08 % |
+| the benchmark's own lines | 26.82 % | 4.21 % |
+
+Two things to read off it.  The free ring and the install wait together are **under 2 %** on
+both machines, against 36 % (grdix, session 4 §4) and 41 % (grvingt np 2, session 1 §1)
+before: the MPMC ring did what sharding was supposed to do.  And the two machines are now
+limited by different halves of the router -- grvingt by the sender's push (23 %) and grdix by
+the receiver's read-out plus the copies (55 % between `Grab`/`Pop` and `memmove`).
+
+`router_bench.cpp:49`, the `x % F` destination pick, is **21.8 % of all samples on grvingt**
+and 1.5 % on grdix.  Sessions 1 §3 and 3 §6 said exactly this: the divider is the single
+biggest line on Intel and free on Zen.  It is still there, and it is still harness cost.
+
+## 3. The memory wall
+
+Every point is written into a block that is far larger than any cache by the time it is read,
+so each point costs one DRAM write and one DRAM read, plus the read-for-ownership the write
+pulls in.  That makes aggregate memory bandwidth a hard ceiling on the router, and it is worth
+knowing how close it is.
+
+### The machines
+
+`membw`, an OpenMP STREAM in the session's scratch (`~/membw.c` on the Nancy home): arrays
+first-touched in parallel, `OMP_PROC_BIND=spread OMP_PLACES=cores`, best of 5.  "DRAM" counts
+the read-for-ownership that every write of a line not in cache costs, which is what the memory
+controllers see; "STREAM" is the classic convention that counts only the bytes the program
+moved.
+
+| node | threads | read | copy | scale | triad |
+|---|---|---|---|---|---|
+| grvingt, 3 x 4 GiB | 32 cores | 161 | 190 | 190 | 189 |
+| grvingt | 64 PU | 204 | 185 | 184 | 181 |
+| grvingt, one socket | 16 cores | 81 | 97 | 97 | 96 |
+| grdix, 3 x 8 GiB | 256 cores | 543 | 491 | 482 | 490 |
+| grdix | 512 PU | 531 | 485 | 476 | 486 |
+| grdix, one socket | 128 cores | 271 | 245 | 241 | 245 |
+
+(GB/s of DRAM traffic.  Sockets scale exactly 2x on both.)
+
+### Bytes of DRAM per point, measured
+
+Not modelled: counted with the memory controllers' own counters, as the difference between a
+1-round and a 3-round run so that setup and the `raw` phase cancel.
+
+**grvingt**, `uncore_imc/cas_count_read/` + `cas_count_write/`, 50 + 12: 425352 MiB over
+9.16 G points = **48.7 bytes per point** (27.3 written, 21.4 read).  The model -- 16 B of point
+written, 16 B of read-for-ownership, 16 B read back -- predicts 48.  It is a coincidence worth
+noting that the split is not the model's 2:1 read:write: some block reads are still being
+served by the 44 MB of L3 (the inboxes hold ~50 MB in flight), and the writes carry more than
+the points.
+
+**grdix** exposes no named DRAM event; `amd_umc_*` has an empty `events/` directory, so the
+data fabric's `local_processor_{read,write}_data_beats_cs0` was used and **calibrated against
+`membw`**, whose traffic is known: 602 bytes of machine-wide traffic per channel-0 beat.  At
+150 + 105 the router draws 0.0473 beats per point, i.e. **~28.5 bytes per point, +/- 25 %** --
+consistent with 32 (write + read, no read-for-ownership: Zen combines full-line writes) and
+clearly under grvingt's 48.7.
+
+### How far the wall is
+
+| | sustainable DRAM | bytes/point | ceiling | baseline | uses |
+|---|---|---|---|---|---|
+| grvingt, 50 + 12 | 190 GB/s | 48.7 | **3.9 G pts/s** | 1.58 G | 77 GB/s, **41 %** |
+| grdix, 150 + 105 | 490 GB/s | ~28.5 | **~17 G pts/s** | 3.26 G | 93 GB/s, **19 %** |
+
+So memory bandwidth does not bind either machine today, but on grvingt it is only **2.4x**
+away and would be the next wall after the sender's push path.  On grdix there is **5x** of
+headroom, which says the AMD node is limited by the router and not by its memory system.
+
+A second, cruder reading of the same wall, for the sceptical: `membw`'s last block writes
+16-byte points into a buffer and reads them back, which is the router's pattern with none of
+the router in it.  It reaches **2.38 G pts/s on grvingt** and **8.6 G on grdix** -- 1.5x and
+2.6x the baselines.  These are lower bounds on the machine, not the ceiling: the interleaved
+16-byte format vectorizes badly, which is why they sit under the copy kernel's implied 3.9 G
+and 17 G.
+
+## 4. `192 + 63 --lossy` has stopped recovering
+
+Session 4 §2 found this split bistable: round 0 nearly always collapsed and later rounds
+climbed out to 2.6-2.7 G.  Now all three rounds collapse identically -- 1.8 G routed against
+3.7 G pushed, **51 % dropped** (all `DROPPED_RECV`), service 78-83 % busy.  Lossless at the
+same split is clean at 2.5-2.8 G with nothing dropped, and 150 + 105 lossy is clean too, so
+the diagnosis stands: with drops returning blocks straight to the free ring the senders have
+no back-pressure, and 3:1 is past the point where 63 receivers can drain them.  Relieving the
+free stack has made this **worse**, exactly as session 4 §3 predicted it would: the stack was
+the throttle.
+
+## What to change
+
+- **Give lossy mode real back-pressure.**  It is now the only thing standing between a 3:1
+  split and throwing away half the points, and the free ring no longer throttles anything.
+- **Fix the benchmark's `x % F`** (21.8 % of samples on grvingt).  It has been the top line on
+  Intel in three sessions; a multiply-shift removes it.
+- **grdix's receiver path is where its cycles are** (55 % between `Router_Grab`/`Pop` and
+  `memmove`), and the bench pops one point at a time.  Measuring `Router_Grab` in place
+  against `Router_Pop` would separate the router's cost from the benchmark's.
+- Nothing to do about memory bandwidth yet, but note the number: **48.7 bytes of DRAM per
+  16-byte point on Intel**.  Anything that makes a point cross DRAM twice would put grvingt
+  straight into the wall.
+
+## Reproducing
+
+```bash
+# baselines
+mpirun -np 1 --bind-to none build/examples/router_bench --senders 50 --receivers 12          # grvingt
+mpirun -np 1 --bind-to none build/examples/router_bench --senders 150 --receivers 105        # grdix
+#   ... --lossy for the second half of the table
+
+# the machine's bandwidth (membw.c is ~140 lines of OpenMP, in the session scratch)
+gcc -O3 -march=native -fopenmp -o membw membw.c
+OMP_PROC_BIND=spread OMP_PLACES=cores OMP_NUM_THREADS=256 ./membw 8 5     # 3 arrays of 8 GiB
+
+# bytes of DRAM per point: difference two runs so setup and the raw phase cancel
+for r in 1 3; do perf stat -a -e uncore_imc/cas_count_read/,uncore_imc/cas_count_write/ -- \
+    mpirun -np 1 --bind-to none build/examples/router_bench --senders 50 --receivers 12 --rounds $r; done
+# on AMD there is no named DRAM event: use one channel and calibrate it against membw
+EV=amd_df/local_processor_read_data_beats_cs0/,amd_df/local_processor_write_data_beats_cs0/
+
+# the regions of the profile
+perf record -F 499 --all-user -o g.data -- mpirun ... --rounds 1
+perf report -i g.data --stdio --no-children -g none --sort srcline    # then bucket by workers.hpp line
+```
