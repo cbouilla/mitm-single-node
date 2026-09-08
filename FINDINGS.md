@@ -713,3 +713,413 @@ perf record -F 499 --all-user -o r.data -- mpirun ...
 perf report -i r.data --stdio --no-children -g none --sort srcline
 addr2line -i -f -C -e build/examples/router_bench 0x<file offset>
 ```
+
+---
+
+# Session 4 -- grdix again, the router after `4a706a1`, at 255 workers
+
+Profiling session, 2026-09-08, on **grdix-8** (Grid'5000, Nancy): the same machine class as
+session 2 -- 2 sockets x AMD EPYC 9754 (Bergamo, Zen 4c), 256 cores / 512 PU, 2 NUMA
+nodes, **32 L3 domains of 16 MB** (8 cores each), 1 TB RAM, Open MPI 5.0.7.  Stock
+`examples/router_bench.cpp` at `56f4fb8`, `cmake -DCMAKE_BUILD_TYPE=release`; `perf`
+needed `perf_event_paranoid = -1` and `kptr_restrict = 0` (`sudo-g5k`).
+
+Session 2 measured the router *before* the per-sender block cache; session 3 measured the
+cache on 32 cores, where its target regime does not exist.  This is the cache at 256
+cores, which is what it was written for.  The starting point was two configurations, both
+**255 workers + 1 service = 256 threads on 256 cores**, differing only in the split:
+
+| configuration | routed | ns/point | dropped |
+|---|---|---|---|
+| `--senders 150 --receivers 105 --lossy` | 3.1-3.2 G pts/s | 48 | 0.02 % |
+| `--senders 192 --receivers 63 --lossy` | **1.3 G** or **2.7 G** | 88 or 82 | **40 %** or 0.01 % |
+
+The second one is bistable.  Explaining that, and the ceiling both of them run into, is
+what this session is about.
+
+## Summary
+
+Three findings, in decreasing order of how much they cost:
+
+1. **The node's ceiling is a *block* rate, not a point rate**, and it is the single
+   `free_top` word -- specifically the senders' **pop** side (§3).  Across the whole
+   campaign -- senders 85..234, receivers 21..170, `--block` 1024..4096 -- the router
+   handles **460-830 K blocks/s** and nothing else.  At the default 4096-point block that is
+   2-3 G pts/s, and it is why `--block` is the only lever that matters: raising it divides
+   the free-stack traffic per point.  Senders spend **36 % of their cycles** in
+   `free_pop_many` in the healthy state and **74 %** where the ceiling binds.  Chaining the
+   receivers' frees, which a microbenchmark said was worth 17x, was implemented and is
+   worth **zero**: the contention is on the pop side.
+2. **Lossy mode has a latching collapse that lossless does not** (§2).  Drops return blocks
+   to the free stack directly, so the senders never wait, the receivers' inboxes stay full,
+   the write-to-read delay grows past the lifetime of a line in cache, and the receivers'
+   copy-out slows by 2x -- which doubles the delay.  Positive feedback.  A 3:1 split sits
+   right on the tipping point; 1.4:1 has enough receiver headroom to stay out of it.
+3. **The placer stacked both round-robin passes on the low domains** (§5), doubling up
+   cores at one end of the machine while leaving cores idle at the other.  Fixed here in
+   three lines; worth **+8 %** at np 1 and **+15 %** at np 2.
+
+Session 3's fix works and is visible: the install-wait convoy that was 49.7 % of sender
+cycles in session 2 is **gone** (0.00 % here too), and `take_fresh`'s starvation wait with
+it.  What is left is the free stack it pops from.
+
+**Do not compare ns/point with session 3** (grvingt, 32 Intel cores).  The senders' raw
+PRNG loop is 10.4 ns/point here, as in session 2.
+
+## 1. The split, swept at a constant 255 workers
+
+`--lossy`, `--seconds 2 --rounds 3`, the last round of each:
+
+| S + R | routed | ns/point | dropped | per receiver |
+|---|---|---|---|---|
+| 234 + 21 | 471 M | 84.0 | 83.8 % | 22 M/s |
+| 223 + 32 | 715 M | 81.5 | 73.9 % | 22 M/s |
+| 213 + 42 | 916 M | 88.8 | 63.9 % | 22 M/s |
+| 204 + 51 | 1.1 G | 93.0 | 53.5 % | 22 M/s |
+| 192 + 63 | 2.6 G | 81.8 | 0.01 % | 41 M/s |
+| 171 + 84 | 1.8 G | 97.8 | 7.6 % | 21 M/s |
+| 150 + 105 | 3.2 G | 47.9 | 0.02 % | 30 M/s |
+| **127 + 128** | **3.4 G** | **37.1** | 0.01 % | 27 M/s |
+| 105 + 150 | 3.0 G | 34.6 | 0.01 % | 20 M/s |
+| 85 + 170 | 3.2 G | 27.0 | 0.00 % | 19 M/s |
+
+Two populations, not a curve.  Every configuration is either **healthy** (drops in the
+1e-4 range, 3-3.4 G pts/s) or **collapsed** (half to five sixths of the points thrown
+away, 0.5-1.8 G), and the giveaway is the last column: a receiver delivers **41, 30, 27,
+20 M pts/s** when healthy and **21-22 M pts/s** in every collapsed run, whatever the
+sender count.  The collapsed state has its own, lower, per-receiver rate.
+
+`192 + 63` belongs to neither: it is the boundary, and it lands on one side or the other
+per round.  Five rounds of 3 s, twice over, gave 1.4/1.3/1.3/1.3/1.3 G both times; at 2 s
+and at 4 s the first round collapsed and the rest recovered to 2.6-2.7 G.  **Round 0
+almost always collapses** (the senders start with 32 cached blocks each and the receivers
+with nothing, so the queues fill before the receivers get going), and whether it climbs
+back out is a coin toss.
+
+## 2. The collapse: lossy mode removes the only flow control there is
+
+Every drop in the collapsed runs is `DROPPED_RECV`, which `service.hpp:96` raises when
+`receivers[local]->inbox.push()` fails -- the receiver's inbox is **full**.  So the
+receivers are the constraint.  They are not, however, idle: `perf record -a -F 299`,
+threads separated by CPU (the placer pins them, so `perf report -C` is an exact role
+filter):
+
+| | healthy (lossless) | collapsed (lossy) |
+|---|---|---|
+| receiver cycles in `memmove` (`Router_Pop`'s copy-out) | ~50 % | **79 %** |
+| receiver cycles in the pop loop / empty inbox (`workers.hpp:207/209`) | 22.6 % | **0 %** |
+| receiver IPC | 0.16 | **0.04** |
+| points delivered per receiver | 38 M/s | 21 M/s |
+
+The collapsed receiver never waits and never spins: it is inside `rep movsb` at IPC 0.04.
+Same code, same instruction stream, same bytes, **2x the cycles per byte**.  That is
+memory, and the counters say which memory -- L2 prefetches that miss both L2 and the
+local L3, per point delivered:
+
+| regime | per receiver | `l2_pf_miss_l2_l3` per point |
+|---|---|---|
+| lossless, `--block 4096` | 38 M/s | 0.103 |
+| lossy collapsed, `--block 4096` | 21 M/s | **0.174** |
+| lossy, `--block 16384` | 55 M/s | 0.100 |
+
+**1.7x the far traffic per point, for 1.8x the cost.**  The block a collapsed receiver
+reads has gone cold: by the time it is read, the lines the sender wrote are no longer in
+the sender's 16 MB L3 domain.
+
+Why lossy and not lossless.  A dropped block is `release`d immediately (`service.hpp:104`),
+straight back through the service's stash to the free stack, so **a sender never runs out
+of blocks and never waits**: it pushes at full rate no matter how far behind the receivers
+are.  The inboxes therefore sit full, and the queueing delay between the write and the read
+is `in-flight bytes / drain rate`.  Slow the drain and the delay grows, which cools the
+lines further, which slows the drain: the state latches instead of passing.  In lossless
+mode there is nothing to break the coupling -- a sender out of blocks waits in `refill`, so
+the senders can never outrun the receivers, the queues stay short, and the collapse is
+**unreachable**:
+
+| 192 + 63, 4 rounds of 3 s | routed |
+|---|---|
+| lossless | 2.3 / 2.4 / 2.4 / 2.4 G, 0.000 % dropped, every time |
+| lossy | 1.3-1.4 G latched, or 2.6-2.7 G, per round |
+
+The queue depth is the control parameter, and `--inbox` sets it (192 + 63 lossy, 3 rounds
+of 3 s):
+
+| `--inbox` | rounds |
+|---|---|
+| 4 | 2.3 G, 2.6 G, 2.7 G (1.2 % dropped) |
+| 8 | 2.3 G, 2.6 G, 2.6 G (0.06 %) |
+| 16 | 2.2 G, 2.6 G, 2.6 G (0.04 %) |
+| 32 | 2.2 G, 2.6 G, 2.6 G (0.02 %) |
+| **64 (default)** | 1.4 G, 2.8 G, 2.8 G -- **bistable** |
+| 128 | 1.4 G, 1.5 G, 1.5 G (42 % dropped) -- latched |
+| 256 | 1.4 G, 1.5 G, 2.6 G |
+
+Shallower inboxes do not fix it (`--inbox 32` still collapsed in a 1-round run), they only
+make the latch harder to reach.  What actually removes it is either lossless mode or enough
+receivers.
+
+**Ruled out for the collapse:** NUMA.  The pool is 1144 MB and **87 % of it is on NUMA
+node 0** (`/proc/PID/numa_maps` during a run -- `router_alloc` memsets from thread 0, so
+first touch puts it all there), and `numactl --interleave=all` is worth a real **+17 %**
+lossless (2.4 -> 2.8-2.9 G) but does not stop the lossy collapse (2.4 G, 1.7 G, 1.3 G,
+1.3 G).  Worth fixing on its own account; not the trigger.
+
+## 3. The ceiling: one `free_top` word, and it is a block rate
+
+The healthy configurations all stop in the same place, and it is not where the point rate
+suggests.  Sweeping `--block` while reading the block rate off `pushed / block_points`:
+
+| | `--block` 1024 | 2048 | 4096 | 8192 | 16384 | 32768 |
+|---|---|---|---|---|---|---|
+| 192 + 63, routed | 650 M | 1.2 G | 1.3 G | 1.9 G | 4.1 G | 4.4 G |
+| 192 + 63, **blocks/s** | 635 K | 586 K | 537 K | 390 K | 311 K | 174 K |
+| 150 + 105, routed | 705 M | 1.3 G | 2.8 G | 2.5 G | 2.6 G | 2.7 G |
+| 150 + 105, **blocks/s** | 688 K | 635 K | 684 K | 305 K | 159 K | 82 K |
+
+Below 4096 points per block the point rate falls exactly as the block size does, at a
+**pinned 590-690 K blocks/s**.  Over the whole session -- 10 splits, 6 block sizes -- the
+block rate never leaves 460-830 K/s while the point rate moves by a factor of seven.  That
+is the signature of a per-block serialization point.
+
+It is the free stack.  The lossless sender profile, by source line
+(`include/router/workers.hpp`):
+
+| site | share of sender cycles |
+|---|---|
+| `:52-55` -- `free_pop_many`'s walk of the 32 links | **30.5 %** |
+| `atomic_base.h:501` -- its `compare_exchange_weak` | 5.4 % |
+| `:164/:167` -- the body of `Router_Push` | 6.7 % |
+| `tools.hpp:133-137` -- the PRNG | ~17 % |
+| the install wait (`stage_line`, `k > L`) | **0.00 %** |
+| `take_fresh`-style starvation wait | **0.00 %** |
+
+Session 3's fix holds at 256 cores: the convoy and the starvation wait are gone.  What the
+per-sender cache did was move the cost from *waiting on* the stack to *fighting for* it --
+`free_pop_many` loads `free_top`, walks up to 32 `blk_link` entries (a dependent load
+chain over lines other threads are writing), then CASes, and on failure walks again.
+
+Extracted and run on its own -- the same word, the same `blk_link` array, threads popping
+a batch of 32 and pushing the 32 back one at a time, which is exactly the router's mix
+(one batch-pop per 32 blocks from a sender, one single push per block from a receiver):
+
+| threads | blocks/s through `free_top` | fairness spread |
+|---|---|---|
+| 1 | 147 M | 1x |
+| 8 | 4.5 M | 1x |
+| 32 | 1.2 M | 5x |
+| 64 | 722 K | 12x |
+| 192 | 321 K | 44x |
+| **255** | **254 K** | **54x** |
+
+The saturated ceiling is the same order as the router's observed 460-830 K blocks/s, and
+the 54x spread between the luckiest and unluckiest thread is visible in the bench too: at
+`--block 1024` it reports 2842 ns/point against an aggregate of 311, which is what a mean
+of `1/n_i` looks like when some senders are starved.
+
+Both candidate fixes, measured in that same harness at 255 threads:
+
+| | blocks/s | vs today |
+|---|---|---|
+| today: one stack, one CAS per block returned | 229 K | -- |
+| chain the receiver's frees (one CAS per 32) | 3.84 M | 17x |
+| **shard per L3 domain (32 stacks)** | **75 M** | **327x** |
+| both | 237 M | 1000x |
+
+### Which side of the stack, and what the harness gets wrong
+
+**It is the pop side, and the harness's 17x for chaining is a mirage.**  Chaining the
+receiver's frees was implemented in the router (a per-receiver batch of `ROUTER_BATCH`
+blocks, `free_push_chain`ed when it fills and whenever the receiver finds nothing left to
+read, so it never sits on a block a lossless sender waits for; `router_test` passes,
+including with `ROUTER_PARANOID`'s block audit extended to count what a receiver holds) and
+it is worth **nothing at all**:
+
+| 192 + 63 | shipped | chained frees |
+|---|---|---|
+| lossy, `--block 1024` | 623 / 648 / 640 M | 611 / 639 / 645 M |
+| lossy, `--block 2048` | 1.2 / 1.3 / 1.3 G | 1.2 / 1.2 / 1.2 G |
+| lossless | 2.3 / 2.8 / 2.8 G | 2.6 / 2.7 / 2.7 G |
+| 150 + 105, lossy | 2.7 / 3.0 / 3.0 G | 2.6 / 3.0 / 3.0 G |
+
+The reason is in the profile of the regime where the ceiling actually binds -- `--block
+1024`, 574 M pts/s, 564 K blocks/s, the service idle at 2.3 M turns/s:
+
+| role | site | share of that role's cycles |
+|---|---|---|
+| **senders** | `workers.hpp:52-55` -- `free_pop_many`'s walk | **59.5 %** |
+| **senders** | `atomic_base.h:501` -- its `compare_exchange_weak` | **14.8 %** |
+| senders | `tools.hpp:133-137` -- the PRNG | 9.5 % |
+| receivers | `workers.hpp:207/209` -- waiting on an empty inbox | 51.2 % |
+| service | idle (`MPI_Testsome` on nothing, 0 % of turns busy) | -- |
+
+**Three quarters of the senders' cycles are in `free_pop_many`.**  The receivers are
+starved and the service is asleep: the whole node is 192 senders queueing for one word.
+The push side that chaining fixes is 63 threads doing one CAS per block, and it was never
+the constraint.
+
+Which of the walk and the CAS?  `ROUTER_BATCH` sets both -- the walk is that many
+dependent `blk_link` loads, the CAS is amortized over that many blocks -- and sweeping it
+separates them:
+
+| `ROUTER_BATCH` | `--block 1024` | `--block 4096` |
+|---|---|---|
+| 1 | 333 M | 1.2 G, 0.007 % dropped |
+| 4 | 330 M | 1.5 G, 0.017 % |
+| 8 | 473 M | **2.0 G, 0.008 %** |
+| **32 (today)** | 611 M | 1.4 G, **38 % dropped** |
+| 64 | 677 M | 1.4 G, **40 % dropped** |
+
+Monotone in the batch: a **longer** walk is better, so the walk is not what costs -- the
+CAS on the one word is, and the only thing that helps is doing fewer of them.  Sharding
+does exactly that, by cutting the contenders per word from 192 to the six senders of a
+cache domain.
+
+The right-hand column is the sting in the tail, and §2 explains it: **the free stack is
+currently also the flow control.**  At `ROUTER_BATCH` 8 the senders are throttled enough
+that they cannot outrun the receivers, and `192 + 63` is a stable 2.0 G with nothing
+dropped; at 32 and 64 they can, and it collapses to 1.4 G with two points in five thrown
+away.  Relieving the stack without giving lossy mode some other back-pressure trades a
+throughput ceiling for wasted work.
+
+And in the router itself, relieving the stack by raising the block size takes `192 + 63`
+from 1.3 G to **4.4-4.6 G pts/s at 35-36 ns/point** (still 22-27 % dropped: with the stack
+out of the way the receivers become the limit).  Note the sign flips with the split, as in
+session 2 §4 -- at `127 + 128`, where the stack is not the binding constraint, big blocks
+*hurt*: 3.3 G at 4096 against 2.6 G at 16384.
+
+**Ruled out for the ceiling:**
+
+- **The service thread.**  38 % of its cycles at np 1 are Open MPI bookkeeping
+  (`ompi_request_check_same_instance` 25 %, `ompi_request_default_test_some` 12.6 %) --
+  `MPI_Testsome` over 32 always-posted receives on a run with **no peers and zero
+  messages**.  Dead work, but not the limit: `--n-recv 1` against `--n-recv 32` at
+  `--block 1024` gives 606-648 M pts/s either way.  Worth skipping when `n_nodes == 1`
+  regardless.
+- **Receiver capacity per se.**  One receiver alone absorbs **592 M pts/s** (64 senders,
+  1 receiver, 82 % dropped).  Per-receiver throughput falls as receivers are added
+  (384, 300, 250, 144, 87, 49 M/s at R = 2, 4, 8, 16, 32, 63): a shared limit, not a
+  per-thread one.
+- **The inbox ring.**  `ring.hpp` already keeps head and tail on separate cache lines.
+
+## 4. Where the time goes, in one place
+
+`192 + 63`, lossless, the healthy state, all 256 threads:
+
+| role | threads | what they are doing |
+|---|---|---|
+| senders | 192 | 36 % free stack (`free_pop_many` walk + CAS), 17 % PRNG, ~7 % the push body, the rest `memmove` into blocks |
+| receivers | 63 | ~50 % `memmove` out of blocks, 23 % waiting on an empty inbox, ~5 % `murmur128` |
+| service | 1 | 38 % `MPI_Testsome` on an idle network, the rest `sweep`/`place`/the stash |
+
+Collapsed (lossy), the same team: senders lose the free stack from their profile (they
+never starve, drops keep the stack fed) and go ~38 % `memmove`; receivers go **79 %
+`memmove` at IPC 0.04** and stop waiting entirely; the service goes to 90 % of its turns
+busy, dropping four blocks in ten.
+
+## 5. The placer stacked its two passes (fixed)
+
+`place_pinned` put the service on a core of domain 0 and then started **both** round-robin
+passes at domain 0 again, so both remainders landed on the low-numbered domains, on top of
+the service:
+
+| | NUMA 0 / NUMA 1 | distinct cores | doubled up | idle |
+|---|---|---|---|---|
+| 150 + 105, before | **138 / 118** | 246 of 256 | 10 cores | 10 cores |
+| 192 + 63, before | 129 / 127 | 255 of 256 | 1 core | 1 core |
+| 50 + 12, before | 45 / 18 | 63 | -- | -- |
+| **either, after** | **128 / 128** | **256** | **none** | **none** |
+
+At `150 + 105` that is ten cores running two spinning threads each while ten cores at the
+other end of the machine sit idle -- and the service thread is one of the pairs, sharing a
+core with a sender.  The fix is one cursor for the whole team, started after the service's
+domain and carried from the receiver pass into the sender pass, which lands both
+configurations on exactly 8 threads per domain (`include/router/placement.hpp`, 3 lines).
+Measured, median of the steady rounds:
+
+| configuration | before | after |
+|---|---|---|
+| np 1, 150 + 105, lossless | 2.9 G, 52.8 ns | **3.1-3.2 G, 47.4-48.2 ns** (+8 %) |
+| np 1, 192 + 63, lossless | 2.4 G, 81.0 ns | **2.6-2.7 G, 72.7 ns** (+8 %) |
+| np 2, 96 + 31 per rank | 242 M, 774 ns | **280 M, 599 ns** (**+15 %**) |
+| np 2, 75 + 52 per rank | 242 M, 555 ns | **279 M, 502 ns** (+15 %) |
+| np 1, 50 + 12, lossless | 2.1 G, 23.8 ns | 2.0-2.1 G, 25.5 ns (**-2 to -5 %**) |
+
+The last row is the trade-off and it is worth knowing: for a team far smaller than the
+machine, the old placer's accident of packing 45 threads onto socket 0 and 18 onto socket 1
+beat an even 32/31 split, because it kept the traffic on one socket.  On the topology the
+Router is actually for -- one rank per NUMA node, which it warns about when you do not --
+that cannot happen, and there the fix is a clean 15 %.
+
+`ctest` passes all three (`router_np1/2/4`), and the engine passes all three smoke tests of
+CLAUDE.md (PCS, `--engine direct`, and the `--dp-len-bits 1` resolver torture test).
+
+## 6. np 2 still ships the wrong defaults
+
+Session 2 §7 asked for `credit` and `block_points` to be raised; they were not, and on this
+machine the bill has grown:
+
+| np 2, 96 + 31 per rank | routed | ns/point |
+|---|---|---|
+| defaults (`--credit 4 --block 4096`) | 280 M | 599 |
+| `--credit 16 --block 65536` | **1.9 G** | **81** |
+
+**6.8x, from two flags.**  Unchanged in substance from session 2 §5.
+
+## What to change
+
+- **Shard the free stack per cache domain** (§3).  It is *the* ceiling at np 1 -- 74 % of the
+  senders' cycles at the ceiling -- and the router already has the concept it needs: a group
+  is senders and receivers in one cache domain, so one free stack per group cuts the
+  contenders per word from 192 to 6.  Worth 327x in isolation.  Two things to design: a
+  steal or rebalance path (a block moves from the sender's group to the receiver's, so
+  shards drift), and where the service's stash spills.  While rewriting it, consider
+  dropping the linked list for **an array of block ids per shard with an atomic index**: a
+  `fetch_add` is wait-free, needs no walk and cannot fail, and the walk exists only because
+  the free list is threaded through `blk_link`.
+- **Do NOT bother chaining the receiver's frees** (§3): implemented and measured, worth
+  nothing.  The harness that predicted 17x measures a symmetric push/pop load; the router's
+  load is 192 senders on the pop side against 63 receivers on the push side.
+- **Pair it with real back-pressure for lossy mode** (§2, §3): the free stack is what
+  currently keeps the senders from outrunning the receivers, and `ROUTER_BATCH` 8 vs 32 is
+  the demonstration -- 2.0 G with nothing dropped against 1.4 G with 38 % dropped.  Fixing
+  the ceiling without replacing that throttle just converts it into waste.  `ROUTER_BATCH
+  = 8` is a one-constant mitigation available today.
+- **Raise the defaults**, again (§6): `credit = 4` costs 6.8x at np 2 with `block_points`.
+- **Give lossy mode back some back-pressure** (§2).  Dropping a block returns it to the free
+  stack, which is precisely what lets the senders outrun the receivers and cool the pipe.
+  A sender whose destination is dropping could be made to slow down, or the queue depth
+  bounded in bytes rather than in blocks; `--inbox 16` is a cheap partial mitigation today.
+- **First-touch the pool in parallel** (§2): 87 % of 1144 MB lands on one NUMA node, and
+  interleaving it is worth 17 %.
+- **Skip the MPI progress path when `n_nodes == 1`** (§3): 38 % of the service thread's
+  cycles are `MPI_Testsome` over an idle network.  Not a bottleneck, but it is free.
+
+## Reproducing
+
+```bash
+# the two configurations, and the bistability (round 0 nearly always collapses)
+mpirun -np 1 --bind-to none build/examples/router_bench --senders 150 --receivers 105 --lossy
+mpirun -np 1 --bind-to none build/examples/router_bench --senders 192 --receivers 63 --lossy --rounds 5
+mpirun -np 1 --bind-to none build/examples/router_bench --senders 192 --receivers 63          # lossless: never collapses
+
+# the block rate is the ceiling: read pushed/block_points, not the point rate
+for b in 1024 2048 4096 8192 16384 32768; do mpirun -np 1 --bind-to none \
+    build/examples/router_bench --senders 192 --receivers 63 --lossy --block $b; done
+
+# roles separated by CPU, which the placer pins (see the CPUS lines of a placement probe)
+perf record -a -F 299 -o r.data -- mpirun -np 1 --bind-to none build/examples/router_bench ...
+perf report -i r.data --stdio --no-children -g none --sort srcline -C <sender cpus>
+
+# the receiver's far traffic per point
+perf stat -a -C <receiver cpus> -e l2_pf_miss_l2_l3.all,l2_pf_miss_l2_hit_l3.all,cycles,instructions -- mpirun ...
+
+# where the pool's pages are
+awk '/N0=/ {print}' /proc/$(pgrep -f '^build/examples/router_bench')/numa_maps
+
+# the free stack on its own (the harness is in the session's scratch, ~70 lines):
+# 255 threads, pop a batch of 32 and push the 32 back one at a time, vs chained pushes and vs 32 shards
+# -- but see §3: it overstates chaining, because the router's load is asymmetric (192 poppers, 63 pushers)
+
+# which side of the stack costs: sweep the batch, which sets both the walk length and the CAS rate
+sed -i 's/ROUTER_BATCH = 32/ROUTER_BATCH = 8/' include/router/common.hpp   # then rebuild
+```

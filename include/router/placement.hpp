@@ -167,8 +167,11 @@ struct RouterPlacement {
 
 	/*
 	 * The pinned placement: the service on domain 0, then the receivers and the senders round-robined over the
-	 * domains, each onto its domain's emptiest core (a full domain borrows the globally emptiest core) and, in
-	 * AUTO, into its domain's least-filled group.  Reached from the constructor when pin is true.
+	 * domains on ONE cursor that starts after the service's domain, so that the two passes' remainders do not
+	 * stack up on the low domains (they did, and the team then doubled up cores at one end of the machine
+	 * while leaving cores idle at the other), each onto its domain's emptiest core (a full domain borrows
+	 * the globally emptiest core) and, in AUTO, into its domain's least-filled group.  Reached from the
+	 * constructor when pin is true.
 	 */
 	void place_pinned(const cpu_set_t &mask, const std::vector<int> &roles, bool auto_groups, int cache_level_opt,
 	                  int group_size, int rank)
@@ -233,7 +236,7 @@ struct RouterPlacement {
 		thread_domain[0] = 0;
 		thread_numa[0] = numa_of_cpu[thread_cpu[0]];
 
-		int dc = 0;                                 /* the domain cursor, round-robin */
+		int dc = n_domains > 1 ? 1 : 0;             /* the domain cursor: the service already took a core of domain 0 */
 		int r_local = 0;
 		for (int t = 0; t < n_threads; t++) {
 			if (roles[t] != ROUTER_RECEIVER)
@@ -257,8 +260,9 @@ struct RouterPlacement {
 			r_local += 1;
 		}
 
-		dc = 0;
-		for (int t = 0; t < n_threads; t++) {
+		for (int t = 0; t < n_threads; t++) {   /* dc carries on from the receivers: one cursor over the whole
+		                                         * team, so the two passes' remainders do not stack up on the low
+		                                         * domains, on top of the service's core */
 			if (roles[t] != ROUTER_SENDER)
 				continue;
 			int d = dc;
