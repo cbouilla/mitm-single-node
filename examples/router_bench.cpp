@@ -12,7 +12,8 @@
 /*
  * The Router's throughput benchmark: senders push as fast as they can, one PRNG call per point (a producer
  * computes, it does not idle, and an idling core is clocked down), to uniform, skewed or node-local
- * destinations; receivers hash every point they pop (murmur128) and fold the hashes by XOR; the service thread
+ * destinations; receivers pop the points one at a time and hash each (murmur128), folding the hashes by XOR; the
+ * service thread
  * runs until quiescent.  Prints, per round, the aggregate rate of points routed (delivered to a receiver), then
  * per node the push and pop rates, the network traffic, the drops, the service thread's duty cycle, the cost of
  * a point on a sender (the PRNG call and the destination pick included) and the XOR of every hash folded over
@@ -113,18 +114,16 @@ static void bench_sender(Router_thread &rt, const RouterArgs &a, double t_end)
 
 static void bench_receiver(Router_thread &rt)
 {
-	std::vector<u64> buf(2048);
 	u64 x = 0;
 	for (;;) {
-		size_t k = Router_Pop(buf.data(), 1024, rt);
-		if (k == 0) {
+		u64 a, b;
+		if (not Router_Pop(&a, &b, rt)) {
 			if (Router_Test_drained(rt))
 				break;
 			cpu_relax();
 			continue;
 		}
-		for (size_t i = 0; i < k; i++)
-			x ^= murmur128(buf[2 * i], buf[2 * i + 1]);
+		x ^= murmur128(a, b);
 	}
 	#pragma omp atomic
 	xor_hash ^= x;

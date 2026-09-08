@@ -107,8 +107,8 @@ class Router_node;
  * A sender also holds a cache of free blocks, zeroed in advance: the block it installs when it seals comes out
  * of it, so the install the other senders of that destination wait on is one load and one store, and the free
  * ring sees the sender once in ROUTER_BATCH seals, after the seal, when nobody waits on it.
- * A receiver holds whole blocks: its inbox names them, its cursor reads the current one in place, and it pushes
- * a block read through onto the node's free ring.
+ * A receiver holds whole blocks: its inbox names them, Router_Grab hands it the next one to read in place, and
+ * Router_Release pushes it onto the node's free ring.
  */
 struct alignas(64) Router_thread {
 	/* the push's fast path */
@@ -131,9 +131,10 @@ struct alignas(64) Router_thread {
 	alignas(64) std::atomic<u32> closed; /* release-stored by Router_Close, acquired by the service */
 	/* a receiver's */
 	RouterRing inbox;                    /* from the service: (block, count), blocks it now holds */
-	u32 cur_blk = ROUTER_NONE;           /* the block being read, or NONE */
-	u32 cur_off = 0;                     /* points of it delivered */
-	u32 cur_count = 0;                   /* points in it */
+	u32 cur_blk = ROUTER_NONE;           /* the block out: grabbed, not yet released; NONE when none */
+	const Point *cur_pts = NULL;         /* its points, in block memory */
+	u32 cur_count = 0;                   /* how many */
+	u32 cur_off = 0;                     /* Router_Pop's cursor into it */
 
 	Router_thread(int role, int index, int group, int domain, int cpu, int numa_node, Router_node &rn);
 	~Router_thread();
@@ -251,8 +252,8 @@ public:
 	void touch_pool(int tid, int n_threads);
 	void banner() const;
 
-	/* the free ring: any thread.  Router_Pop pushes the block it read through, a sender's cache takes a batch, the
-	 * stash trades them */
+	/* the free ring: any thread.  Router_Release pushes the block a receiver read through, a sender's cache takes a
+	 * batch, the stash trades them */
 	void free_push(const u32 *blks, u32 n);
 	u32 free_pop_many(u32 k, u32 *out);
 

@@ -11,7 +11,7 @@ namespace mitm {
  * Put n blocks onto the free ring, a run of tickets then their cells, each once the popper of its previous
  * element has stored it free -- at most that popper's last stores away, the ring being never full.  The cell's
  * store releases everything the pusher did to the block.
- * Reached from Router_Pop (one block) and from spill, in Router_Init and Router_Progress (a batch).
+ * Reached from Router_Release (one block) and from spill, in Router_Init and Router_Progress (a batch).
  */
 inline void Router_node::free_push(const u32 *blks, u32 n)
 {
@@ -197,42 +197,60 @@ inline void Router_Close(Router_thread &rt)
 /******************************** the receiver's calls ********************************/
 
 /*
- * Receiver.  Up to `buffer_size` points into `buffer` (2 u64 each), out of the blocks the inbox names, in
- * order; returns how many.  A block read through goes onto the free ring, whose cell store is the release that
- * orders these reads before the block's reuse, and is counted after that store, which keeps the count behind it.
+ * Receiver.  The next block the inbox names, to be read in place: where its points are, and how many; 0 and
+ * NULL when nothing is there.  One block out at a time -- Router_Release gives it back, and a second Grab before
+ * that is a bug, not a queue.  Grab/Release and Router_Pop do not mix on one receiver.
  */
-inline size_t Router_Pop(u64 *buffer, size_t buffer_size, Router_thread &rt)
+inline size_t Router_Grab(const Point **pts, Router_thread &rt)
 {
-	Router_node &rn = rt.node;
-	size_t got = 0;
-	while (got < buffer_size) {
-		if (rt.cur_blk == ROUTER_NONE) {
-			Point e;
-			if (not rt.inbox.pop(e))
-				break;
-			rt.cur_blk = (u32) e.key;
-			rt.cur_count = (u32) e.val;
-			rt.cur_off = 0;
-		}
-		size_t take = rt.cur_count - rt.cur_off;
-		if (take > buffer_size - got)
-			take = buffer_size - got;
-		const Point *pts = (const Point *) (rn.pool + (size_t) rt.cur_blk * rn.block_bytes + ROUTER_HDR_BYTES);
-		memcpy(buffer + 2 * got, pts + rt.cur_off, take * sizeof(Point));
-		got += take;
-		rt.cur_off += (u32) take;
-		if (rt.cur_off == rt.cur_count) {
-			rn.free_push(&rt.cur_blk, 1);
-			rt.ctr[ROUTER_BLOCKS] += 1;
-			rt.cur_blk = ROUTER_NONE;
-		}
+	if (rt.cur_blk != ROUTER_NONE)
+		errx(1, "Router_Grab: a block is out already");
+	Point e;
+	if (not rt.inbox.pop(e)) {
+		*pts = NULL;
+		return 0;
 	}
-	rt.ctr[ROUTER_POPPED] += got;
-	return got;
+	Router_node &rn = rt.node;
+	rt.cur_blk = (u32) e.key;
+	rt.cur_count = (u32) e.val;
+	rt.cur_pts = (const Point *) (rn.pool + (size_t) rt.cur_blk * rn.block_bytes + ROUTER_HDR_BYTES);
+	rt.cur_off = 0;
+	rt.ctr[ROUTER_POPPED] += rt.cur_count;
+	*pts = rt.cur_pts;
+	return rt.cur_count;
 }
 
-/* Receiver.  Nothing can arrive any more and nothing is left to read: the flag first, then emptiness, so that
- * a block pushed between the two reads is still popped. */
+/* Receiver.  The block out is read through: onto the free ring, where a sender may install it at once, so the
+ * caller reads nothing of it past this call.  The push orders those reads before the block's reuse; the count
+ * comes after the push so that it never runs ahead of it: the service compares it with what it handed out. */
+inline void Router_Release(Router_thread &rt)
+{
+	if (rt.cur_blk == ROUTER_NONE)
+		errx(1, "Router_Release: no block is out");
+	rt.node.free_push(&rt.cur_blk, 1);
+	rt.ctr[ROUTER_BLOCKS] += 1;
+	rt.cur_blk = ROUTER_NONE;
+}
+
+/* Receiver.  One point, out of the block out or the next one; false when nothing is there now.  The last point
+ * of a block is copied out before the release it triggers: the block may be someone else's right after. */
+inline bool Router_Pop(u64 *a, u64 *b, Router_thread &rt)
+{
+	if (rt.cur_blk == ROUTER_NONE) {
+		const Point *pts;
+		if (Router_Grab(&pts, rt) == 0)
+			return false;
+	}
+	*a = rt.cur_pts[rt.cur_off].key;
+	*b = rt.cur_pts[rt.cur_off].val;
+	rt.cur_off += 1;
+	if (rt.cur_off == rt.cur_count)
+		Router_Release(rt);
+	return true;
+}
+
+/* Receiver.  Nothing can arrive any more and nothing is left to read, a block out included: the flag first, then
+ * emptiness, so that a block pushed between the two reads is still popped. */
 inline bool Router_Test_drained(Router_thread &rt)
 {
 	if (rt.node.input_closed.load(std::memory_order_acquire) == 0)

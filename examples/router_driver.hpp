@@ -22,7 +22,7 @@ struct RouterArgs {
 	int rounds = 3;
 	bool lossy = false;
 	Router_Opts opts;
-	int pop_max = 0;                 /* points per Router_Pop; 0 == the test's own schedule */
+	bool pop_one = false;            /* test: receivers take points one at a time (Router_Pop), not whole blocks */
 	int skew = 0;                    /* hot destinations; 0 == uniform */
 	bool stagger = false;            /* sender s pushes (s+1)/S of the points */
 	bool partial = false;            /* 1..7 points per destination, round robin */
@@ -42,11 +42,11 @@ static void router_usage()
 	printf("  --block N --swc N --n-recv N --inbox BLOCKS --credit N\n");
 	printf("  --sweep N                        sealed blocks handled per turn\n");
 	printf("  --dests N                        destinations per node: a virtual fan-out (default: the receivers)\n");
-	printf("  --pop-max N --skew K --stagger --partial --slow-recv --seed S\n");
+	printf("  --pop-one --skew K --stagger --partial --slow-recv --seed S\n");
 	printf("  --no-bind --cache-level L --group N     pinning (on by default); cores per group (default 16)\n");
 	printf("  --seconds X --local-only               (bench)\n");
 	printf("  --test NAME                      (test) connect_only basic tiny rounds zero skew partial_lines\n");
-	printf("                                   pop_sizes swc_is_block staggered_close slow_recv groups colors\n");
+	printf("                                   pop_one swc_is_block staggered_close slow_recv groups colors\n");
 	printf("                                   asymmetric all\n");
 	printf("  --quiet\n");
 	exit(EXIT_SUCCESS);
@@ -56,7 +56,7 @@ static void router_parse(int argc, char **argv, RouterArgs &a)
 {
 	enum {
 		O_SENDERS = 1000, O_RECEIVERS, O_POINTS, O_ROUNDS, O_LOSSY, O_BLOCK, O_SWC, O_NRECV, O_INBOX,
-		O_SWEEP, O_DESTS, O_CREDIT, O_POPMAX, O_SKEW, O_STAGGER, O_PARTIAL, O_SLOW,
+		O_SWEEP, O_DESTS, O_CREDIT, O_POPONE, O_SKEW, O_STAGGER, O_PARTIAL, O_SLOW,
 		O_SEED, O_SECONDS, O_NOBIND, O_CACHE, O_GROUP, O_LOCAL, O_TEST, O_QUIET, O_HELP
 	};
 	struct option longopts[] = {
@@ -67,7 +67,7 @@ static void router_parse(int argc, char **argv, RouterArgs &a)
 		{"n-recv", required_argument, NULL, O_NRECV}, {"inbox", required_argument, NULL, O_INBOX},
 		{"sweep", required_argument, NULL, O_SWEEP},
 		{"dests", required_argument, NULL, O_DESTS}, {"credit", required_argument, NULL, O_CREDIT},
-		{"pop-max", required_argument, NULL, O_POPMAX}, {"skew", required_argument, NULL, O_SKEW},
+		{"pop-one", no_argument, NULL, O_POPONE}, {"skew", required_argument, NULL, O_SKEW},
 		{"stagger", no_argument, NULL, O_STAGGER}, {"partial", no_argument, NULL, O_PARTIAL},
 		{"slow-recv", no_argument, NULL, O_SLOW}, {"seed", required_argument, NULL, O_SEED},
 		{"seconds", required_argument, NULL, O_SECONDS},
@@ -93,7 +93,7 @@ static void router_parse(int argc, char **argv, RouterArgs &a)
 		case O_SWEEP: a.opts.sweep_blocks = atoi(optarg); break;
 		case O_DESTS: a.opts.dests_per_node = atoi(optarg); break;
 		case O_CREDIT: a.opts.credit = atoi(optarg); break;
-		case O_POPMAX: a.pop_max = atoi(optarg); break;
+		case O_POPONE: a.pop_one = true; break;
 		case O_SKEW: a.skew = atoi(optarg); break;
 		case O_STAGGER: a.stagger = true; break;
 		case O_PARTIAL: a.partial = true; break;

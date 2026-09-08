@@ -26,13 +26,15 @@
  * The round (sender / receiver / service):
  *   Router_Push(a, b, dest, rt)                   sender: the point (a, b) to receiver `dest`
  *   Router_Close(rt)                              sender: nothing more until Reset
- *   Router_Pop(buf, n, rt) / Router_Test_drained  receiver: up to n points, in order; then whether done
+ *   Router_Grab(&pts, rt) / Router_Release(rt)    receiver: the next block's points in place, how many; done with it
+ *   Router_Pop(&a, &b, rt)                        receiver: one point at a time, on top of the two above
+ *   Router_Test_drained(rt)                       receiver: nothing more will come and nothing is held
  *   Router_Progress / Router_Test_quiescent       service: one bounded, non-blocking turn in a loop; then done?
  *   Router_Stats / Router_Reset                   service: the node's tallies; then a fresh round (an MPI_Barrier)
  *
- * The round, per node: senders push then close; receivers pop until drained; the service calls Progress until
- * quiescent; a barrier; Stats, Reset; a barrier.  Lossy: no call ever waits, a point that cannot be routed at
- * once is dropped and counted.  Lossless: a sender may block, no point is ever lost.
+ * The round, per node: senders push then close; receivers grab, read in place and release until drained; the
+ * service calls Progress until quiescent; a barrier; Stats, Reset; a barrier.  Lossy: no call ever waits, a
+ * point that cannot be routed at once is dropped and counted.  Lossless: a sender may block, no point is ever lost.
  *
  * Placement (Router_Opts): by default the Router pins the threads and forms the groups.  A group is senders
  * and receivers in one cache domain, at most `group_size` cores each, and the receivers and senders are

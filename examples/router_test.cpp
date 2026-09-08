@@ -11,7 +11,7 @@
 
 /*
  * The Router's test suite.  Every test is one configuration of the same round: senders push
- * a deterministic stream and close, receivers pop and verify until drained, the service thread runs
+ * a deterministic stream and close, receivers read blocks in place and verify until drained, the service thread runs
  * Router_Progress until quiescent, then rank 0 checks the global accounting.  CHECK, never assert: the
  * build may carry -DNDEBUG.
  */
@@ -43,7 +43,6 @@ struct Shared {
 	std::vector<u64> got;            /* per local receiver */
 	std::vector<u64> seen;           /* per local receiver: a bitmap over (node, s, i) */
 	u64 max_points = 0;
-	int pop_max = 1024;
 	std::vector<int> t_group;        /* per thread: its Router_group, gathered after Init */
 	std::vector<int> t_cpu;          /* per thread: its Router_cpu */
 	std::vector<int> t_domain;       /* per thread: its Router_domain */
@@ -83,34 +82,48 @@ static void sender_round(Router_thread &rt, const RouterArgs &a, Shared &sh, int
 	Router_Close(rt);
 }
 
+/* one delivered point: from this round, from a real sender, to this receiver's rank, and never seen before */
+static void check_point(u64 x, u64 y, int me, int S, Shared &sh, u64 *seen, int round)
+{
+	int rnd = (int) (x >> 56);
+	int node = (int) ((x >> 48) & 0xff);
+	int s = (int) ((x >> 40) & 0xff);
+	u64 i = x & ((1ull << 40) - 1);
+	CHECK(rnd == round);
+	CHECK(y == point_b(x, me));
+	CHECK(node < g_nodes && s < S && i < sh.max_points);
+	u64 bit = ((u64) (node * S + s)) * sh.max_points + i;
+	CHECK((seen[bit / 64] & (1ull << (bit % 64))) == 0);
+	seen[bit / 64] |= 1ull << (bit % 64);
+}
+
 static void receiver_round(Router_thread &rt, const RouterArgs &a, Shared &sh, int r, int round)
 {
 	int me = Router_rank(rt);
 	int S = a.senders;
-	std::vector<u64> buf(2 * (size_t) sh.pop_max);
 	u64 *seen = sh.seen.data() + (size_t) r * ((g_nodes * S * sh.max_points + 63) / 64);
 	u64 got = 0;
 	for (;;) {
-		size_t k = Router_Pop(buf.data(), sh.pop_max, rt);
+		size_t k = 0;
+		if (a.pop_one) {
+			u64 x, y;
+			if (Router_Pop(&x, &y, rt)) {
+				check_point(x, y, me, S, sh, seen, round);
+				k = 1;
+			}
+		} else {
+			const Point *pts;
+			k = Router_Grab(&pts, rt);
+			for (size_t j = 0; j < k; j++)
+				check_point(pts[j].key, pts[j].val, me, S, sh, seen, round);
+			if (k > 0)
+				Router_Release(rt);       /* after the checks: they read block memory */
+		}
 		if (k == 0) {
 			if (Router_Test_drained(rt))
 				break;
 			cpu_relax();
 			continue;
-		}
-		for (size_t j = 0; j < k; j++) {
-			u64 x = buf[2 * j];
-			u64 y = buf[2 * j + 1];
-			int rnd = (int) (x >> 56);
-			int node = (int) ((x >> 48) & 0xff);
-			int s = (int) ((x >> 40) & 0xff);
-			u64 i = x & ((1ull << 40) - 1);
-			CHECK(rnd == round);
-			CHECK(y == point_b(x, me));
-			CHECK(node < g_nodes && s < S && i < sh.max_points);
-			u64 bit = ((u64) (node * S + s)) * sh.max_points + i;
-			CHECK((seen[bit / 64] & (1ull << (bit % 64))) == 0);
-			seen[bit / 64] |= 1ull << (bit % 64);
 		}
 		got += k;
 		if (a.slow_recv)
@@ -260,8 +273,6 @@ static void run_config(const RouterArgs &a, const char *name, bool use_colors = 
 		#pragma omp barrier
 		for (int round = 0; round < a.rounds; round++) {
 			if (tid == 0) {
-				const int schedule[4] = {1, 3, 7, 1000};
-				sh.pop_max = a.pop_max > 0 ? a.pop_max : schedule[round % 4];
 				for (size_t k = 0; k < sh.sent_to.size(); k++)
 					sh.sent_to[k] = 0;
 				for (size_t k = 0; k < sh.seen.size(); k++)
@@ -360,11 +371,10 @@ int main(int argc, char **argv)
 		c.opts.swc_linesize = 32;
 		run_config(c, "partial_lines");
 	}
-	if (all || a.test == "pop_sizes") {
+	if (all || a.test == "pop_one") {
 		RouterArgs c = a;
-		c.pop_max = 0;
-		c.rounds = 4;
-		run_config(c, "pop_sizes");
+		c.pop_one = true;
+		run_config(c, "pop_one");
 	}
 	if (all || a.test == "swc_is_block") {
 		RouterArgs c = a;
