@@ -228,7 +228,6 @@ public:
 	/* the service thread's own */
 	u64 ctr[ROUTER_STATS_SIZE] = {};     /* its share of the tallies: the network, the drops it makes, the turns */
 	std::vector<u32> free_list;          /* its stash: its own frees, for its own needs; a batch to or from the ring */
-	std::vector<u32> in_reserve;         /* blocks only a receive slot may take: a node must always be able to receive */
 	u32 todo = ROUTER_NONE;              /* the service's take off the sealed stack, what is left to handle of it */
 	std::vector<u64> pending;            /* popped blocks with a line still being written: dest << 32 | blk */
 	std::vector<int> repairs;            /* destinations naming ROUTER_NONE, waiting for a free block */
