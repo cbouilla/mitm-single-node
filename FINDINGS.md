@@ -1899,3 +1899,123 @@ mpirun -np 4 ... build/examples/router_bench --senders 14 --receivers 3 --credit
 # where the threads are (the service is the one in MPI progress)
 sudo-g5k gdb -p $(pgrep -x -n router_bench) -batch -ex "thread apply all bt 3"
 ```
+
+---
+
+# Session 9 -- 64 gros hosts: the Router reaches the fabric, once the receive slots scale
+
+2026-09-08, **64 nodes of `gros`** (Grid'5000 Nancy), one MPI rank per host, 14 senders + 3
+receivers + 1 service = 18 threads on 18 cores, no oversubscription.  Committed tree at
+`6fb1c88` (the free-ring floor of session 8 included), release build in `~/mitm-gros`.  Uniform
+destinations, so **63 of every 64 points cross the network**.  Rounds of 10 s, the second round
+reported; `routed` is the aggregate delivered rate over all 64 hosts.
+
+## Summary
+
+**The default configuration runs at half the fabric; two knobs close the gap.**
+
+| configuration | aggregate routed | per host egress | share of the wire |
+|---|---|---|---|
+| defaults (65600 B messages, 32 posted receives) | 4.0 G pts/s | 0.98 GB/s | at the wire for that size |
+| 256 KB messages, 32 receives | 4.9 G | 1.21 GB/s | 73 % |
+| 256 KB, 256 receives | 7.1 G | 1.74 GB/s | 105 % |
+| 1 MB, 32 receives | 4.5 G | 1.11 GB/s | 58 % |
+| 1 MB, 128 receives | 5.5 G | 1.36 GB/s | 71 % |
+| **1 MB, 256 receives** | **7.9 G** | **1.94 GB/s** | **101 %** |
+| 1 MB, 512 receives | 7.9 G | 1.94 GB/s | saturated |
+
+**2x from the defaults**, and the tuned configuration sits exactly on the wire.  Nothing was
+dropped in any lossless run.
+
+## 1. The fabric first
+
+`netbw`, one MPI thread per rank, 64 ranks, every rank sending to all others, window 8, 32
+posted receives, 256 rotating send buffers:
+
+| message | received per host | spread over 64 hosts | aggregate |
+|---|---|---|---|
+| 65600 B | 0.78 GB/s | 0.78-0.78 | 49.8 GB/s |
+| 256 KB | 1.66 GB/s | 1.66-1.67 | 106.4 GB/s |
+| 1 MB | 1.92 GB/s | 1.92-1.93 | 122.9 GB/s |
+
+The fabric **scales**: per-host throughput at 64 hosts is within 1 % of the four-host figure at
+1 MB (1.94), and the spread between the luckiest and unluckiest host is under 1 %, so no switch
+stage saturates and nobody is starved.  What does not survive is the small message: 65600 bytes
+falls from 1.38 GB/s at four hosts to **0.78** at 64.
+
+## 2. Posted receives are the knob nobody had swept
+
+At 256 KB, everything else default:
+
+| posted receives | aggregate | per host |
+|---|---|---|
+| 8 | 3.6 G pts/s | 0.90 GB/s |
+| **32 (the default)** | 4.9 G | 1.21 GB/s |
+| 64 | 5.4 G | 1.32 GB/s |
+| 128 | 5.9 G | 1.46 GB/s |
+| 256 | 7.1 G | 1.74 GB/s |
+| 512 | 7.1 G | 1.74 GB/s |
+
+With 63 peers, 32 always-posted receives is too few: a peer's message cannot land unless a slot
+is free, so its sender parks and stalls, and the effect compounds because a stalled sender's
+node then sends less too.  The saturation point is **about four receives per peer** -- 256 for
+63 peers, and at four hosts (3 peers) the default 32 was already past it, which is why sessions
+5-8 saw nothing from this knob.  `n_recv` also sets the send slots, so both sides scale together.
+
+The price is memory: the posted receives hold `n_recv * block_bytes`, i.e. 256 MB per node at
+256 receives of 1 MB, and the pool is sized to cover them.
+
+## 3. What does not help
+
+- **Credit.**  `--credit 16` with 128 receives at 256 KB gives 4.9 G against 5.9 G at the
+  default credit: raising it *costs* 17 %.  Sessions 2, 4 and 5 recommended 16 from
+  shared-memory np 2 runs; on a real fabric it is worthless at best, and before `6fb1c88` it
+  deadlocked.
+- **Lossy.**  7.2 G delivered at 256 KB against 7.9 G for the best lossless run, while pushing
+  615 M pts/s per host and **dropping 82 %** of it.  At 65600 bytes it is 5.0 G with 87 %
+  dropped and the service thread at 60 % busy.  Four sessions on three machine classes now agree:
+  lossy never delivers more.
+
+## 4. The round's drain is not free
+
+A 10 s push phase gives an 11.4 s round at 65600 bytes and 13.5 s at 256 KB, and the reported
+rate divides by the whole round.  With 3 s rounds the same two configurations read 3.2 and 4.0 G
+against 4.0 and 4.9 G at 10 s, i.e. **the drain costs a quarter of a short round**, and it grows
+with the block size.  Measure multi-node throughput with rounds of at least 10 s.
+
+## 5. What this cluster can and cannot do
+
+| reference | aggregate | best measured | share |
+|---|---|---|---|
+| senders generating points, no routing (`raw`) | 106.7 G pts/s | 7.9 G | 7.4 % |
+| one host's local routing x 64 (889 M each) | 56.9 G | 7.9 G | 13.9 % |
+| the fabric at 1 MB | ~7.8 G | 7.9 G | at the wire |
+
+A host manufactures 1.7 G points/s, which is 27 GB/s of point data, and its NIC carries 2 GB/s:
+a **13-fold mismatch**.  With uniform destinations the machine therefore runs at a seventh of
+its local capability, and no amount of tuning can change that -- the Router is already at the
+wire.  What buys throughput on a fabric like this is **keeping points at home**: a sharding
+scheme where most points resolve on the node that produced them is worth more than every
+optimisation in sessions 1-9 put together.
+
+## What to change
+
+- **Scale `n_recv` with the peer count**, about four per peer, instead of the fixed 32; it is
+  worth 2x at 64 nodes and nothing at 4, so a fixed default cannot serve both.  Cap it by the
+  memory the posted receives cost.
+- **Raise `block_points` for multi-node runs**: 65600-byte messages get 0.78 GB/s per host at
+  this scale against 1.92 at 1 MB.
+- Leave `credit` alone.
+- Treat single-node lossy numbers, and now multi-node ones, as diagnostics only.
+
+## Reproducing
+
+```bash
+# 64 hosts, one rank each; $MCA is the flag set of session 8 §0
+mpirun -np 64 --hostfile hostfile.64 --map-by node --bind-to none $MCA \
+    build/examples/router_bench --senders 14 --receivers 3 --seconds 10 --rounds 2 \
+    --block 65536 --n-recv 256
+
+# the fabric, same shape, for the ceiling
+mpirun -np 64 --hostfile hostfile.64 --map-by node --bind-to none $MCA ./netbw 1048640 3 8 32 256
+```
