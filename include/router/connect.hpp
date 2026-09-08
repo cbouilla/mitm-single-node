@@ -214,10 +214,10 @@ inline void Router_node::connect()
 	nv_stride = (L + 63) & ~(u32) 63;
 	block_bytes = ROUTER_HDR_BYTES + opt.block_points * sizeof(Point);
 
-	/* installed, the stash, the slots, what the receivers may hold, the senders' caches, pending, and sealed or
-	 * parked */
+	/* installed, the stash, the receive reserve, the slots, what the receivers may hold, the senders' caches,
+	 * pending, and sealed or parked */
 	size_t slack = (size_t) F > 32 * (size_t) S ? (size_t) F : 32 * (size_t) S;
-	size_t nb = (size_t) F + 2 * ROUTER_BATCH + 2 * (size_t) opt.n_recv
+	size_t nb = (size_t) F + 2 * ROUTER_BATCH + 3 * (size_t) opt.n_recv
 				+ (size_t) R * ((size_t) opt.inbox_blocks + 1) + (size_t) S * (ROUTER_BATCH + 1) + slack;
 	if (nb > ((size_t) 1 << 30))          /* the ring's sequence arithmetic is 32-bit */
 		errx(1, "Router: too many blocks (%zu)", nb);
@@ -263,6 +263,9 @@ inline void Router_node::connect()
 
 	for (int d = 0; d < F; d++)
 		dest[ROUTER_DEST_WORDS * d].store((u64) stash_pop(), std::memory_order_relaxed);
+	in_reserve.reserve(opt.n_recv);       /* set aside before the senders can see the pool: the receives come first */
+	for (int k = 0; k < opt.n_recv; k++)
+		in_reserve.push_back(stash_pop());
 	if (free_list.size() > ROUTER_BATCH)
 		spill(free_list.size() - ROUTER_BATCH);
 	connected = true;

@@ -98,11 +98,18 @@ inline void Router_node::dispatch(int d, u32 blk, u32 count)
 	park(d, blk, count);
 }
 
-/* a block the service is done with: into its stash, which spills a batch to the free ring when it grows.  Reached
- * from Router_Progress: a send that completed, or (lossy) a block dropped for want of room. */
+/* a block the service is done with: it tops up the receive reserve first, then its stash, which spills a batch to
+ * the free ring when it grows.  A node whose receives are not posted stalls every peer that sends to it, and a
+ * peer's send holds a block until it completes, so the receive slots are served before the senders: without that
+ * order a pool spread thin over the network path deadlocks, every sender waiting on an empty ring.
+ * Reached from Router_Progress: a send that completed, or (lossy) a block dropped for want of room. */
 inline void Router_node::release(u32 blk)
 {
 	ctr[ROUTER_BLOCKS] += 1;
+	if (in_reserve.size() < (size_t) opt.n_recv) {
+		in_reserve.push_back(blk);
+		return;
+	}
 	free_list.push_back(blk);
 	if (free_list.size() > 2 * ROUTER_BATCH)
 		spill(ROUTER_BATCH);
@@ -197,7 +204,13 @@ inline void Router_node::poll_out()
  * the first turn) and Router_Reset (the idle slots). */
 inline void Router_node::repost(int k)
 {
-	u32 blk = stash_pop();
+	u32 blk = ROUTER_NONE;
+	if (in_reserve.empty()) {             /* the reserve is what makes this succeed while the senders wait */
+		blk = stash_pop();
+	} else {
+		blk = in_reserve.back();
+		in_reserve.pop_back();
+	}
 	if (blk == ROUTER_NONE) {
 		ctr[ROUTER_STALL_IN] += 1;
 		return;
@@ -578,7 +591,7 @@ inline void Router_Reset(Router_thread &rt)
 	}
 	rn.repost_idle();
 #ifdef ROUTER_PARANOID
-	size_t accounted = rn.F + rn.free_list.size();
+	size_t accounted = rn.F + rn.free_list.size() + rn.in_reserve.size();
 	for (int k = 0; k < rn.opt.n_recv; k++)
 		if (rn.in_blk[k] != ROUTER_NONE)
 			accounted += 1;
