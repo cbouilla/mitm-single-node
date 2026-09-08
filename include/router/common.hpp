@@ -61,7 +61,7 @@ static constexpr u32 ROUTER_NONE = 0xffffffffu;   /* "no block": a bare destinat
 static constexpr size_t ROUTER_HDR_BYTES = 64;    /* a block's header slot: the message header, one cache line */
 static constexpr size_t ROUTER_DEST_WORDS = 8;    /* u64 words per destination: its two words fill one cache line */
 static constexpr u32 ROUTER_MAX_L = 4096;         /* lines per block at most */
-static constexpr u32 ROUTER_BATCH = 32;           /* blocks off the free stack at a time: a sender's cache, the stash */
+static constexpr u32 ROUTER_BATCH = 32;           /* blocks off the free ring at a time: a sender's cache, the stash */
 static constexpr u64 ROUTER_LINK_BARE = 1ull << 63; /* in a sealed block's link: its destination has no block */
 
 enum router_kind { ROUTER_DATA = 0, ROUTER_END = 1 };
@@ -106,9 +106,9 @@ class Router_node;
  * being in a register by then.  The first cache line of the object is all a push that does not stage touches.
  * A sender also holds a cache of free blocks, zeroed in advance: the block it installs when it seals comes out
  * of it, so the install the other senders of that destination wait on is one load and one store, and the free
- * stack sees the sender once in ROUTER_BATCH seals, after the seal, when nobody waits on it.
+ * ring sees the sender once in ROUTER_BATCH seals, after the seal, when nobody waits on it.
  * A receiver holds whole blocks: its inbox names them, its cursor reads the current one in place, and it pushes
- * a block read through onto the node's free stack.
+ * a block read through onto the node's free ring.
  */
 struct alignas(64) Router_thread {
 	/* the push's fast path */
@@ -124,7 +124,7 @@ struct alignas(64) Router_thread {
 	const int cpu;                       /* the CPU the kernel reports after pinning; momentary when not pinned */
 	const int numa_node;                 /* the NUMA node the kernel reports after pinning */
 	Router_node &node;                   /* the node it belongs to */
-	/* a sender's cache of free blocks, zeroed already: what it installs at a seal, refilled off the free stack */
+	/* a sender's cache of free blocks, zeroed already: what it installs at a seal, refilled off the free ring */
 	u32 cache[ROUTER_BATCH];             /* the blocks, cache_n of them, the next to install last */
 	u32 cache_n = 0;                     /* how many */
 	/* a sender's flag, on a line of its own: the service reads it every turn */
@@ -183,11 +183,17 @@ public:
 	char *pool = NULL;                   /* n_blocks blocks of block_bytes: staging, send and receive memory alike */
 	std::atomic<u8> *n_valid = NULL;     /* n_blocks * nv_stride: byte k is 0 until line k is written, then 1 */
 	Point *partial = NULL;               /* F closing buffers of partial_cap points each, filled at Router_Close */
-	std::atomic<u64> *blk_link = NULL;   /* per block: the next of its list, low word; sealed: its destination above */
+	std::atomic<u64> *blk_link = NULL;   /* per block: its link in the sealed stack, its destination above, or parked */
 
-	/* the free stack, its word alone on a cache line: (generation << 32) | head, a CAS on a stale view fails */
-	alignas(64) std::atomic<u64> free_top{(u64) ROUTER_NONE};
-	u64 free_pad[7] = {};                /* the rest of that line */
+	/* the free ring: block ids in cells of one word, (sequence << 32) | block.  A pusher's ticket comes off free_in
+	 * by fetch_add and never waits for more than the popper of the cell's previous element, the ring being never
+	 * full (cells >= n_blocks); a popper claims a ready prefix at free_out by one CAS, or fails at once. */
+	std::atomic<u64> *free_cell = NULL;  /* free_mask + 1 cells; cell i starts as (i << 32) | ROUTER_NONE */
+	u32 free_mask = 0;                   /* cells - 1, cells the power of two >= n_blocks */
+	alignas(64) std::atomic<u64> free_in{0};   /* push tickets issued */
+	u64 free_in_pad[7] = {};             /* the rest of that line */
+	alignas(64) std::atomic<u64> free_out{0};  /* elements claimed */
+	u64 free_out_pad[7] = {};            /* the rest of that line */
 
 	/* the sealed stack, its word alone on a cache line: the sealers push, the service takes it whole */
 	alignas(64) std::atomic<u32> sealed_top{ROUTER_NONE};
@@ -195,7 +201,7 @@ public:
 
 	/* the service thread's own */
 	u64 ctr[ROUTER_STATS_SIZE] = {};     /* its share of the tallies: the network, the drops it makes, the turns */
-	std::vector<u32> free_list;          /* its stash: its own frees, for its own needs; a batch to or from the stack */
+	std::vector<u32> free_list;          /* its stash: its own frees, for its own needs; a batch to or from the ring */
 	u32 todo = ROUTER_NONE;              /* the service's take off the sealed stack, what is left to handle of it */
 	std::vector<u64> pending;            /* popped blocks with a line still being written: dest << 32 | blk */
 	std::vector<int> repairs;            /* destinations naming ROUTER_NONE, waiting for a free block */
@@ -244,9 +250,9 @@ public:
 	void connect();
 	void banner() const;
 
-	/* the free stack: any thread.  Router_Pop pushes one block, a sender's cache takes a batch, the stash trades them */
-	void free_push(u32 blk);
-	void free_push_chain(u32 first, u32 last);
+	/* the free ring: any thread.  Router_Pop pushes the block it read through, a sender's cache takes a batch, the
+	 * stash trades them */
+	void free_push(const u32 *blks, u32 n);
 	u32 free_pop_many(u32 k, u32 *out);
 
 	/* the sender path: Router_Push, by the push that fills a private line; refill also from Router_Init */

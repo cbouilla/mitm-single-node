@@ -70,6 +70,7 @@ inline Router_node::~Router_node()
 	free(n_valid);
 	free(partial);
 	free(blk_link);
+	free(free_cell);
 }
 
 
@@ -78,7 +79,7 @@ inline Router_node::~Router_node()
 /*
  * Reached from Router_Init, thread 0 only, once every thread has declared its role and before any object is
  * built: the MPI checks, the agreement with the peers, the pool and the shared area, one block per destination,
- * the receives posted, a stash kept, every other block onto the free stack as one chain.
+ * the receives posted, a stash kept, every other block onto the free ring in one run of tickets.
  */
 inline void Router_node::connect()
 {
@@ -218,7 +219,7 @@ inline void Router_node::connect()
 	size_t slack = (size_t) F > 32 * (size_t) S ? (size_t) F : 32 * (size_t) S;
 	size_t nb = (size_t) F + 2 * ROUTER_BATCH + 2 * (size_t) opt.n_recv
 				+ (size_t) R * ((size_t) opt.inbox_blocks + 1) + (size_t) S * (ROUTER_BATCH + 1) + slack;
-	if (nb >= ROUTER_NONE)
+	if (nb > ((size_t) 1 << 30))          /* the ring's sequence arithmetic is 32-bit */
 		errx(1, "Router: too many blocks (%zu)", nb);
 	n_blocks = (u32) nb;
 	dest = (std::atomic<u64> *) router_alloc((size_t) F * ROUTER_DEST_WORDS * sizeof(u64));
@@ -227,6 +228,12 @@ inline void Router_node::connect()
 	partial_cap = ((size_t) S * (swc_linesize - 1) + 3) & ~(size_t) 3;
 	partial = (Point *) router_alloc((size_t) F * partial_cap * sizeof(Point));
 	blk_link = (std::atomic<u64> *) router_alloc((size_t) n_blocks * sizeof(u64));
+	free_mask = 1;
+	while ((size_t) free_mask + 1 < n_blocks)   /* cells: the power of two >= n_blocks, so the ring is never full */
+		free_mask = 2 * free_mask + 1;
+	free_cell = (std::atomic<u64> *) router_alloc(((size_t) free_mask + 1) * sizeof(u64));
+	for (u64 i = 0; i <= free_mask; i++)
+		free_cell[i].store((i << 32) | ROUTER_NONE, std::memory_order_relaxed);
 	free_list.reserve(n_blocks);
 	for (u32 b = 0; b < n_blocks; b++) {
 		blk_link[b].store(ROUTER_NONE, std::memory_order_relaxed);

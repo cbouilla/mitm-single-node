@@ -36,8 +36,8 @@
  *
  * Placement (Router_Opts): by default the Router pins the threads and forms the groups.  A group is senders
  * and receivers in one cache domain, at most `group_size` cores each, and the receivers and senders are
- * round-robined over the domains into the least-filled group of each; the staging and the free list will
- * shard on it, and a consumer pairs a producer with the dict thread of its group.  `pin = false` leaves the
+ * round-robined over the domains into the least-filled group of each; the staging will shard on it, and a
+ * consumer pairs a producer with the dict thread of its group.  `pin = false` leaves the
  * CPUs to the caller and groups by worker index; a per-thread `group` (a color) takes the caller's groups, as
  * MPI_Comm_split does.  `cache_level` overrides the level a domain sits in (0: the lowest shared by several
  * cores).  When pinning, the Router refuses a mask too small for the team or shared with a co-hosted rank.

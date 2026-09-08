@@ -7,7 +7,7 @@ namespace mitm {
 
 /******************************** the service thread ********************************/
 
-/* a block from the stash, refilled from the free stack by the batch when empty; NONE if both are empty.  Reached
+/* a block from the stash, refilled from the free ring by the batch when empty; NONE if both are empty.  Reached
  * from Router_Init (the installs, the receives), Router_Progress (a repost, a repair, the F-scan) and
  * Router_Reset (a repair, a repost). */
 inline u32 Router_node::stash_pop()
@@ -25,14 +25,12 @@ inline u32 Router_node::stash_pop()
 	return blk;
 }
 
-/* the top n blocks of the stash onto the free stack, linked here, pushed by one CAS.  Reached from Router_Init,
- * once the stash exceeds a batch, and Router_Progress, once a release takes it past two. */
+/* the top n blocks of the stash onto the free ring, one run of tickets.  Reached from Router_Init, once the stash
+ * exceeds a batch, and Router_Progress, once a release takes it past two. */
 inline void Router_node::spill(size_t n)
 {
 	size_t keep = free_list.size() - n;
-	for (size_t i = keep; i + 1 < free_list.size(); i++)
-		blk_link[free_list[i]].store(free_list[i + 1], std::memory_order_relaxed);
-	free_push_chain(free_list[keep], free_list.back());
+	free_push(free_list.data() + keep, (u32) n);
 	free_list.resize(keep);
 }
 
@@ -100,7 +98,7 @@ inline void Router_node::dispatch(int d, u32 blk, u32 count)
 	park(d, blk, count);
 }
 
-/* a block the service is done with: into its stash, which spills a batch to the free stack when it grows.  Reached
+/* a block the service is done with: into its stash, which spills a batch to the free ring when it grows.  Reached
  * from Router_Progress: a send that completed, or (lossy) a block dropped for want of room. */
 inline void Router_node::release(u32 blk)
 {
@@ -130,7 +128,7 @@ inline void Router_node::park(int d, u32 blk, u32 count)
 
 /* one target's parked blocks, in order, as far as they place.  Reached from Router_Progress, every turn for every
  * target; a no-op unless lossless with blocks parked.  careful: the link is read before the block is placed,
- * since once placed its receiver may relink it onto the free stack. */
+ * since once placed the block is on its way round and a later seal may rewrite its link. */
 inline void Router_node::retry_parked(int target)
 {
 	while (park_head[target] != ROUTER_NONE) {
@@ -208,7 +206,7 @@ inline void Router_node::repost(int k)
 	MPI_Irecv(pool + (size_t) blk * block_bytes, (int) block_bytes, MPI_BYTE, MPI_ANY_SOURCE, tag, comm, &in_req[k]);
 }
 
-/* a block on every idle receive slot, as far as the stash and the free stack allow.  Reached from
+/* a block on every idle receive slot, as far as the stash and the free ring allow.  Reached from
  * Router_Progress, every turn, and Router_Reset, once. */
 inline void Router_node::repost_idle()
 {
@@ -278,7 +276,7 @@ inline void Router_node::sweep()
 		todo = sealed_top.exchange(ROUTER_NONE, std::memory_order_acquire);
 	for (int b = 0; b < opt.sweep_blocks && todo != ROUTER_NONE; b++) {
 		u32 blk = todo;
-		u64 link = blk_link[blk].load(std::memory_order_relaxed);   /* careful: handled, the block may be relinked */
+		u64 link = blk_link[blk].load(std::memory_order_relaxed);   /* careful: handled, park or a later seal rewrites it */
 		todo = (u32) link;
 		int d = (int) ((link >> 32) & 0x7fffffffu);
 		if (link & ROUTER_LINK_BARE)
@@ -493,12 +491,13 @@ inline void Router_Dump(FILE *f, const Router_thread &rt)
 	if (rt.role != ROUTER_SERVICE)
 		errx(1, "Router_Dump: not the service thread");
 	Router_node &rn = rt.node;
-	u64 top = rn.free_top.load();
+	u64 in = rn.free_in.load();
+	u64 out = rn.free_out.load();
 	fprintf(f, "rank %d round %u phase %d input_closed %u quiescent %d flush_d %d run %u/%u pending %zu"
-	        " repairs %zu sealed top %u todo %u stash %zu stack head %u gen %u send slots free %zu\n", rn.rank,
-	        rn.round, rn.phase, rn.input_closed.load(), (int) rn.quiescent, rn.flush_d, rn.flush_off, rn.flush_len,
-	        rn.pending.size(), rn.repairs.size(), rn.sealed_top.load(), rn.todo, rn.free_list.size(), (u32) top,
-	        (u32) (top >> 32), rn.out_free.size());
+	        " repairs %zu sealed top %u todo %u stash %zu ring %" PRIu64 " (in %" PRIu64 " out %" PRIu64 ")"
+	        " send slots free %zu\n", rn.rank, rn.round, rn.phase, rn.input_closed.load(), (int) rn.quiescent,
+	        rn.flush_d, rn.flush_off, rn.flush_len, rn.pending.size(), rn.repairs.size(), rn.sealed_top.load(),
+	        rn.todo, rn.free_list.size(), in - out, in, out, rn.out_free.size());
 	for (int s = 0; s < rn.S; s++) {
 		Router_thread &sd = *rn.senders[s];
 		fprintf(f, "  sender %d (grp %d cpu %d): closed %u pushed %" PRIu64 " dropped %" PRIu64 " cached %u\n", s,
@@ -585,12 +584,15 @@ inline void Router_Reset(Router_thread &rt)
 			accounted += 1;
 	for (int s = 0; s < rn.S; s++)
 		accounted += rn.senders[s]->cache_n;
-	size_t walked = 0;                    /* the free stack, nobody else touching it now */
-	for (u32 b = (u32) rn.free_top.load(); b != ROUTER_NONE && walked <= rn.n_blocks; b = (u32) rn.blk_link[b].load())
-		walked += 1;
-	accounted += walked;
+	u64 out = rn.free_out.load();         /* the ring, nobody else touching it now: exact, and every cell ready */
+	u64 in = rn.free_in.load();
+	for (u64 p = out; p < in; p++)
+		if ((u32) (rn.free_cell[p & rn.free_mask].load() >> 32) != (u32) (p + 1))
+			errx(1, "Router_Reset: a free cell is not ready");
+	accounted += in - out;
 	if (accounted != rn.n_blocks)
-		errx(1, "Router_Reset: %zu of %u blocks accounted for (%zu on the stack)", accounted, rn.n_blocks, walked);
+		errx(1, "Router_Reset: %zu of %u blocks accounted for (%" PRIu64 " in the ring)", accounted, rn.n_blocks,
+		     in - out);
 	if (rn.out_free.size() != (size_t) rn.opt.n_recv)
 		errx(1, "Router_Reset: a send is still in flight");
 	for (int p = 0; p < rn.n_nodes; p++)

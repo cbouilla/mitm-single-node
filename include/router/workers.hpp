@@ -5,68 +5,68 @@
 
 namespace mitm {
 
-/******************************** the free stack ********************************/
+/******************************** the free ring ********************************/
 
-/* Put a block onto the free stack; the CAS releases everything the pusher did to it.  
- * Reached from Router_Pop, once the receiver has read a block through. 
+/*
+ * Put n blocks onto the free ring, a run of tickets then their cells, each once the popper of its previous
+ * element has stored it free -- at most that popper's last stores away, the ring being never full.  The cell's
+ * store releases everything the pusher did to the block.
+ * Reached from Router_Pop (one block) and from spill, in Router_Init and Router_Progress (a batch).
  */
-inline void Router_node::free_push(u32 blk)
+inline void Router_node::free_push(const u32 *blks, u32 n)
 {
-	u64 w = free_top.load(std::memory_order_relaxed);
-	for (;;) {
-		blk_link[blk].store((u32) w, std::memory_order_relaxed);
-		u64 w2 = (((w >> 32) + 1) << 32) | blk;
-		if (free_top.compare_exchange_weak(w, w2, std::memory_order_acq_rel, std::memory_order_relaxed))
-			return;
-	}
-}
-
-/* Put a chain the caller linked through blk_link, `first` down to `last`, onto the free stack in one CAS.  
- * Reached from Router_Init (thread 0) and Router_Progress, when the service's stash spills. 
- */
-inline void Router_node::free_push_chain(u32 first, u32 last)
-{
-	u64 w = free_top.load(std::memory_order_relaxed);
-	for (;;) {
-		blk_link[last].store((u32) w, std::memory_order_relaxed);
-		u64 w2 = (((w >> 32) + 1) << 32) | first;
-		if (free_top.compare_exchange_weak(w, w2, std::memory_order_acq_rel, std::memory_order_relaxed))
-			return;
+	u64 t = free_in.fetch_add(n, std::memory_order_relaxed);
+	for (u32 i = 0; i < n; i++) {
+		std::atomic<u64> &cell = free_cell[(t + i) & free_mask];
+		while ((u32) (cell.load(std::memory_order_acquire) >> 32) != (u32) (t + i))
+			cpu_relax();
+		cell.store(((u64) (u32) (t + i + 1) << 32) | blks[i], std::memory_order_release);
 	}
 }
 
 /*
- * Pop up to k blocks off the free stack in one CAS, after walking k links.  The generation in the high word
- * changes at every push and pop, so a CAS on a stale view fails: a walk over a stale view is harmless, being
- * bounded and reading nothing but block ids or NONE, and the CAS that succeeds acquires what the pushers did to
- * the blocks before pushing them.
- * Reached from Router_Init and Router_Push (a sender's refill), and from Router_Init, Router_Progress and
- * Router_Reset whenever the service's stash runs empty.
+ * Pop up to k blocks off the free ring: the ready prefix at free_out, claimed whole by one CAS; zero when the
+ * element at free_out is not there (nothing free, or a push under way), never a wait.  A ready cell changes only
+ * when claimed, and a claim moves free_out, which fails the CAS: the ids read before it are the blocks.  The
+ * acquire loads pair with the pushers' release stores: what they did to a block is visible to whoever pops it.
+ * Reached from Router_Push (a sender's refill) and from the service whenever its stash runs empty.
  */
 inline u32 Router_node::free_pop_many(u32 k, u32 *out)
 {
-	u64 w = free_top.load(std::memory_order_acquire);
-	for (;;) {
-		u32 n = 0;
-		u32 cur = (u32) w;
-		while (n < k && cur != ROUTER_NONE) {
-			out[n] = cur;
-			n += 1;
-			cur = (u32) blk_link[cur].load(std::memory_order_relaxed);
+	u64 pos = free_out.load(std::memory_order_relaxed);
+	u32 n = 0;
+	while (n == 0) {
+		u64 c = free_cell[pos & free_mask].load(std::memory_order_acquire);
+		int32_t dif = (int32_t) ((u32) (c >> 32) - (u32) (pos + 1));
+		if (dif < 0)
+			return 0;                     /* element pos is not there yet */
+		if (dif > 0) {                    /* claimed already: my view of free_out is stale */
+			pos = free_out.load(std::memory_order_relaxed);
+			continue;
 		}
-		if (n == 0)
-			return 0;
-		u64 w2 = (((w >> 32) + 1) << 32) | cur;
-		if (free_top.compare_exchange_weak(w, w2, std::memory_order_acq_rel, std::memory_order_acquire))
-			return n;
+		out[0] = (u32) c;
+		n = 1;
+		while (n < k) {                   /* the ready prefix behind it */
+			c = free_cell[(pos + n) & free_mask].load(std::memory_order_acquire);
+			if ((u32) (c >> 32) != (u32) (pos + n + 1))
+				break;
+			out[n] = (u32) c;
+			n += 1;
+		}
+		if (not free_out.compare_exchange_weak(pos, pos + n, std::memory_order_relaxed))
+			n = 0;                        /* lost the race; pos now holds the value that won */
 	}
+	for (u32 i = 0; i < n; i++)           /* the cells, free for their next round */
+		free_cell[(pos + i) & free_mask].store(((u64) (u32) (pos + i + free_mask + 1) << 32) | ROUTER_NONE,
+		                                      std::memory_order_release);
+	return n;
 }
 
 
 /******************************** the sender path ********************************/
 
 /*
- * A sender's cache filled off the free stack, a batch in one CAS, every block zeroed here rather than at its
+ * A sender's cache filled off the free ring, a batch in one CAS, every block zeroed here rather than at its
  * install: lossless waits for at least one block, holding nothing meanwhile, lossy takes what there is.
  * Reached from Router_Init (the sender's constructor) and Router_Push, by the sealer whose install emptied it.
  */
@@ -198,8 +198,8 @@ inline void Router_Close(Router_thread &rt)
 
 /*
  * Receiver.  Up to `buffer_size` points into `buffer` (2 u64 each), out of the blocks the inbox names, in
- * order; returns how many.  A block read through goes onto the free stack, whose CAS is the release that
- * orders these reads before the block's reuse, and is counted after that CAS, which keeps the count behind it.
+ * order; returns how many.  A block read through goes onto the free ring, whose cell store is the release that
+ * orders these reads before the block's reuse, and is counted after that store, which keeps the count behind it.
  */
 inline size_t Router_Pop(u64 *buffer, size_t buffer_size, Router_thread &rt)
 {
@@ -222,7 +222,7 @@ inline size_t Router_Pop(u64 *buffer, size_t buffer_size, Router_thread &rt)
 		got += take;
 		rt.cur_off += (u32) take;
 		if (rt.cur_off == rt.cur_count) {
-			rn.free_push(rt.cur_blk);
+			rn.free_push(&rt.cur_blk, 1);
 			rt.ctr[ROUTER_BLOCKS] += 1;
 			rt.cur_blk = ROUTER_NONE;
 		}
