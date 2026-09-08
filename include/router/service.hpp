@@ -557,15 +557,24 @@ inline void Router_Stats(u64 *stats, const Router_thread &rt)
 }
 
 /*
- * Service, collective.  Back to a fresh round: the counters and flags, then an MPI_Barrier so that no
- * peer starts the next round before this node has left this one.  No other thread of
- * the node may be inside a Router call meanwhile.
+ * Collective over the team.  Back to a fresh round: once every worker is out of the round, each thread clears
+ * its own tallies and flags, the service thread resets the node and holds an MPI_Barrier so that no peer starts
+ * the next round before this node has left this one; nobody pushes or pops before all of that is done.  The
+ * tallies are gone past this call: Router_Stats reads them before it.
  */
 inline void Router_Reset(Router_thread &rt)
 {
-	if (rt.role != ROUTER_SERVICE)
-		errx(1, "Router_Reset: not the service thread");
 	Router_node &rn = rt.node;
+	if (rt.role == ROUTER_RECEIVER && rt.cur_blk != ROUTER_NONE)
+		errx(1, "Router_Reset: a block is out");
+	#pragma omp barrier                   /* every worker is out of the round: nothing cleared below is read */
+	if (rt.role != ROUTER_SERVICE) {
+		for (int k = 0; k < ROUTER_STATS_SIZE; k++)
+			rt.ctr[k] = 0;
+		rt.closed.store(0, std::memory_order_relaxed);
+		#pragma omp barrier               /* the node is fresh, here and on every peer, before anybody pushes or pops */
+		return;
+	}
 	if (not rn.quiescent)
 		errx(1, "Router_Reset: not quiescent");
 	if (not rn.repairs.empty()) {         /* lossy: destinations left without a block at the F-scan */
@@ -608,17 +617,8 @@ inline void Router_Reset(Router_thread &rt)
 #endif
 	for (int k = 0; k < ROUTER_STATS_SIZE; k++)
 		rn.ctr[k] = 0;
-	for (int s = 0; s < rn.S; s++) {
-		Router_thread &sd = *rn.senders[s];
-		for (int k = 0; k < ROUTER_STATS_SIZE; k++)
-			sd.ctr[k] = 0;
-		sd.closed.store(0, std::memory_order_relaxed);
-	}
-	for (int r = 0; r < rn.R; r++) {
-		for (int k = 0; k < ROUTER_STATS_SIZE; k++)
-			rn.receivers[r]->ctr[k] = 0;
+	for (int r = 0; r < rn.R; r++)
 		rn.inbox_pushed[r] = 0;
-	}
 	for (int p = 0; p < rn.n_nodes; p++) {
 		rn.seq_sent[p] = 0;
 		rn.n_data_recv[p] = 0;
@@ -637,6 +637,7 @@ inline void Router_Reset(Router_thread &rt)
 	rn.flush_off = 0;
 	rn.round += 1;
 	MPI_Barrier(rn.comm);
+	#pragma omp barrier                   /* the node is fresh, here and on every peer, before anybody pushes or pops */
 }
 
 }

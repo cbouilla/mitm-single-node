@@ -1,0 +1,553 @@
+.\" Man page of the Router's interface (include/router/).  Render with: man -l router.3
+.TH ROUTER 3 2026-09-08 "MITM (omp_reboot)" "MITM Library Functions"
+.SH NAME
+Router_Push, Router_Pop, Router_Close, Router_Test_drained, Router_Init,
+Router_Progress, Router_Test_quiescent, Router_Stats, Router_Reset,
+Router_Grab, Router_Release \- route points from sender threads to receiver
+threads across MPI ranks
+.SH SYNOPSIS
+.nf
+\fB#include "router/router.hpp"\fP
+.PP
+.BI "Router_thread Router_Init(int " role ", int " group ", MPI_Comm " comm ", int " tag ,
+.BI "                          bool " lossy ", const Router_Opts *" opts );
+.fi
+.SS Sender
+.nf
+.BI "void   Router_Push(u64 " a ", u64 " b ", int " dest ", Router_thread &" rt );
+.BI "void   Router_Close(Router_thread &" rt );
+.fi
+.SS Receiver
+.nf
+.BI "bool   Router_Pop(u64 *" a ", u64 *" b ", Router_thread &" rt );
+.BI "bool   Router_Test_drained(Router_thread &" rt );
+.BI "size_t Router_Grab(const u64 **" pts ", Router_thread &" rt );
+.BI "void   Router_Release(Router_thread &" rt );
+.fi
+.SS "Service thread (thread 0)"
+.nf
+.BI "void   Router_Progress(Router_thread &" rt );
+.BI "bool   Router_Test_quiescent(const Router_thread &" rt );
+.BI "void   Router_Stats(u64 *" stats ", const Router_thread &" rt );
+.fi
+.SS "Every thread"
+.nf
+.BI "void   Router_Reset(Router_thread &" rt );
+.fi
+.SS Queries
+Any thread; every one returns
+.B int
+and takes
+.BI "const Router_thread &" rt .
+.PP
+.nf
+Router_rank, Router_local_rank, Router_num_send, Router_num_recv,
+Router_local_num_send, Router_local_num_recv, Router_group,
+Router_num_groups, Router_group_num_receivers, Router_group_receiver(int \fIi\fP, \fIrt\fP),
+Router_domain, Router_num_domains, Router_cpu, Router_numa_node
+.fi
+.SH DESCRIPTION
+The Router carries
+.IR points ,
+pairs of u64, from
+.I sender
+threads to globally numbered
+.I receiver
+threads across the ranks of an MPI communicator.
+It runs one rank per node, a node's threads being one OpenMP team.
+Every thread of the team holds one handle, its own
+.BR Router_thread ,
+returned by
+.BR Router_Init ()
+and passed to every later call; a thread never calls with another's handle.
+.PP
+Thread 0 of the team is the
+.IR "service thread" :
+it does all the MPI and moves the points, and neither sends nor receives
+points itself.
+Every other thread is a sender or a receiver, as it declares to
+.BR Router_Init ().
+.PP
+Two modes, fixed for the life of the team.
+.IR Lossless :
+a sender may block, and no point is ever lost.
+.IR Lossy :
+no call ever waits, and a point that cannot be routed at once is dropped and
+counted.
+.PP
+Time is cut into
+.IR rounds .
+Within a round the senders push, then close; the receivers read until drained;
+the service thread progresses until quiescent.
+The round ends with
+.BR Router_Reset (),
+collective over the team (see
+.BR "THE ROUND" ).
+.SS Router_Push()
+Hands the point
+.RI ( a ", " b )
+to the Router for delivery to receiver
+.IR dest ,
+0 <=
+.I dest
+< Router_num_recv(\fIrt\fP): the receiver's
+.BR Router_rank ().
+Delivery is batched: a pushed point may reach its receiver much later, and
+possibly not before the sender closes.
+Lossless: the call may block until the Router has room, and the point is
+delivered exactly once.
+Lossy: the call never waits, and the point may be dropped, in which case it is
+counted (see
+.BR STATISTICS ).
+.SS Router_Pop()
+Takes one point delivered to this receiver: stores it in
+.RI * a ", *" b
+and returns true, or returns false when no point is available now.
+Never waits.
+A false means "try again", not "nothing more will come": the receiver loops on
+.BR Router_Pop ()
+until
+.BR Router_Test_drained ()
+returns true.
+.SS Router_Close()
+Declares that this sender pushes nothing more in this round.
+A closed sender must not push again before
+.BR Router_Reset ().
+The round cannot end until every sender of every node has closed.
+.SS Router_Test_drained()
+Returns true once nothing more can be delivered to this receiver in this round
+and it holds nothing: nothing delivered and unread, no block out (see
+.BR "ADVANCED API" ).
+.SS Router_Init()
+Collective over every thread of the team on every node, called once per thread
+inside one OpenMP parallel region.
+.IR comm ", " tag ", " lossy " and " opts
+are the same on every thread of every node.
+.TP
+.I role
+.B ROUTER_SENDER
+or
+.BR ROUTER_RECEIVER .
+Thread 0 becomes the service thread whatever it passes.
+.TP
+.I group
+.BR ROUTER_GROUP_AUTO ,
+or the group this thread belongs to, in 0..G\-1 (see
+.BR PLACEMENT ).
+.TP
+.I comm
+The MPI communicator, used as is; one rank per node.
+.TP
+.I tag
+The tag of every Router message.
+The caller sends nothing else on
+.I comm
+with this tag.
+.TP
+.I lossy
+Drop, or wait.
+.TP
+.I opts
+The options (see
+.BR OPTIONS ),
+or
+.BR ROUTER_DEFAULT_OPTS .
+.PP
+It returns once the whole team on every node is connected: the shape is agreed
+with the peers, every thread is pinned, every handle exists.
+A node needs at least one sender and one receiver; every node must have the
+same number of each and the same
+.IR lossy .
+.PP
+The handle is the caller's, kept named for the whole life of the team; it is
+neither copyable nor assignable.
+Destroying the handles while a round is in progress aborts.
+.SS Router_Progress(), Router_Test_quiescent()
+Service thread only.
+.BR Router_Progress ()
+does one bounded, non-blocking turn of the service thread's work: it moves
+points from the senders to the network and to the receivers, and brings the
+round to its end once every sender has closed.
+The service thread calls it in a loop; nothing moves between two calls.
+It does nothing once the node is quiescent.
+.BR Router_Test_quiescent ()
+returns true when this node has sent and received everything of the round and
+its receivers hold nothing.
+.SS Router_Stats()
+Service thread only.
+Fills
+.IR stats ,
+an array of
+.B ROUTER_STATS_SIZE
+u64 indexed by
+.BR "enum router_stat" ,
+with the node's tallies for the round, all threads summed (see
+.BR STATISTICS ).
+Exact once quiescent, a snapshot before.
+Read it before
+.BR Router_Reset (),
+which clears it.
+.SS Router_Reset()
+Collective over every thread of the team on every node.
+Back to a fresh round: once every thread of the node has entered the call, the
+tallies and the round's state are cleared, and an
+.B MPI_Barrier
+on
+.I comm
+guarantees that no node starts the next round before every node has left this
+one.
+The call returns, on every thread, only after that: nothing is pushed or popped
+before the Router is fresh everywhere.
+The service thread must be quiescent and a receiver must hold no block (see
+.BR "ADVANCED API" ).
+.SH QUERIES
+Any thread, once
+.BR Router_Init ()
+has returned.
+A query marked (worker) aborts on the service thread.
+.TP
+.BI Router_local_rank( rt )
+(worker) The caller's index among the threads of its role on this node, from 0.
+.TP
+.BI Router_rank( rt )
+(worker) Its index among its role on all nodes: the nodes in rank order, each
+node's threads by local rank.
+A receiver's is the
+.I dest
+that reaches it.
+.TP
+.BI Router_local_num_send( rt )
+Senders on this node.
+.TP
+.BI Router_local_num_recv( rt )
+Receivers on this node.
+.TP
+.BI Router_num_send( rt )
+Senders over all nodes.
+.TP
+.BI Router_num_recv( rt )
+Receivers over all nodes.
+.TP
+.BI Router_group( rt )
+The caller's group, 0..G\-1; \-1 for the service thread.
+.TP
+.BI Router_num_groups( rt )
+G, the groups of this node.
+.TP
+.BI Router_group_num_receivers( rt )
+(worker) The receivers in the caller's group.
+.TP
+.BI Router_group_receiver( i ", " rt )
+(worker) The local rank of the
+.IR i -th
+receiver of the caller's group.
+.TP
+.BI Router_domain( rt )
+The cache domain the caller was pinned in; \-1 when not pinned.
+.TP
+.BI Router_num_domains( rt )
+The node's cache domains; 0 when not pinned.
+.TP
+.BI Router_cpu( rt )
+The CPU the kernel reported for the caller after pinning; momentary when not
+pinned.
+.TP
+.BI Router_numa_node( rt )
+Its NUMA node, likewise.
+.SH PLACEMENT
+By default the Router decides where every thread of the team runs and which
+threads work together.
+The caller sees the outcome through the queries above.
+.SS The CPU set
+The node's CPU set is the union of the affinity masks the threads inherit from
+the launcher and the OpenMP runtime.
+When
+.I opts->pin
+is true the Router must own that set: it refuses a set with fewer CPUs than the
+team has threads, and a set that overlaps another rank's on the same host.
+Run with
+.BR "\-\-bind\-to none" ,
+give each rank disjoint CPUs
+.RB ( "\-\-map\-by numa \-\-bind\-to numa" ", " "\-\-map\-by slot:PE=n" ),
+or set
+.I pin
+= false.
+.SS Pinning
+The set's cores are partitioned into
+.IR "cache domains" :
+the cores sharing one cache at the lowest level shared by several cores (the L3
+on Xeon and EPYC alike), or at the level
+.I opts->cache_level
+names.
+If the CPUs share no such cache, the whole set is one domain.
+Then:
+.IP 1. 4
+The service thread takes a core of domain 0, alone.
+.IP 2. 4
+The receivers, then the senders, are dealt round-robin over the domains, one
+cursor for the whole team starting after the service thread's domain.
+Each takes the emptiest core of its domain, the one with the fewest threads
+placed so far; when every core of the domain is taken, the emptiest core of the
+whole set.
+Every thread thus has a core of its own while cores last, and SMT siblings fill
+up only after that.
+.IP 3. 4
+Every thread pins itself to its CPU and asks the kernel where it runs.
+If any thread is not where the plan put it,
+.BR Router_Init ()
+aborts the run
+.RB ( MPI_Abort )
+before any handle is built.
+.PP
+Afterwards
+.BR Router_cpu (),
+.BR Router_numa_node ()
+and
+.BR Router_domain ()
+report the measured placement of the calling thread.
+.SS Groups
+A
+.I group
+is a set of senders and receivers that work together: a consumer pairs each
+sender with a receiver of its group,
+.BR Router_group_receiver ().
+There are G groups per node, numbered 0..G\-1; every worker belongs to one, the
+service thread to none.
+.PP
+.B "Automatic groups."
+When every worker passes
+.BR ROUTER_GROUP_AUTO ,
+each cache domain is cut into the fewest groups of at most
+.I opts->group_size
+cores, and every receiver, then every sender, joins the group of its domain
+with the fewest members of its role so far.
+A group therefore sits inside one cache domain, both roles spread evenly over
+its domain's groups.
+.PP
+.B "Caller's groups."
+When a worker passes a group number, every worker must: the numbers are 0..G\-1
+with no gap and no empty group, as for
+.BR MPI_Comm_split ().
+The groups are then the caller's, the pinning still the Router's.
+.SS Without pinning
+With
+.I opts->pin
+= false the threads stay where the caller left them and the CPU set is not
+checked.
+.BR Router_domain ()
+returns \-1,
+.BR Router_num_domains ()
+0.
+Automatic groups fall out of the worker index: G = max(ceil(S / group_size),
+ceil(R / group_size), 1), the receivers and the senders each dealt over them
+round-robin.
+Caller's groups apply as above.
+.SH ADVANCED API
+Points are delivered in
+.I blocks
+of
+.I opts->block_points
+points.
+A receiver may read a block where it lies instead of popping its points one by
+one.
+.SS Router_Grab(), Router_Release()
+.BR Router_Grab ()
+returns the number of points in the next block delivered to this receiver and
+sets
+.RI * pts
+to its memory: point k is
+.RI ( pts "[2k], " pts [2k+1]).
+It returns 0, with
+.RI * pts
+= NULL, when no block is available now, and never waits.
+One block is out at a time:
+.BR Router_Release ()
+gives it back to the Router, after which none of its memory may be read.
+A second
+.BR Router_Grab ()
+before the release, or a
+.BR Router_Release ()
+with no block out, aborts.
+.PP
+A receiver uses either
+.BR Router_Grab ()/ Router_Release ()
+or
+.BR Router_Pop (),
+not both.
+.SH OPTIONS
+.BR "struct Router_Opts" .
+Every field has a working default and every node must supply the same values:
+the nodes compare them at
+.BR Router_Init (),
+and on a disagreement the defaults are used everywhere, with a warning.
+Pass
+.B ROUTER_DEFAULT_OPTS
+for the defaults.
+.TP
+.BI "size_t " block_points " = 4096"
+Points per block, one block being one message.
+A power of two >= 4.
+.TP
+.BI "size_t " swc_linesize " = 0"
+Points a sender accumulates for one destination before they leave its hands.
+0 chooses from the fan-out; else a power of two in [4, block_points], with
+block_points / swc_linesize <= 4096.
+.TP
+.BI "int    " n_recv " = 32"
+MPI receives kept posted, and as many sends in flight at most.
+>= 1.
+.TP
+.BI "int    " inbox_blocks " = 64"
+Blocks that may wait for one receiver at once.
+>= 1.
+.TP
+.BI "int    " sweep_blocks " = 256"
+Blocks the service thread ships per
+.BR Router_Progress ()
+at most: the bound on one turn.
+>= 1.
+.TP
+.BI "int    " credit " = 4"
+Blocks in flight to one peer node at most.
+>= 1.
+.TP
+.BI "int    " dests_per_node " = 0"
+For the benchmark only; leave at 0.
+.TP
+.BI "bool   " pin " = true"
+The Router pins the threads and forms the groups (see
+.BR PLACEMENT ).
+.TP
+.BI "int    " cache_level " = 0"
+The cache level a group is confined to; 0 detects the lowest level shared by
+several cores.
+>= 0.
+.TP
+.BI "int    " group_size " = 16"
+Cores per group at most: a larger cache domain is cut into several groups.
+>= 1.
+.TP
+.BI "bool   " verbose " = true"
+Rank 0 prints the sizes, the planned layout and the measured layout at
+.BR Router_Init ().
+.SH STATISTICS
+.B enum router_stat
+indexes the array
+.BR Router_Stats ()
+fills.
+.TP
+.B ROUTER_PUSHED, ROUTER_POPPED
+Points pushed by this node's senders; points delivered to its receivers.
+.TP
+.B ROUTER_SENT, ROUTER_RECV, ROUTER_LOCAL
+Points sent to and received from other nodes; points delivered to a receiver of
+this node without leaving it.
+.TP
+.B ROUTER_DROPPED_SERVICE, ROUTER_DROPPED_NET, ROUTER_DROPPED_RECV
+Lossy only.
+Points dropped by a sender; at the end of the round for want of room towards
+another node; towards a receiver of this node.
+.TP
+.B ROUTER_MSGS_SENT, ROUTER_MSGS_RECV, ROUTER_BYTES_SENT, ROUTER_BYTES_RECV
+MPI messages and bytes, each way.
+.TP
+.B ROUTER_BLOCKS
+Blocks recycled, by the receivers and by the service thread.
+.TP
+.B ROUTER_STALL_OUT
+Lossless only.
+Blocks the service thread had to hold back because their destination had no
+room yet.
+.TP
+.B ROUTER_STALL_IN
+Receives the service thread could not keep posted for want of a free block.
+.TP
+.B ROUTER_TURNS, ROUTER_IDLE_TURNS
+Calls to
+.BR Router_Progress ();
+of which those that moved nothing.
+.SH THE ROUND
+.IP 1. 4
+Senders call
+.BR Router_Push ()
+until they have nothing more, then
+.BR Router_Close ().
+.IP 2. 4
+Receivers call
+.BR Router_Pop ()
+(or
+.BR Router_Grab ()/ Router_Release ())
+until
+.BR Router_Test_drained ().
+.IP 3. 4
+The service thread calls
+.BR Router_Progress ()
+until
+.BR Router_Test_quiescent (),
+then reads
+.BR Router_Stats ().
+.IP 4. 4
+Every thread calls
+.BR Router_Reset ().
+The next round may begin.
+.SH EXAMPLE
+.EX
+#pragma omp parallel
+{
+    int tid  = omp_get_thread_num();
+    int role = (tid <= R) ? ROUTER_RECEIVER : ROUTER_SENDER;   /* thread 0's is ignored */
+    Router_thread rt = Router_Init(role, ROUTER_GROUP_AUTO, MPI_COMM_WORLD, 42,
+                                   false, ROUTER_DEFAULT_OPTS);
+    int n_recv = Router_num_recv(rt);
+    for (int round = 0; round < N; round++) {
+        if (tid == 0) {
+            while (!Router_Test_quiescent(rt))
+                Router_Progress(rt);
+        } else if (role == ROUTER_SENDER) {
+            for (u64 i = 0; i < per_sender; i++)
+                Router_Push(key(i), val(i), key(i) % n_recv, rt);
+            Router_Close(rt);
+        } else {
+            u64 a, b;
+            while (!Router_Test_drained(rt))
+                if (Router_Pop(&a, &b, rt))
+                    consume(a, b);
+        }
+        if (tid == 0) {
+            u64 st[ROUTER_STATS_SIZE];
+            Router_Stats(st, rt);
+        }
+        Router_Reset(rt);
+    }
+}   /* every handle dies here; the router must be quiescent */
+.EE
+.SH ERRORS
+No function returns an error code.
+An invalid argument, a call on a thread of the wrong role, a broken
+precondition (a second grab, a release with nothing out, a reset before
+quiescence or with a block out) or an MPI library initialised below
+.B MPI_THREAD_FUNNELED
+aborts the process through
+.BR errx (3).
+A thread the kernel did not pin where planned aborts the run through
+.BR MPI_Abort ().
+.SH NOTES
+Two ranks on one host cannot both pin (see
+.BR PLACEMENT ):
+run them with
+.I pin
+= false, or give each its own CPUs.
+.PP
+The Router sends nothing on
+.I comm
+outside a round and the barrier of
+.BR Router_Reset ().
+.SH SEE ALSO
+The header comment of
+.IR include/router/router.hpp ,
+the interface's own summary.
+.I examples/router_test.cpp
+.RB ( "ctest \-\-test\-dir build" )
+and
+.IR examples/router_bench.cpp ,
+complete programs built on this interface.

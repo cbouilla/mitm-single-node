@@ -223,11 +223,10 @@ int main(int argc, char **argv)
 			} else {
 				bench_sender(rt, a, t0 + a.seconds);
 			}
-			#pragma omp barrier
-			if (tid == 0) {
+			#pragma omp barrier               /* the bench's own: bench_report reads ns_per_point and xor_hash */
+			if (tid == 0)
 				bench_report(rt, a, round, wtime() - t0);
-				Router_Reset(rt);
-			}
+			Router_Reset(rt);
 		}
 	}
 	MPI_Finalize();

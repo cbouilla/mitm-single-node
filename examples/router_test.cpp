@@ -112,10 +112,10 @@ static void receiver_round(Router_thread &rt, const RouterArgs &a, Shared &sh, i
 				k = 1;
 			}
 		} else {
-			const Point *pts;
+			const u64 *pts;
 			k = Router_Grab(&pts, rt);
 			for (size_t j = 0; j < k; j++)
-				check_point(pts[j].key, pts[j].val, me, S, sh, seen, round);
+				check_point(pts[2 * j], pts[2 * j + 1], me, S, sh, seen, round);
 			if (k > 0)
 				Router_Release(rt);       /* after the checks: they read block memory */
 		}
@@ -293,12 +293,10 @@ static void run_config(const RouterArgs &a, const char *name, bool use_colors = 
 			} else {
 				sender_round(rt, a, sh, tid - 1 - R, round);
 			}
-			#pragma omp barrier
-			if (tid == 0) {
+			#pragma omp barrier               /* the test's own: check_round reads what the workers wrote to sh */
+			if (tid == 0)
 				check_round(rt, a, sh, round);
-				Router_Reset(rt);
-			}
-			#pragma omp barrier
+			Router_Reset(rt);
 		}
 	}
 }
