@@ -1670,3 +1670,232 @@ for b in /tmp/pre-nt-$(hostname -s)/build build; do
     mpirun -np 1 --bind-to none $b/examples/router_bench --senders 220 --receivers 32 --rounds 3
 done
 ```
+
+---
+
+# Session 8 -- gros, four hosts: the multi-host path runs at the wire, and lossless deadlocked
+
+2026-09-08, **gros-68, gros-71, gros-90, gros-91** (Grid'5000 Nancy): one socket of Xeon Gold
+5220 each, 18 cores / 36 PU, **one** 24.8 MB L3, 1 NUMA node, 92 GB, **25 GbE**.  Release build
+of `4420082` (the streaming staging copy of session 7 included), worktree `~/mitm-gros` on
+`bench-gros`.  One MPI rank per host, **14 senders + 3 receivers + 1 service = 18 threads on 18
+cores**, no oversubscription.  Rounds of 3 s, the steady round of 2-3 reported.
+
+## 0. Open MPI does not work between these hosts out of the box
+
+Every node's global IPv6 address on `br0` is a **/128**, so the TCP BTL cannot conclude that two
+nodes share a subnet: it builds an empty reachability graph and a rank aborts with
+`MPI_ERR_INTERN` inside the first collective, printing "Unable to find reachable pairing between
+local and remote interfaces".  IPv4 is a normal /20 and raw connectivity is fine (0.28 ms, TCP
+connect ok).  What works:
+
+```
+--mca pml ^ucx --mca btl tcp,self --mca btl_tcp_if_include 172.16.64.0/20 \
+--mca btl_tcp_disable_family 6 --prtemca oob_tcp_if_include br0 --prtemca plm_ssh_no_tree_spawn 1
+```
+
+Two traps.  `mpirun ... hostname` proves nothing -- `hostname` makes no MPI call, so it tests the
+launcher and passes while every rank would abort on its first message.  And a filtered `mpirun`
+hides the abort you need to read: two runs looked like silent failures because the pipeline
+swallowed it.
+
+## 1. One node, for reference
+
+18 threads on 18 cores.  `raw` is the senders generating points without pushing, i.e. the
+benchmark's own floor:
+
+| senders + receivers | raw | routed | ns/point |
+|---|---|---|---|
+| 16 + 1 | 1.9 G pts/s | 300 M | 53.4 |
+| 15 + 2 | 1.8 G | 598 M | 25.1 |
+| **14 + 3** | **1.7 G** | **889 M** | **15.7** |
+| 12 + 5 | 1.5 G | 841 M | 14.3 |
+| 9 + 8 | 1.2 G | 614 M | 14.7 |
+
+Raw is 120-133 M pts/s per sender thread (7.5-8.4 ns/point), so the Router's marginal cost at the
+peak is 7.4 ns/point.  A receiver saturates at **~300 M pts/s**: one delivers 300 M, three deliver
+889 M, and past three the senders are the constraint.
+
+## 2. The wire, in the Router's own shape
+
+`netbw`, one MPI thread per rank, non-blocking sends to every peer with a bounded window, 32
+always-posted receives, 256 rotating send buffers so a message is read from cold memory as a block
+is.  Three passes per size; the figure is the mean received rate per rank, with the spread across
+ranks:
+
+| message | received per rank | spread | aggregate |
+|---|---|---|---|
+| 8 KB | 0.58-0.62 GB/s | **0.00-0.82** | 2.3-2.5 GB/s |
+| 32 KB | 0.72-0.99 | **0.00-1.19** | 2.9-4.0 |
+| 65600 B (the Router's block) | 1.37-1.39 | 1.35-1.41 | 5.5 |
+| 256 KB | 1.81-1.83 | 1.78-1.86 | 7.2-7.3 |
+| 1 MB | 1.93-1.94 | 1.89-1.97 | 7.7-7.8 |
+
+Monotone in the message size, saturating at **1.94 GB/s per host each way** from 1 MB up, which is
+62 % of a 25 Gb/s link per direction, both directions at once.  In the Router's units that is
+**121 M points/s per host** at 1 MB against 86 M at the default block size.
+
+Two things to note about the small sizes.  The spread includes **0.00**: at 8 KB and 32 KB a rank
+can be starved outright, so those rows are not just slow, they are unfair.  And the eager limit
+here is 65536 bytes (`ompi_info --param btl tcp`), so the Router's 65600-byte block is 64 bytes
+into the rendezvous path -- but rendezvous is *not* the problem: 65600 B beats every eager size
+measured.
+
+**A first version of this table was wrong and the mistake is worth recording.**  It counted a send
+when it was *posted*, and an eager send completes into an internal buffer long before the data is
+on the wire, so "sent" overstated by up to 50 % below the eager limit; and it printed rank 0's own
+rate, which is the favoured rank.  Together they made 32 KB look faster than 65600 B, i.e. an
+"eager cliff" that does not exist.  Count sends on completion, and report the spread.
+
+## 3. Four hosts: the Router is at the wire
+
+Uniform destinations, so 3 of 12 destinations are local and **three quarters of every node's
+points cross the network** (the measurements confirm it: 116.3 M pushed, 87.2 M net).
+
+| configuration | routed | pushed per host | net per host | egress | msgs/s |
+|---|---|---|---|---|---|
+| `--local-only` (no network) | **3.6 G pts/s** | 893 M | 0 | 0 | 0 |
+| defaults, 65600 B messages | 465 M | 116 M | 87.2 M | 1.40 GB/s | 21.3 K |
+| `--block 8192`, 128 KB | 550 M | 137 M | 103.1 M | 1.65 GB/s | 12.6 K |
+| `--block 16384`, 256 KB | 598 M | 149 M | 112.1 M | 1.79 GB/s | 6.8 K |
+| `--block 32768`, 512 KB | 610 M | 153 M | 114.4 M | 1.83 GB/s | 3.5 K |
+| **`--block 65536`, 1 MB** | **625 M** | 156 M | 117.1 M | **1.87 GB/s** | 1.8 K |
+
+Against §2's wire figures -- 1.38 GB/s at 65600 B and 1.94 at 1 MB -- the Router reaches **101 %
+and 96 %**.  There is nothing to win in the code: the multi-host path is network-bound, and the
+only lever is the message size, worth **+34 %** (465 -> 625 M pts/s).  The local-only control also
+validates the whole setup: 893 M per host is the 889 M of §1.
+
+**The network costs a factor of 5.8** on this cluster: 3.6 G local against 625 M once three
+quarters of the points leave the node.  A 25 GbE cluster is a poor match for a router that moves
+16 bytes per point at a billion points per second per node.
+
+## 4. Lossy buys nothing here either
+
+| configuration | routed | pushed per host | dropped |
+|---|---|---|---|
+| defaults, lossless | 465 M | 116 M | 0 |
+| defaults, `--lossy` | 465 M | 449 M | **74 %** |
+| `--block 65536`, lossless | 625 M | 156 M | 0 |
+| `--lossy --credit 16 --block 65536` | 664 M | 426 M | **61 %** |
+
+Same delivered rate at defaults for four times the pushing, and 6 % more in the tuned pair for
+three points in five thrown away.  Session 7 §2 found the same on one node; the inter-node path
+does not change the conclusion.  Lossy's value here is diagnostic: the drop counters name the
+place that is full (`svc` no block installed, `net` credit or slots exhausted, `recv` a full
+inbox).
+
+## 5. The bug: lossless deadlocked with the credit raised
+
+Every one of these hung in round 0, reproducibly, and the first one was left spinning for 16
+minutes at 1800 % CPU before it was killed:
+
+| configuration | before the fix |
+|---|---|
+| `--credit 16` | **hang** |
+| `--credit 64` | **hang** |
+| `--credit 16 --block 65536` | **hang** |
+| `--credit 64 --block 65536` | **hang** |
+| `--credit 16 --inbox 16` | **hang** |
+| `--credit 4` (default), `--credit 8`, 10, 12, 14 | fine |
+| any of the above with `--lossy` | fine |
+| `--credit 16 --n-recv 64` | fine |
+| `--credit 16` or 64 on **two** hosts | fine |
+
+The state, from stacks of a hung rank: **all 14 senders inside `refill`** waiting on an empty free
+ring, the three receivers spinning on **empty inboxes**, the service thread inside MPI progress
+with nothing completing.  Every block in the pool was committed and none could come back.
+
+The cycle: a node that has no block leaves its receive slots idle -- `repost()` takes a block from
+the service's stash and, finding none, counts `ROUTER_STALL_IN` and returns.  A node that is not
+receiving stalls every peer that sends to it, and a peer's send holds its block until it
+completes, so those blocks never return either.  Raising the credit is what tips it: it lets more
+of the pool sit in the network path at once, and `--inbox 16` tips it too because a full inbox
+parks blocks instead of draining them.  Lossy never hangs because a dropped block goes straight
+back through `release()`.  Two hosts never hang because one peer cannot commit enough.
+
+**The census**, from a hung rank through gdb, is what settled it (14 senders, 3 receivers, the
+default block, `--credit 16`):
+
+| what | value |
+|---|---|
+| pool | 1277 blocks |
+| the free ring (`free_in - free_out`) | **0** |
+| the service's stash (`free_list`) | **0** |
+| free send slots (`out_free`) | **0** of 32 |
+| `credit_used` per peer | **{0, 16, 16, 0}** -- two peers at their full credit |
+| parked, first four targets | none |
+| failed reposts (`ROUTER_STALL_IN`) | **54,451,552** |
+| blocks pushed into the three inboxes | 278, 278, 276 |
+
+Every send slot in flight, both credit-limited peers full, the ring and the stash empty, and 54
+million attempts to post a receive that found no block.  The pool had drained into the send path
+of every node at once.
+
+**The first fix was wrong and is worth recording.**  `c1a0e7d` gave the receive slots a reserve
+that `release()` topped up before anything reached the senders.  It changed nothing: all four
+configurations still hung.  The reason is in the census -- `release()` runs when a *send
+completes*, which is exactly what is blocked, so the reserve is never fed.  Reverted in `97ab913`.
+
+**The fix that works** (`6fb1c88`): a floor on the free ring.  `free_pop_many` takes a `floor`
+argument; a sender leaves `n_recv` blocks behind, and the service passes zero, so the blocks a
+sender may not have are exactly the ones its receives need.  What makes this one work where the
+reserve did not is that a **local** receiver's `Router_Release` refills the ring without the
+network being involved, so the floor is restored by traffic that cannot be blocked.  With one
+node the floor is zero: nothing arrives, so a posted receive never needs replacing.
+
+Measured after the fix, the four configurations that hung:
+
+| configuration | routed |
+|---|---|
+| `--credit 16` | 480 M pts/s |
+| `--credit 64` | 436 M |
+| `--credit 16 --block 65536` | 501 M |
+| `--credit 16 --inbox 16` | 463 M |
+
+Note that raising the credit is still not worth anything once it works: 480 M against 459 M at
+the default credit, and `--credit 16 --block 65536` is *worse* than `--block 65536` alone.  This
+cluster's run-to-run spread is wide -- the same binary gave 429, 429, 460 and 459 M pts/s in four
+passes of the same configuration, i.e. **+/- 7 %** -- so treat differences under 10 % here as
+unresolved.
+
+The floor's own cost, measured as a paired A/B against its parent commit, alternating the two
+binaries three times over (defaults, the steady rounds of 3 s rounds):
+
+| pass | with the floor | without |
+|---|---|---|
+| 1 | 461.4, 462.1 M pts/s | 459.9, 461.7 |
+| 2 | 445.7, 445.9 | 453.8, 457.9 |
+| 3 | 446.5, 447.5 | 458.5, 456.8 |
+
+451 against 458 M on the means, i.e. **1.4 %**, in a harness where the same binary moves 3.5 %
+between passes.  Call it free; it is certainly not worth a deadlock.
+
+## What to change
+
+- **Raise the default block for multi-node runs.**  4096 points is 65600 bytes and leaves a third
+  of the network on the table; 65536 points (1 MB) is at the plateau on this fabric.  It is the
+  only knob that matters across hosts.
+- The engine will be network-bound on a cluster like this one, by a factor of ~6 against its
+  local rate.  Anything that keeps points on the node -- a hash that favours local destinations,
+  or a two-level routing scheme -- is worth more than any code tuning measured in these sessions.
+- Sessions 2, 4 and 5 recommended `--credit 16` from measurements taken with **two ranks on one
+  host**, where "the defaults cost 6.8x".  Across real hosts the same setting deadlocked until
+  `c1a0e7d`, and it is worth only ~8 % once it works (465 -> 505 M at credit 10-12).  Shared-memory
+  np 2 does not stand in for a network.
+
+## Reproducing
+
+```bash
+# one rank per host, 18 threads on 18 cores, and the flags of §0 in $MCA
+mpirun -np 4 --hostfile hostfile --map-by node --bind-to none $MCA \
+    build/examples/router_bench --senders 14 --receivers 3 --rounds 3 --block 65536
+
+# the wire, in the Router's shape (netbw.c is ~110 lines of MPI, in the session scratch)
+mpirun -np 4 --hostfile hostfile --map-by node --bind-to none $MCA ./netbw 1048640 3 8 32 256
+
+# the deadlock, before c1a0e7d: round 0 never ends, 18 threads spinning
+mpirun -np 4 ... build/examples/router_bench --senders 14 --receivers 3 --credit 16
+# where the threads are (the service is the one in MPI progress)
+sudo-g5k gdb -p $(pgrep -x -n router_bench) -batch -ex "thread apply all bt 3"
+```
