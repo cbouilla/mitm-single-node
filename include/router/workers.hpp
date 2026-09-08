@@ -130,7 +130,7 @@ inline void Router_node::stage_line(Router_thread &s, int d, const Point *line)
 		}
 		if (k < L) {
 			Point *pts = (Point *) (pool + (size_t) blk * block_bytes + ROUTER_HDR_BYTES);
-			memcpy(pts + (size_t) k * swc_linesize, line, (size_t) n * sizeof(Point));
+			router_stream_copy(pts + (size_t) k * swc_linesize, line, (size_t) n * sizeof(Point));
 			n_valid[(size_t) nv_stride * blk + k].store(1, std::memory_order_release);
 			return;
 		}
