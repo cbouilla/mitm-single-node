@@ -1314,3 +1314,239 @@ EV=amd_df/local_processor_read_data_beats_cs0/,amd_df/local_processor_write_data
 perf record -F 499 --all-user -o g.data -- mpirun ... --rounds 1
 perf report -i g.data --stdio --no-children -g none --sort srcline    # then bucket by workers.hpp line
 ```
+
+---
+
+# Session 6 -- grdix, where the cycles go at 150 + 105, and the 2.1x that was hiding there
+
+Same day and same node as session 5 (**grdix-5**, 2 x EPYC 9754, 256 cores / 512 PU, 2 NUMA
+nodes, 32 L3 domains of 16 MB), stock tree at `739b7ea` plus two out-of-tree patches, named
+where used.  The first is a **role probe**: twelve lines in `RouterPlacement::report_measured`
+printing `thread_cpu[]` by role, so that `perf -C` is an exact role filter (`perf record` also
+needs `-a`, or the samples carry no CPU and `-C` silently returns nothing).
+
+## Summary
+
+| | stock | with non-temporal stores |
+|---|---|---|
+| 150 + 105 | 3.3 G pts/s, 46.0 ns | **6.9 G pts/s, 21.8 ns** |
+| 192 + 63 | 2.5-2.8 G, 76.4 ns | **7.2 G, 21.2 ns** |
+| 96 + 31, socket 0 only (128 cores) | 4.4 G, 22.0 ns | **6.2 G, 15.4 ns** |
+| the sender's 8 KB copy | 33.8 % of sender cycles | 5.5 % |
+| the sender's DRAM fills | 2.27 G (49 % from the far socket) | 0.04 G |
+| the receiver's remote-cache fills | 1.53 G | 0.02 G |
+| receiver IPC | 0.39 | 0.83 |
+
+Three findings, in order of what they cost:
+
+1. **The points were travelling cache-to-cache across the sockets, and both roles were paying
+   for it** (§2, §3).  The receivers read almost nothing from DRAM: 1.53 G of their fills come
+   from *the other socket's cache*, where the sender that wrote the block still holds the
+   lines.  The senders, meanwhile, fetch every line they are about to overwrite (write
+   allocation), half of those from far DRAM.
+2. **One 8 KB `memcpy` per 512 points is a third of every sender's cycles** (§2), and it is
+   slow because of that write allocation, not because of the copy.  Replacing it with
+   non-temporal stores is worth **2.1x** on the whole node and takes the copy out of the
+   profile (§4).  `ctest` passes all three.
+3. **Cross-socket traffic is what stops the node scaling.**  The same 128-core team is
+   4.4 G pts/s on one socket and 2.9 G split over two (§3) -- and with non-temporal stores one
+   socket does 6.2 G while both do 7.2 G, so the second socket adds 16 % (§5).  This
+   contradicts session 2 §3, which found socket crossing irrelevant; that was measured when
+   the free-stack CAS was 74 % of sender cycles and masked everything.
+
+## 1. The three roles, separately
+
+`perf record -a -F 999 --all-user`, one 3 s round at 150 + 105 (3.3 G pts/s), samples filtered
+by the role's CPUs, source lines of `include/router/workers.hpp`:
+
+| senders (150 threads) | share of sender cycles |
+|---|---|
+| `__memmove_avx512_unaligned_erms` (the copy in `stage_line`) | **33.8 %** |
+| `Router_Push` body, the two stores into the private line (`:164`, `:167`) | 15.7 % |
+| the PRNG (`tools.hpp:130-143`) | 28.8 % |
+| the benchmark's `x % F` (`router_bench.cpp:49`) | 2.3 % |
+
+| receivers (105 threads) | share of receiver cycles |
+|---|---|
+| **`Router_Pop`'s two loads of the point out of the block** (`:245`, `:239`) | **84.0 %** |
+| the benchmark's `murmur128` | 4.2 % |
+| the inbox ring (`ring.hpp`), `free_push` (`:21`), `Router_Test_drained` (`:256`) | 2.7 % |
+
+The service thread is one thread of 256 and idle (`ring.hpp:50` and `service.hpp:281`, its
+sweep, are its own top lines; 38 % of its cycles are `MPI_Testsome` over an idle network, as
+session 4 §3 already noted).
+
+On the two receiver lines: 244 and 245 are the `.key` and `.val` halves of one 16-byte point,
+i.e. **one cache line for four points**, and 239 is the loop-top test of the next iteration.
+Cycle sampling on this machine is not precise (`cycles:pp` is unsupported, `-e ibs_op` would be
+needed), so a load's cost lands on the instruction after it: what the three lines say together
+is that essentially all of a receiver's time is the point load, not that the compare is
+expensive.
+
+## 2. What the `memmove` is, and why it is slow
+
+It is one call per staged line, at `workers.hpp:132` in `stage_line`:
+
+```c
+memcpy(pts + (size_t) k * swc_linesize, line, (size_t) n * sizeof(Point));
+```
+
+`swc_linesize` is 512 points, so **8 KB from the sender's private write-combining line into
+its slot of the destination block**.  glibc resolves it to `__memmove_avx512_unaligned_erms`
+and, at 8 KB, takes the **4 x 64 B unrolled vector loop, not the ERMS `rep movsb` branch**:
+85 % of the memmove's samples sit on four `vmovdqa64` stores of the loop body.
+
+Those are ordinary stores, so each one that misses **fetches the line first** (write
+allocation), and the profile is a stall on that fetch, not the copy.  Measured on the sender
+CPUs over one round (`ls_any_fills_from_sys.*`, 9.8 G points routed, i.e. 2.45 G lines
+written):
+
+| fill source | count | share |
+|---|---|---|
+| near DRAM (own socket) | 1.156 G | 42 % |
+| **far DRAM (other socket)** | **1.112 G** | **41 %** |
+| remote cache | 0.357 G | 13 % |
+| own L3 domain | 0.104 G | 4 % |
+
+**2.73 G fills for 2.45 G lines written**: every line the sender writes is fetched from
+somewhere first, and half of them come from the other socket.  Sender IPC is 0.97.
+
+## 3. The receivers are not reading DRAM at all
+
+Same measurement on the receiver CPUs, same round:
+
+| fill source | count |
+|---|---|
+| **remote cache (the other socket's)** | **1.531 G** |
+| own L3 domain | 0.055 G |
+| near DRAM | 0.014 G |
+| far DRAM | 0.005 G |
+
+Of the 2.45 G lines the receivers read, 1.53 G arrive **from a cache on the other socket** and
+19 M from DRAM.  The point stream is not going through memory: a sender writes a block into
+its own cache hierarchy, and the receiver -- picked uniformly, so on the far socket half the
+time -- probes it out across the fabric.  Receiver IPC is **0.39**, and 84 % of the cycles are
+those two loads.
+
+That is why session 5's DRAM figure was low (~28 bytes per point measured against a 48-byte
+model): most of the traffic never reached DRAM.  It also predicts the socket test, at a
+constant 128 cores and the same team shape:
+
+| 96 senders + 31 receivers, 128 cores | routed | ns/point |
+|---|---|---|
+| `taskset -c 0-127`, one socket | **4.4 G** | **22.0** |
+| `taskset -c 0-63,128-191`, 64 cores per socket | 2.9 G | 33.5 |
+
+**1.5x for crossing sockets**, with the same thread count and the same code.
+
+## 4. Non-temporal stores: 2.1x
+
+The patch, in `stage_line`, in place of the `memcpy` (out-of-tree, AVX-512 only as written;
+a shipping version wants a 256-bit path or a `memcpy` fallback):
+
+```c
+__m512i *dq = (__m512i *) (pts + (size_t) k * swc_linesize);
+const __m512i *sq = (const __m512i *) line;
+size_t nq = (size_t) n * sizeof(Point) / 64;
+for (size_t q = 0; q < nq; q++)
+        _mm512_stream_si512(dq + q, _mm512_load_si512(sq + q));
+_mm_sfence();                  /* NT stores are not ordered by the release store below */
+```
+
+Both sides are 64-byte aligned by construction (`ROUTER_HDR_BYTES` is 64, the pool is
+`aligned_alloc(64)`, a slot is `swc_linesize * 16` bytes and `swc_linesize` is a power of two
+at least 4), so the aligned NT store is safe.  `ctest` passes `router_np1/2/4`.
+
+| split | stock | NT stores |
+|---|---|---|
+| 192 + 63 | 2.5-2.8 G | **7.2 G** |
+| 150 + 105 | 3.3 G | **6.9 G** |
+| 127 + 128 | 3.2 G | 6.4 G |
+| 105 + 150 | 3.0 G | 5.5 G |
+| 85 + 170 | 3.2 G | 4.5 G |
+
+Note the sign flip: stock wanted receivers (150 + 105 beat 192 + 63 by 30 %), and with the
+fills gone the best split is the one with the **most senders**, because the receiver's read is
+now cheap.  The fills say why: senders 2.73 G -> 0.24 G (DRAM 2.27 G -> 0.04 G), receivers'
+remote-cache 1.53 G -> 0.02 G, replaced by 0.60 G of DRAM reads.  Receiver IPC goes 0.39 ->
+0.83 for the same cycles, and the profile changes shape -- the copy falls from 33.8 % to 5.5 %
+of sender cycles, and `Router_Push`'s two stores become the top sender lines.
+
+**62 % of the receivers' new DRAM reads are far** (0.370 G against 0.226 G near), which is the
+next thing to fix: the pool is first-touched in parallel by the whole team, so a block's pages
+are wherever they landed.  Partitioning the pool by NUMA node and handing a sender a block on
+its destination's node would make the receiver's read local.
+
+## 5. And then the memory wall
+
+With the fills gone, the one-socket configuration runs into DRAM, which is the wall session 5
+was looking for.  Measured with the data fabric's channel-0 beats, calibrated against `membw`
+on the same socket (511 bytes of machine traffic per beat, socket 0 alone):
+
+| 96 + 31, socket 0, NT stores | value |
+|---|---|
+| routed | 6.22 G pts/s |
+| DRAM per point | 34.7 B (the model says 32: one write, one read) |
+| DRAM traffic | **216 GB/s** |
+| that socket's copy bandwidth (`membw`) | 245 GB/s |
+| | **88 % of the wall** |
+
+The full node is not there yet: 7.2 G pts/s at 192 + 63 against 490 GB/s of bandwidth, i.e.
+roughly half.  What it is short of is not bandwidth but the fabric -- one socket does 6.2 G
+and two do 7.2 G.
+
+## 6. On Intel the same patch is worth 3 %
+
+grvingt-11, 50 + 12: 31.6 -> **30.9 ns/point**, 1.6 G either way.  The RFOs do disappear
+(`offcore_requests.demand_rfo` 856 M -> 48 M, 18x), but the DRAM traffic per point does not
+move (48.7 -> 52.9 bytes), so on that machine the fetches were being served by L3 rather than
+by memory, and the copy was only 5.4 % of sender cycles to begin with.  Two open ends there:
+its per-point traffic is ~1.6x the 32-byte model in both builds and I could not attribute the
+excess, and glibc picks `__memmove_evex_unaligned_erms` rather than the AVX-512 variant.
+
+## 7. Ruled out
+
+- **Cache residency of the active destination blocks.**  105 destinations x 64 KB is 6.7 MB,
+  which would fit an L3 domain, and shrinking it makes things **worse**, monotonically:
+  `--block` 512 / 1024 / 2048 / 4096 / 16384 gives 2.1 / 2.2 / 2.3 / 3.3 / 3.5 G pts/s.  Small
+  blocks cost more per block than they save in cache.
+- **`--dests` below the receiver count** is refused outright (`dests_per_node must be at least
+  the receivers per node`), so the fan-out cannot be narrowed to test residency that way.
+- **The free ring**, again: 0.38 % of samples here, as in session 5.
+
+## What to change
+
+- **Stage lines with non-temporal stores** (§4).  2.1x on this machine, 3 % on Intel, nothing
+  measured against it.  It needs an AVX2 path and a `memcpy` fallback, and the `sfence` before
+  the release store is not optional.
+- **Then partition the pool per NUMA node** and hand a sender blocks on its destination's node
+  (§4): 62 % of the receivers' reads are far today.
+- **Re-tune the default split after both.**  With the fills gone the optimum moves from
+  150 + 105 to 192 + 63, i.e. towards senders.
+- Session 4 §3's advice to shard the free ring is **done and no longer needed** (the MPMC ring
+  did it), and its lossy back-pressure item is still open (session 5 §4).
+
+## Reproducing
+
+```bash
+# the role probe: print thread_cpu[] by role at the end of RouterPlacement::report_measured,
+# then filter samples by role -- and record system-wide, or -C returns nothing
+perf record -a -F 999 --all-user -o a.data -- mpirun -np 1 --bind-to none build/examples/router_bench \
+    --senders 150 --receivers 105 --rounds 1
+perf report -i a.data --stdio --no-children -g none --sort srcline -C "$(cat cpu.senders)"
+
+# where a role's cache lines come from
+perf stat -a -C "$(cat cpu.senders)" -e cycles,instructions,ls_any_fills_from_sys.dram_io_near,\
+ls_any_fills_from_sys.dram_io_far,ls_any_fills_from_sys.local_ccx,ls_any_fills_from_sys.remote_cache -- mpirun ...
+
+# which memmove branch, at instruction level
+perf report -i a.data --stdio --sort symbol -C "$(cat cpu.senders)" | grep memmove
+perf annotate -i a.data --stdio --symbol=__memmove_avx512_unaligned_erms -C "$(cat cpu.senders)"
+
+# crossing sockets, at a constant 128 cores
+taskset -c 0-127        mpirun -np 1 --bind-to none build/examples/router_bench --senders 96 --receivers 31
+taskset -c 0-63,128-191 mpirun -np 1 --bind-to none build/examples/router_bench --senders 96 --receivers 31
+
+# Intel's RFOs
+perf stat -a -e l2_rqsts.all_rfo,offcore_requests.demand_rfo -- mpirun ...
+```
