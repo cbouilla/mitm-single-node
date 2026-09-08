@@ -38,6 +38,15 @@ u64 make_mask(int n)
     return (n >= 64) ? 0xffffffffffffffffull : (1ull << n) - 1;
 }
 
+/*
+ * The two-word unit the Router carries from a producer to a dictionary shard.  What the words mean is
+ * the scheme's business: the direct scheme ships (hashed image, preimage).
+ */
+struct Point {
+    u64 key;       /* what the point was routed on */
+    u64 val;       /* the payload */
+};
+
 /* wall-clock seconds */
 double wtime()
 {

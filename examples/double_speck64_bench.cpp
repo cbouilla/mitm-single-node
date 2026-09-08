@@ -7,19 +7,15 @@
 int main(int argc, char* argv[])
 {
     mitm::Options opts;
-    u64 ram = 0;         // RAM per node for the dictionary (--ram, mandatory)
+    u64 ram = 0;         // unused here: the benchmark needs no dictionary
     int n = 32;
     u64 seed = 1337;
-    std::string engine = "pcs";   // --engine: the search scheme
+    std::string engine = "direct";   // --engine: the search scheme
     mitm::init(argc, argv, opts, ram, n, seed, engine);
 
     mitm::PRNG prng(seed);
     mitm::DoubleSpeck64_Problem pb(n, prng);
     mitm::benchmark(pb, opts);
-    if (ram > 0) {       // --ram is optional here: it asks for the probe and staging benchmarks too
-        mitm::probe_benchmark(pb, opts, ram);
-        mitm::staging_benchmark(pb, opts, ram);
-    }
 
     MPI_Finalize();
     return EXIT_SUCCESS;

@@ -16,7 +16,6 @@
 #include <sys/syscall.h>
 
 #include "../tools.hpp"
-#include "../parameters.hpp"
 #include "topology.hpp"
 #include "placement.hpp"
 #include "ring.hpp"

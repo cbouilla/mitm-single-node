@@ -1,16 +1,24 @@
 # Communication protocol
 
-One engine core, several *schemes*.  The core -- `include/engine.hpp` (the comm thread and the
-round loop), `include/comm.hpp` (the contexts, the point buffers), `include/spsc.hpp`,
-`include/controller.hpp`, `include/parameters.hpp` -- moves points from producer threads to the
-dictionary shards and runs the rounds; it is templated on a **scheme**, which says what a point
-is, what a dict thread does with it, what a producer does, when a round ends and how it is
-reported (§7).  Two schemes: PCS -- `include/pcs_common.hpp` (its data and its `Scheme`),
-`include/walker.hpp`, `include/inserter.hpp` and `include/pcs.hpp` (its functions and its entry
-points) -- and the direct, exhaustive scheme (§8) -- `include/direct_common.hpp`,
-`include/direct_dict.hpp`, `include/direct_producer.hpp`, `include/direct.hpp`.  A heading or a
-paragraph marked **(PCS)** or **(direct)** describes that scheme's use of the core; everything
-else is the core and holds for every scheme.  Names in code font are the ones used there.
+**Two engines live in this tree, and this document covers both.**
+
+**§8 is the direct engine, the only one that runs today**: the exhaustive meet-in-the-middle
+built on the Router (`include/router/`, its interface specified in `router.3`).  It is
+self-contained -- `include/direct_common.hpp`, `include/direct_dict.hpp`,
+`include/direct_producer.hpp`, `include/direct.hpp` -- and uses **none** of the core described in
+§1--§7: no comm thread, no control channel, no controller, no SPSC queue, no scheme template.  All
+it asks of the communicator is that nothing else on it carries the Router's tag.
+
+**§1--§7 describe the previous core** -- `include/engine.hpp`, `include/comm.hpp`,
+`include/spsc.hpp`, `include/controller.hpp` -- and the PCS scheme (`include/pcs_common.hpp`,
+`include/walker.hpp`, `include/inserter.hpp`, `include/pcs.hpp`) that still sits on it.  **PCS is
+disconnected**: no target compiles it, and `--engine pcs` is refused.  Those sections are the
+record of what it did, kept for the rebuild of PCS on the Router; they are not a description of
+anything that builds.  Where they say "the core is templated on a scheme, two schemes", read
+"one scheme, PCS"; a paragraph of §1--§7 marked **(direct)** describes the direct scheme as it was
+when it sat on the core, and is superseded by §8.
+
+Names in code font are the ones used in the code.
 
 ## 1. Actors
 
@@ -803,89 +811,165 @@ rediscovers them.
 
 ## 7. Schemes
 
-The core is templated on a `Scheme` struct -- `mitm::pcs::Scheme` today, declared in
-`pcs_common.hpp` and defined in `pcs.hpp` -- which names the types and constants below and
+The core is templated on a `Scheme` struct -- `mitm::pcs::Scheme`, declared in `pcs_common.hpp`
+and defined in `pcs.hpp`, the only one left -- which names the types and constants below and
 defines the functions the core calls.  Nothing in the core knows what a point's payload or a
-dictionary slot means, or when a search is over.
+dictionary slot means, or when a search is over.  The direct scheme used to be the second one; it
+is now an engine of its own on the Router and implements none of this (§8).
 
-| the scheme's | is | PCS | direct (§8) |
-|---|---|---|---|
-| `Params` | its parameters, derived from the core's `Parameters` (rank, layout, `w` slots) and setting `report_points` (§2.2) | `jbits`, the length field, theta, `points_per_version` | `domain`, `per_round`, `n_rounds`, `check_bits` |
-| `Header` | the round header's words: trivially copyable, whole `u64`s; `stop` travels beside it (§4.2) | `i`, `root_seed` | `round`, `phase` |
-| `Dict` | one shard, built by `build_dict()` | `PcsDict`: direct-addressed, a slot overwritten by a longer trail | `DirectDict`: linear probing, every entry kept |
-| `enum counter`, `N_COUNTERS`, `PACING` | its tallies -- the report and reduction layout -- and the one that paces the reports | 17 counters, `N_DP` | 10 counters, `N_POINTS` |
-| `ThreadStats`, `RoundStats` | statistics beyond the counters: a thread's, and the round's with `collect()`, `reduce()`, `fold()` (§3.4, §4.6) | a producer's HyperLogLog; the merged registers | empty |
-| `Shared` | state hung on the `SharedContext` | the collision queues (§3.2) | empty |
-| `LOSSLESS`; `DROP_OUT`, `DROP_DICTQ` or `STALL_OUT`, `STALL_IN` | the overflow policy (§5), and the comm thread's two tallies: dropped points for a dropping scheme, stalled turns for a lossless one | drops | lossless |
-| `producer_per_dict` (to `Parameters`) | whether `Placement` must give every dict thread a producer (§1) | yes | no |
-| `next_header()` | rank 0's next header and `stop`, from the previous ones (§4.2) | a fresh `i` and `root_seed` | the next phase; `stop` past the last round |
-| `build_dict()`, `after_round()` | a dict thread's shard, built once pinned (§4.1); what it does after the epilogue barrier, given the round's header (§4.6) | shard and collision queue; `flush()` | shard; `flush()` after `PROBE` only |
-| `producer_thread()`, `dict_thread()` | the two worker rounds (§3.3) | the walker (`walker.hpp`), the inserter (`inserter.hpp`) | `direct_producer.hpp`, `direct_dict.hpp` |
-| `round_complete()` | closes the round on the reported tallies (§2.2) | `N_DP >= points_per_version` | never: a round ends by exhaustion (§4.5, §8) |
-| `banner()`, `display()`, `round_report()`, `done()` | all the printing | | |
+| the scheme's | is | PCS |
+|---|---|---|
+| `Params` | its parameters, derived from the core's `Parameters` (rank, layout, `w` slots) and setting `report_points` (§2.2) | `jbits`, the length field, theta, `points_per_version` |
+| `Header` | the round header's words: trivially copyable, whole `u64`s; `stop` travels beside it (§4.2) | `i`, `root_seed` |
+| `Dict` | one shard, built by `build_dict()` | `PcsDict`: direct-addressed, a slot overwritten by a longer trail |
+| `enum counter`, `N_COUNTERS`, `PACING` | its tallies -- the report and reduction layout -- and the one that paces the reports | 17 counters, `N_DP` |
+| `ThreadStats`, `RoundStats` | statistics beyond the counters: a thread's, and the round's with `collect()`, `reduce()`, `fold()` (§3.4, §4.6) | a producer's HyperLogLog; the merged registers |
+| `Shared` | state hung on the `SharedContext` | the collision queues (§3.2) |
+| `LOSSLESS`; `DROP_OUT`, `DROP_DICTQ` or `STALL_OUT`, `STALL_IN` | the overflow policy (§5), and the comm thread's two tallies: dropped points for a dropping scheme, stalled turns for a lossless one | drops |
+| `producer_per_dict` (to `Parameters`) | whether `Placement` must give every dict thread a producer (§1) | yes |
+| `next_header()` | rank 0's next header and `stop`, from the previous ones (§4.2) | a fresh `i` and `root_seed` |
+| `build_dict()`, `after_round()` | a dict thread's shard, built once pinned (§4.1); what it does after the epilogue barrier, given the round's header (§4.6) | shard and collision queue; `flush()` |
+| `producer_thread()`, `dict_thread()` | the two worker rounds (§3.3) | the walker (`walker.hpp`), the inserter (`inserter.hpp`) |
+| `round_complete()` | closes the round on the reported tallies (§2.2) | `N_DP >= points_per_version` |
+| `banner()`, `display()`, `round_report()`, `done()` | all the printing | |
 
-## 8. The direct scheme
+Also gone with the direct scheme: `Parameters` and the tags now live in `comm.hpp`, not in
+`parameters.hpp`, which holds the user's `Options` alone.
 
-`mitm::direct` (`direct_common.hpp`, `direct_dict.hpp`, `direct_producer.hpp`, `direct.hpp`):
-the exhaustive meet-in-the-middle, the baseline PCS is measured against.  `w' = fill * w`
-entries per round (`--fill`, default 0.5), `R = ceil(2^n / w')` rounds; `--nrounds` caps `R`,
-and the search is then not exhaustive -- the banner and the last line say so.
+## 8. The direct engine, on the Router
 
-**One direct round is two protocol rounds.**  The header is `(round, phase)`, sequenced by
-rank 0 in `next_header()`: `(0, FILL)`, `(0, PROBE)`, `(1, FILL)`, ...; past round `R - 1` it
-raises `stop`.  The drain between the two phases (§4.5) is the barrier the algorithm needs:
-every entry of the round is in its shard before the first probe of the round is delivered.
+`mitm::direct` (`direct_common.hpp`, `direct_dict.hpp`, `direct_producer.hpp`, `direct.hpp`): the
+exhaustive meet-in-the-middle, the baseline PCS will be measured against.  `w' = fill * w` entries
+per round (`--fill`, default 0.5), `R = ceil(2^n / w')` rounds; `--nrounds` caps `R`, and the search
+is then not exhaustive -- the banner and the last line say so.  Nothing here is shared with §1--§7.
 
-| phase | a producer evaluates | on | a dict thread | after the epilogue barrier |
+### 8.1 The team
+
+One MPI rank per node, `MPI_THREAD_FUNNELED`, one OpenMP team of `1 + I + W` threads per rank
+(`I = --dicts-per-node`, `W = --producers-per-node`, 0 == fill the affinity mask).  Every thread
+calls `Router_Init(role, ROUTER_GROUP_AUTO, comm, ROUTER_TAG, /*lossy=*/false, &opts.router)` once,
+inside the one parallel region, and keeps its handle for the team's whole life.
+
+| thread | Router role | does |
+|---|---|---|
+| 0 | service | all the MPI: `Router_Progress` until `Router_Test_quiescent`, then `Router_Stats`, the epilogue, the printing |
+| `1..I` | receiver | owns one dictionary shard: inserts or probes what the Router delivers to it |
+| `I+1..I+W` | sender | evaluates the phase's function on its piece of the domain and pushes every image |
+
+**The Router owns placement** (autopilot): it pins every thread, forms its groups and reports the
+plan and the measured layout itself.  The engine passes `ROUTER_GROUP_AUTO`, never pins a thread and
+never queries hwloc; `--no-bind` is `opts.router.pin = false`, needed when two ranks share a host.
+The engine ignores the groups: a match is resolved where it is found, so no producer needs to be
+paired with a dict thread.  A dict thread builds its shard right after `Router_Init`, i.e. once
+pinned, so the zero-fill is the first touch of every page.
+
+### 8.2 One direct round is two Router rounds
+
+The phase sequence is `(0, FILL)`, `(0, PROBE)`, `(1, FILL)`, ... and it is **deterministic**: every
+thread of every node computes it from a local counter, so there is no round header, no broadcast and
+no control channel.
+
+| phase | a producer evaluates | on | a dict thread | at the end of the phase |
 |---|---|---|---|---|
 | `FILL` | `f` | chunk `round` of the domain: `[round * w', min((round + 1) * w', 2^n))` | inserts `(key, val)` | keeps the shard |
 | `PROBE` | `g` (`f` for a collision problem) | the whole domain | probes `key`; resolves every match on the spot | `flush()`es the shard |
 
-**Points.**  `key` is the image, `f(x)` or `g(y)`, in full; `val` is the preimage.  One point
-per evaluation, so a node runs at its comm thread's speed (`PROBLEM.md` §2), and the banner
-says so.
+**The phase boundary is `Router_Reset`**, and that is the barrier the algorithm needs: it returns on
+a thread only after every node has left the round, so every entry of a `FILL` phase is in its shard
+before the first probe of the `PROBE` phase is pushed.  Its two team barriers and its `MPI_Barrier`
+are inside it; the engine writes none of them.
 
-**Producers** (`producer_thread()`).  The phase's domain is cut into `n_producers` contiguous
-pieces of equal length to within one; producer `p = rank * producers_per_node + index` takes
-the `p`-th, so the partition is the same on every node and needs no message.  A producer
-walks its piece `vlen` inputs at a time (`veval()`: `vfg` with every choice set to the phase's
-function, `vf` for a collision problem, `f` / `g` themselves when `vlen == 1`), ships every
-image, and **waits for room** in its ring rather than dropping (§5).  It reads its `state`
-every `chunk_size` vectors, and a `HOLD` ends its piece early: the round is over, a solution
-was found elsewhere.  Once its piece is exhausted it moves itself to `HELD` (§3.3) and answers
-`HOLD` with `HELD` and `DRAIN` with `QUIESCENT`: it holds nothing to drain.
+One phase, on each thread:
 
-**Dict threads** (`dict_thread()`).  The shard, `DirectDict`, is linear probing over 8-byte
-slots: `OCCUPIED | check << n | preimage`, zero empty, `n <= 63`.  `key / n_dicts` is the
-shard's part of the key (§2.1); its run starts at `home()`, that part modulo `w_shard`, and
-`tag()` -- bit 63 and the low `63 - n` bits of the part above the index, shifted above the
-preimage -- is what every slot holding that key carries.  `FILL`: insert into the first empty
-slot of the run; a full shard is fatal, which `fill <= 0.9` rules out.  `PROBE`: every slot of
-the run carrying the key's tag is a match, which the thread verifies with **one evaluation**,
-`wrapper.fill(x) == key` -- the check bits' false positives die here (`BAD_MATCH`) -- counts as
-a collision (`N_COLLISIONS`) and tests with `good(x, y)`: `is_good_pair`, a collision problem
-demanding `x != y` and trying both orders, the pair coming back in the order that passed.  A
-golden pair goes to `set_golden(round, x, y)` at once.  No collision queue and no candidate: a
-match costs about what a probe does, and a hand-off would cost more than it saves.  Hence
-`producer_per_dict == false`: few producers over many dict threads is a legitimate layout.
+1. zero its own tallies;
+2. its role's work, above -- a producer ends with `Router_Close`, a dict thread loops until
+   `Router_Grab` returns 0 and `Router_Test_drained` is true, thread 0 turns the Router until the
+   node is quiescent and then reads `Router_Stats`, which `Router_Reset` would clear;
+3. `Router_Reset`, which every thread of every node calls;
+4. thread 0 alone: the epilogue (§8.4);
+5. `#pragma omp barrier`, the engine's own: it publishes the epilogue's verdict and lets the next
+   phase zero the tallies thread 0 has just read;
+6. every thread reads `stop` and leaves the loop or starts the next phase.
 
-**Rounds end by exhaustion** (§4.5, step 1).  `round_complete()` is false, so the controller
-never closes a round on volume; a node's comm thread enters its drain when every producer of
-the node is `HELD`, sends its sentinels once everything the node produced is routed, and keeps
-inserting or probing what the other nodes send until their sentinels arrive.  `TAG_END_ROUND`
-is sent only on `stop`, when a solution is known: the early exit.
+### 8.3 Points
 
-**Lossless** (§5).  `LOSSLESS` is true and `STALL_OUT`, `STALL_IN` are the comm thread's two
-tallies.  A dropped point would be a missing entry or a missing probe, and "no solution" is a
-proof only when none was dropped.
+A point is the two words the Router carries: `key` is `murmur64(image)`, `val` the preimage.
 
-**Counters.**  `N_EVAL`, `N_POINTS` (producers); `N_INSERT`, `N_PROBE`, `N_STEPS` (slots
-visited by inserts and probes: the cost of linear probing), `N_MATCH`, `BAD_MATCH`,
-`N_COLLISIONS` (dict threads); `STALL_OUT`, `STALL_IN` (comm thread).  `PACING` is `N_POINTS`
-and `report_points` is `w' / (reports_per_round * n_nodes)`, the `FILL` phase being the short
-one.  `ThreadStats`, `RoundStats` and `Shared` are empty.
+**Routing.**  `dest = ((key & 0xffffffff) * Router_num_recv) >> 32`, a multiply-shift on the low
+word, and `Router_num_recv` is `n_nodes * I`, asserted equal to the number of shards.  The hash
+buys the producer a fan-out with no 64-bit division on the hot path; `murmur64` is a bijection, so
+distinct images stay distinct and a match is verified against `key` itself.
 
-**Answer.**  The golden slot holds `(round, x, y)`.  `claw_search` returns `(x, y)` with
-`f(x) == g(y)`, `collision_search` the pair in the order `is_good_pair` accepted.  With no
-solution the search returns nothing after `R` rounds, and that is a proof of absence -- unless
-`--nrounds` cut it short, which `done()` says.
+**The shard.**  `DirectDict` is linear probing over 8-byte slots, `OCCUPIED | check << n | preimage`,
+zero empty, `n <= 63`.  It mixes the key once more, `h = murmur64(key)`: the run starts at
+`home(h) = (h * n_slots) >> 64`, from `h`'s top bits, and `tag(h)` -- bit 63 and `h`'s low `63 - n`
+bits, shifted above the preimage -- is what every slot holding that key carries.  The second mix is
+required, not cosmetic: routing consumed the top bits of the key's low word, and a shard of more than
+2^32 slots cut from the key itself would leave part of its slots unreachable.
+
+`FILL`: insert into the first empty slot of the run; a full shard is fatal, which `fill <= 0.9` rules
+out.  `PROBE`: every slot of the run carrying the key's tag is a match, verified with **one
+evaluation**, `murmur64(wrapper.fill(x)) == key` -- the check bits' false positives die here
+(`BAD_MATCH`) -- counted as a collision (`N_COLLISIONS`) and tested with `good(x, y)`: `is_good_pair`,
+a collision problem demanding `x != y` and trying both orders, the pair coming back in the order that
+passed.  A golden pair goes to `set_golden(round, x, y)` at once.  No collision queue and no
+candidate: a match costs about what a probe does, and a hand-off would cost more than it saves.
+
+A dict thread reads each block **where it lies**, between `Router_Grab` and `Router_Release`, and
+copies nothing.  A block may hold fewer than `block_points` points.
+
+### 8.4 The epilogue: one `MPI_Allgather` per phase
+
+Thread 0, after `Router_Reset` and before the engine's barrier, builds its node's record and
+exchanges it with every other node in a single `MPI_Allgather` of `REC_WORDS` `u64`:
+
+| words | what |
+|---|---|
+| `0 .. N_COUNTERS-1` | the node's tallies, summed over its threads |
+| `REC_ROUTER ..` | `ROUTER_STATS_SIZE` words: the node's `Router_Stats` for the phase |
+| `REC_FOUND`, `REC_X`, `REC_Y` | 1 and the pair, if this node found a golden pair |
+
+Every node then reads the same verdict out of the same records: **the lowest rank with `REC_FOUND`
+provides the answer**, and `stop = solved || (phase == PROBE && round + 1 == R)`.  Rank 0 also sums
+the records and prints the round report, which is therefore exact.  Only thread 0 calls MPI, and it
+does so while every other thread of the node waits at the engine's barrier; the Router sends nothing
+on the communicator outside a round and `Router_Reset`'s barrier, so the `MPI_Allgather` cannot meet
+one of its messages.
+
+There is **no early exit inside a phase**: a solution found during a phase stops the search at the
+end of that phase.  Cutting a phase short would need a control channel of its own, and it can save
+at most one phase.
+
+### 8.5 State, tallies and loss
+
+| lives | where |
+|---|---|
+| a thread's handle, a dict thread's shard, a producer's buffers, thread 0's stats and record arrays | a local of that thread's scope, built by that thread |
+| the tallies, the golden pair, the verdict | `Shared`, one per rank, built before the team |
+
+`Shared::tally[tid].ctr[]` is one `u64[N_COUNTERS]` per thread on a cache line of its own, **plain,
+never atomic**: its owner writes it, thread 0 reads it after `Router_Reset`'s first team barrier,
+which is what makes the writes visible.  The golden pair is the one exception, `set_golden` taking a
+mutex and an `std::atomic` flag, because any dict thread of the node may find one at any moment.
+
+**Counters.**  `N_EVAL` (producers: evaluations, one point pushed each); `N_INSERT`, `N_PROBE`,
+`N_STEPS` (slots visited by inserts and probes: the cost of linear probing), `N_MATCH`, `BAD_MATCH`,
+`N_COLLISIONS` (dict threads).  Everything about the communication -- points pushed and delivered,
+bytes and messages on the wire, blocks stalled, the service thread's turns -- is the Router's own
+tallies, in the same record; the engine keeps no counter of its own for it.
+
+**Lossless.**  The Router is opened with `lossy = false`, so a `Router_Push` may block but no point
+is ever lost.  A dropped point would be a missing entry or a missing probe, and "no solution" is a
+proof only when none was dropped.  The round report prints the Router's two stall counters when they
+are nonzero, and complains if the points pushed and the points delivered do not agree.
+
+**The live line** is rank 0's own node, read from its tallies without synchronisation while the
+phase runs, and scaled by the number of nodes: approximate on purpose.  The round report comes from
+the `MPI_Allgather` and is exact.  Do not expect the two to agree to the unit.
+
+### 8.6 Answer
+
+The golden slot holds `(round, x, y)`.  `claw_search` returns `(x, y)` with `f(x) == g(y)`,
+`collision_search` the pair in the order `is_good_pair` accepted.  With no solution the search
+returns nothing after `R` rounds, and that is a proof of absence -- unless `--nrounds` cut it short,
+which the last line says.  The demos' exit status is that outcome.

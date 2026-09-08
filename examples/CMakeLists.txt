@@ -42,13 +42,24 @@ mitm_example(router_test)
 target_compile_definitions(router_test PRIVATE ROUTER_PARANOID)
 mitm_example(router_bench)
 
-# one rank, two ranks, four ranks: 8 spinning threads in all on an 8-core laptop (12 at np 4, the
-# minimum of one service thread, one sender and one receiver per rank).  np 1 pins (one rank owns the
-# machine); np 2 and np 4 put several ranks on the one host, whose masks overlap, so they pass --no-bind
-# (the Router refuses to pin overlapping masks) -- pinned multi-rank needs --map-by numa on a real cluster.
+# The Router: one rank, two ranks, four ranks -- 8 spinning threads in all on an 8-core laptop (12 at
+# np 4, the minimum of one service thread, one sender and one receiver per rank).  np 1 pins (one rank
+# owns the machine); np 2 and np 4 put several ranks on the one host, whose masks overlap, so they pass
+# --no-bind (the Router refuses to pin overlapping masks) -- pinned multi-rank needs --map-by numa on a
+# real cluster.
 add_test(NAME router_np1 COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 1 ${MPIEXEC_PREFLAGS}
          $<TARGET_FILE:router_test> --senders 4 --receivers 3 --quiet)
 add_test(NAME router_np2 COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 2 ${MPIEXEC_PREFLAGS}
          $<TARGET_FILE:router_test> --senders 2 --receivers 1 --no-bind --quiet)
 add_test(NAME router_np4 COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 4 ${MPIEXEC_PREFLAGS}
          $<TARGET_FILE:router_test> --senders 1 --receivers 1 --no-bind --quiet)
+
+
+###### The direct engine: a planted claw over 2^20 preimages, found or the exit status says so
+
+add_test(NAME direct_np1 COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 1 ${MPIEXEC_PREFLAGS}
+         $<TARGET_FILE:double_speck64_demo> --n 20 --ram 256K --seed 1
+         --producers-per-node 4 --dicts-per-node 3 --quiet)
+add_test(NAME direct_np2 COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 2 ${MPIEXEC_PREFLAGS}
+         $<TARGET_FILE:double_speck64_demo> --n 20 --ram 256K --seed 1
+         --producers-per-node 2 --dicts-per-node 1 --no-bind --quiet)

@@ -10,7 +10,7 @@ int main(int argc, char* argv[])
     u64 ram = 0;         // RAM per node for the dictionary (--ram, mandatory)
     int n = 32;
     u64 seed = 1337;
-    std::string engine = "pcs";   // --engine: the search scheme
+    std::string engine = "direct";   // --engine: the search scheme
     mitm::init(argc, argv, opts, ram, n, seed, engine);
 
     mitm::PRNG prng(seed);

@@ -21,30 +21,27 @@ static void usage(const char *argv0)
 {
 	printf("usage: %s --ram <bytes> [options]\n\n", argv0);
 	printf("  --ram B          RAM for the dictionary, per node (accepts 512M, 4G, ...).  MANDATORY\n");
-	printf("  --engine S       the search scheme: pcs (default) or direct\n");
+	printf("  --engine S       the search scheme: direct (default).  pcs is being rebuilt on the Router\n");
 	printf("  --n BITS         problem size.  Small == easy\n");
 	printf("  --seed S         PRNG seed.  0 == draw a fresh one from /dev/urandom\n");
-	printf("  --difficulty T   proportion theta of distinguished points.  Default: auto\n");
-	printf("  --alpha A        auto-tuning: theta = A*sqrt(w/n)\n");
-	printf("  --beta B         use each version of the function for B*w distinguished points\n");
-	printf("  --nrounds R      give up after R rounds (PCS: versions of the function)\n");
-	printf("  --fill F         direct: dictionary fill ratio, entries per round == F * slots.  Default: 0.5\n");
-	printf("  --dp-len-bits N  bits of trail length shipped with a distinguished point.  A length that\n");
-	printf("                   does not fit is re-walked when a collision needs it.  0 == all that fit\n");
+	printf("  --fill F         dictionary fill ratio, entries per round == F * slots.  Default: 0.5\n");
+	printf("  --nrounds R      give up after R rounds\n");
 	printf("\n");
-	printf("  --producers-per-node W     default: fill the affinity mask\n");
-	printf("  --dicts-per-node I   dictionary shards per node, one per thread group.  Default: 1\n");
-	printf("  --cache-level N          cache level a thread group sits in.  0 == auto (the lowest one\n");
-	printf("                           shared by several cores).  Default: 0\n");
-	printf("  --no-bind                do not pin threads to CPUs (no cache/NUMA placement)\n");
+	printf("  --producers-per-node W   default: fill the affinity mask\n");
+	printf("  --dicts-per-node I       dictionary shards per node, one thread each.  Default: 1\n");
+	printf("  --no-bind                do not let the Router pin the threads (needed for 2 ranks per host)\n");
+	printf("  --cache-level N          cache level a Router group sits in.  0 == auto.  Default: 0\n");
+	printf("  --group N                cores per Router group at most.  Default: 16\n");
 	printf("\n");
-	printf("  --producer-queue N     DPs buffered between a producer and the comm thread\n");
-	printf("  --dict-queue N   DPs buffered between the comm thread and a dict thread\n");
-	printf("  --coll-queue N       collision candidates buffered per dict thread, for its group\n");
-	printf("  --coll-per-chunk N   candidates a producer retires per chunk.  0 == until its batch stops filling\n");
-	printf("  --buffer N           DPs per node-to-node message\n");
-	printf("  --in-buffers N       posted MPI_Irecv slots\n");
-	printf("  --chunk N            trail steps between queue / phase checks\n");
+	printf("  --block N        points per Router block, one block being one message.  Default: 4096\n");
+	printf("  --swc N          points a producer accumulates per destination.  0 == auto\n");
+	printf("  --n-recv N       MPI receives the Router keeps posted.  Default: 32\n");
+	printf("  --inbox N        blocks that may wait for one dict thread.  Default: 64\n");
+	printf("  --sweep N        blocks the service thread ships per turn.  Default: 256\n");
+	printf("  --credit N       blocks in flight to one peer node at most.  Default: 4\n");
+	printf("\n");
+	printf("  --difficulty T --alpha A --beta B --dp-len-bits N   (PCS, unused today)\n");
+	printf("  --quiet          no progress information\n");
 	exit(EXIT_SUCCESS);
 }
 
@@ -55,8 +52,8 @@ static void usage(const char *argv0)
 static void process_command_line_options(int argc, char **argv, Options &opts,
                                          u64 &nbytes_memory, int &n, u64 &seed, std::string &engine)
 {
-	enum {OPT_ENGINE = 998, OPT_FILL = 999, OPT_PRODUCER_QUEUE = 1000, OPT_DICT_QUEUE, OPT_COLL_QUEUE, OPT_COLL_PER_CHUNK,
-	      OPT_BUFFER, OPT_IN_BUFFERS, OPT_CHUNK, OPT_CACHE_LEVEL, OPT_NO_BIND, OPT_DP_LEN_BITS,
+	enum {OPT_ENGINE = 998, OPT_FILL = 999, OPT_BLOCK = 1000, OPT_SWC, OPT_NRECV, OPT_INBOX, OPT_SWEEP,
+	      OPT_CREDIT, OPT_GROUP, OPT_CHUNK, OPT_CACHE_LEVEL, OPT_NO_BIND, OPT_DP_LEN_BITS, OPT_QUIET,
 	      OPT_HELP};
 
 	struct option longopts[] = {
@@ -72,15 +69,17 @@ static void process_command_line_options(int argc, char **argv, Options &opts,
 		{"dp-len-bits",        required_argument, NULL, OPT_DP_LEN_BITS},
 		{"producers-per-node", required_argument, NULL, 'W'},
 		{"dicts-per-node",     required_argument, NULL, 'I'},
-		{"producer-queue",     required_argument, NULL, OPT_PRODUCER_QUEUE},
-		{"dict-queue",         required_argument, NULL, OPT_DICT_QUEUE},
-		{"coll-queue",         required_argument, NULL, OPT_COLL_QUEUE},
-		{"coll-per-chunk",     required_argument, NULL, OPT_COLL_PER_CHUNK},
-		{"buffer",             required_argument, NULL, OPT_BUFFER},
-		{"in-buffers",         required_argument, NULL, OPT_IN_BUFFERS},
+		{"block",              required_argument, NULL, OPT_BLOCK},
+		{"swc",                required_argument, NULL, OPT_SWC},
+		{"n-recv",             required_argument, NULL, OPT_NRECV},
+		{"inbox",              required_argument, NULL, OPT_INBOX},
+		{"sweep",              required_argument, NULL, OPT_SWEEP},
+		{"credit",             required_argument, NULL, OPT_CREDIT},
+		{"group",              required_argument, NULL, OPT_GROUP},
 		{"chunk",              required_argument, NULL, OPT_CHUNK},
 		{"cache-level",        required_argument, NULL, OPT_CACHE_LEVEL},
 		{"no-bind",            no_argument,       NULL, OPT_NO_BIND},
+		{"quiet",              no_argument,       NULL, OPT_QUIET},
 		{"help",               no_argument,       NULL, OPT_HELP},
 		{NULL, 0, NULL, 0}
 	};
@@ -88,29 +87,31 @@ static void process_command_line_options(int argc, char **argv, Options &opts,
 	for (;;) {
 		int ch = getopt_long(argc, argv, "", longopts, NULL);
 		switch (ch) {
-		case -1:                   return;
-		case 'r': nbytes_memory = human_parse(optarg);                   break;
-		case OPT_ENGINE:         engine = optarg;                                    break;
-		case OPT_FILL:           opts.fill = std::stof(optarg);                       break;
-		case 'n': n = std::stoi(optarg);                                 break;
-		case 's': seed = std::stoull(optarg, 0, 0);                      break;
-		case 'd': opts.theta = std::stof(optarg);                        break;
-		case 'a': opts.alpha = std::stof(optarg);                        break;
-		case 'b': opts.beta = std::stof(optarg);                         break;
-		case 'o': opts.max_versions = std::stoull(optarg, 0, 0);         break;
-		case 'W': opts.producers_per_node = std::stoi(optarg);           break;
-		case 'I': opts.dicts_per_node = std::stoi(optarg);               break;
-		case OPT_PRODUCER_QUEUE: opts.producer_queue_capacity = std::stoull(optarg); break;
-		case OPT_DICT_QUEUE:     opts.dict_queue_capacity = std::stoull(optarg);     break;
-		case OPT_COLL_QUEUE:     opts.coll_queue_capacity = std::stoull(optarg);     break;
-		case OPT_COLL_PER_CHUNK: opts.coll_per_chunk = std::stoull(optarg);          break;
-		case OPT_BUFFER:         opts.buffer_capacity = std::stoull(optarg);         break;
-		case OPT_IN_BUFFERS:     opts.n_in_buffers = std::stoi(optarg);              break;
-		case OPT_CHUNK:          opts.chunk_size = std::stoull(optarg);              break;
-		case OPT_CACHE_LEVEL:    opts.cache_level = std::stoi(optarg);               break;
-		case OPT_DP_LEN_BITS:    opts.dp_lenbits = std::stoi(optarg);                break;
-		case OPT_NO_BIND:        opts.bind_threads = false;                          break;
-		case OPT_HELP:           usage(argv[0]);                                     break;
+		case -1:                 return;
+		case 'r': nbytes_memory = human_parse(optarg);                       break;
+		case OPT_ENGINE:         engine = optarg;                            break;
+		case OPT_FILL:           opts.fill = std::stof(optarg);              break;
+		case 'n': n = std::stoi(optarg);                                     break;
+		case 's': seed = std::stoull(optarg, 0, 0);                          break;
+		case 'd': opts.theta = std::stof(optarg);                            break;
+		case 'a': opts.alpha = std::stof(optarg);                            break;
+		case 'b': opts.beta = std::stof(optarg);                             break;
+		case 'o': opts.max_versions = std::stoull(optarg, 0, 0);             break;
+		case 'W': opts.producers_per_node = std::stoi(optarg);               break;
+		case 'I': opts.dicts_per_node = std::stoi(optarg);                   break;
+		case OPT_BLOCK:          opts.router.block_points = human_parse(optarg);  break;
+		case OPT_SWC:            opts.router.swc_linesize = human_parse(optarg);  break;
+		case OPT_NRECV:          opts.router.n_recv = std::stoi(optarg);      break;
+		case OPT_INBOX:          opts.router.inbox_blocks = std::stoi(optarg); break;
+		case OPT_SWEEP:          opts.router.sweep_blocks = std::stoi(optarg); break;
+		case OPT_CREDIT:         opts.router.credit = std::stoi(optarg);      break;
+		case OPT_GROUP:          opts.router.group_size = std::stoi(optarg);  break;
+		case OPT_CHUNK:          opts.chunk_size = std::stoull(optarg);       break;
+		case OPT_CACHE_LEVEL:    opts.router.cache_level = std::stoi(optarg); break;
+		case OPT_DP_LEN_BITS:    opts.dp_lenbits = std::stoi(optarg);         break;
+		case OPT_NO_BIND:        opts.router.pin = false;                     break;
+		case OPT_QUIET:          opts.verbose = false;                        break;
+		case OPT_HELP:           usage(argv[0]);                              break;
 		default:
 			errx(1, "Unknown option");
 		}
@@ -130,8 +131,10 @@ static void init(int argc, char **argv, Options &opts, u64 &nbytes_memory, int &
 		errx(1, "MPI: this MPI does not provide MPI_THREAD_FUNNELED");
 
 	process_command_line_options(argc, argv, opts, nbytes_memory, n, seed, engine);
-	if (engine != "pcs" && engine != "direct")
-		errx(1, "--engine %s: unknown scheme (pcs, direct)", engine.c_str());
+	if (engine == "pcs")
+		errx(1, "--engine pcs: the PCS scheme is being rebuilt on the Router and is not available");
+	if (engine != "direct")
+		errx(1, "--engine %s: unknown scheme (direct)", engine.c_str());
 
 	int rank;
 	MPI_Comm_rank(MPI_COMM_WORLD, &rank);
