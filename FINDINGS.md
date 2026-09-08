@@ -2019,3 +2019,99 @@ mpirun -np 64 --hostfile hostfile.64 --map-by node --bind-to none $MCA \
 # the fabric, same shape, for the ceiling
 mpirun -np 64 --hostfile hostfile.64 --map-by node --bind-to none $MCA ./netbw 1048640 3 8 32 256
 ```
+
+---
+
+# Session 10 -- 32 grvingt hosts on Omnipath: 9.8 G points/s, and a transport that must be chosen
+
+2026-09-08, **32 nodes of `grvingt`** (Grid'5000 Nancy), 2 x Xeon Gold 6130, 32 cores / 64 PU,
+one MPI rank per host, **26 senders + 5 receivers + 1 service = 32 threads on 32 cores**.
+Omnipath, port ACTIVE at 100 Gb/s.  `--seconds 20 --rounds 2`, the second round reported;
+`routed` is the aggregate over all 32 hosts.  Tree at `534fb62`, rebuilt against the
+`openmpi/4.1.6` module (`build416`).
+
+## Summary
+
+| | aggregate routed | per host egress | share of the wire |
+|---|---|---|---|
+| **256 KB messages, default 32 receives** | **9.8, 9.8, 9.9 G pts/s** | **4.76-4.78 GB/s** | **87 %** |
+| 1 MB, default receives | 9.3, 9.1, 8.9 G | 4.33-4.50 GB/s | 81 % |
+| 1 MB, 256 receives | 8.4, 9.2, 8.9 G | 4.06-4.45 GB/s | 78 % |
+| 1 MB, 128 receives, **lossy** | 0.45 G | 0.09 GB/s | 99.1 % dropped |
+
+Three repeats each, interleaved.  **9.8 G points/s from 32 hosts**, against 7.9 G from 64 gros
+hosts on 25 GbE: this fabric is worth 4.6x per host (4.77 against 1.03 GB/s), and the Router
+carries 87 % of it.
+
+## 1. The transport has to be chosen, and the obvious choice is broken
+
+`psm2` **does not work on this node image**, and it fails silently in a way that looks like
+success.  The component loads and immediately unloads itself, so the `cm` PML has nothing to
+open; with the TCP BTL still enabled the job then runs *over Ethernet* while the command line
+says psm2.  Exclude TCP as well and the truth appears: "At least one pair of MPI processes are
+unable to reach each other".  What the paths actually give, same 32 hosts, 256 KB messages:
+
+| path | per host, all-to-all | `osu_bw` point to point |
+|---|---|---|
+| psm2 (`-mca mtl psm2 -mca pml ^ucx,ofi -mca btl ^ofi,openib`) | no connectivity | -- |
+| TCP over 10 GbE (what the above silently becomes) | 1.04 GB/s | 1.39 GB/s |
+| TCP over IPoIB (`ib0`) | 0.78 GB/s | -- |
+| libfabric, `ofi` MTL | see §2 | **5.63 GB/s** |
+| **UCX (`--mca pml ucx`)** | **5.49 GB/s** | 4.52 GB/s |
+
+The two networks are physically separate with no L2 or L3 interconnection, so each figure
+belongs to exactly one fabric: 1.04 GB/s is Ethernet, 0.78 is the Omnipath hardware driven
+through its IP emulation, and 5.49 is the same hardware driven properly.  Two operational
+notes: the system Open MPI (5.0.7) has no working Omnipath path at all, so
+`module load openmpi/4.1.6` is required and the binaries must be rebuilt against it; and
+`module load ... | tail` silently does nothing, because the pipe puts the module command in a
+subshell and its PATH change is discarded.
+
+## 2. `MPI_ANY_SOURCE` is a 500x portability trap
+
+Over libfabric's `ofi` MTL -- the fastest transport by `osu_bw`, at 5.63 GB/s -- the Router
+collapses to **14.5 M points/s aggregate, 28 messages/s per host, a 20 s round taking 119 s**.
+The Router posts all of its receives with `MPI_ANY_SOURCE`, and that provider has no fast path
+for it; UCX and the TCP BTL both do.  Nothing in the Router is wrong, and nothing about the
+fabric is slow: the same code and the same hardware differ by **500x** between two MPI
+transports.  Worth knowing before a production run picks a transport by accident.
+
+## 3. The knobs do not matter here, and one earlier reading was noise
+
+On gros over 25 GbE, posted receives were worth 2x and the message size 2.5x (session 9).  On
+this fabric neither separates: 256 KB with the **default 32** receives is the best and the most
+reproducible configuration measured, 1 MB is 7 % worse, and raising the receives to 256 or 512
+does nothing.  An early single run at 128 receives read 7.6 G and a later one at 256 read 9.3 G,
+which I first reported as a receive-slot effect; three interleaved repeats show it was
+run-to-run spread.  The lesson is the measurement discipline, not the knob: single runs here
+scatter by 15 %, repeats of the winning configuration by 0.5 %.
+
+## 4. Two open items
+
+- **The per-host imbalance is large and new.**  Hosts push between 37 and 407 M points/s in the
+  same round, a 5 to 10-fold spread, against 1.4-fold on gros.  Since nothing is dropped and the
+  aggregate is stable, the fast hosts are absorbing the slow hosts' share; what makes a host
+  slow is unknown.
+- **Receiver-heavy splits did not run**: 24 + 7 and 20 + 11 at 1 MB either timed out at 200 s or
+  ended early, plausibly because 224 to 352 destinations at 1 MB make the pool 2-3 GB per node
+  and startup exceeds the cap.  Needs a longer cap to be measured, not a fix.
+
+## 5. Lossy is destructive on a fast fabric
+
+1 MB blocks, 128 receives: senders push **1.5 G points/s per host**, the run delivers **445 M in
+total** and **drops 99.1 %**, against 7.6 G delivered by the same configuration lossless.  With
+160 destinations and 1 MB blocks most pushes find no installed block and the whole line goes.
+Five sessions, four machine classes, two fabrics: lossy has never delivered more than lossless.
+
+## Reproducing
+
+```bash
+module load openmpi/4.1.6                 # never pipe this command: the pipe loses its PATH edit
+cd ~/mitm-grvingt && cmake -S . -B build416 -DCMAKE_BUILD_TYPE=release && make -C build416 router_bench
+mpirun --hostfile ~/nodes.32 --map-by ppr:1:node --bind-to none --mca pml ucx \
+    build416/examples/router_bench --senders 26 --receivers 5 --seconds 20 --rounds 2 --block 16384
+
+# the wire, and the check that a transport is really being used
+mpirun --hostfile ~/nodes.32 --map-by ppr:1:node --bind-to none --mca pml ucx ./netbw 262144 3 8 32 256
+mpirun ... -mca mtl psm2 -mca pml ^ucx,ofi -mca btl ^ofi,openib,tcp ./netbw ...   # aborts: psm2 is dead here
+```
