@@ -10,7 +10,7 @@ threads across MPI ranks
 \fB#include "router/router.hpp"\fP
 .PP
 .BI "Router_thread Router_Init(int " role ", int " group ", MPI_Comm " comm ", int " tag ,
-.BI "                          bool " lossy ", const Router_Opts *" opts );
+.BI "                          const Router_Opts *" opts );
 .fi
 .SS Sender
 .nf
@@ -68,12 +68,8 @@ points itself.
 Every other thread is a sender or a receiver, as it declares to
 .BR Router_Init ().
 .PP
-Two modes, fixed for the life of the team.
-.IR Lossless :
-a sender may block, and no point is ever lost.
-.IR Lossy :
-no call ever waits, and a point that cannot be routed at once is dropped and
-counted.
+No point is ever lost: a sender may block until the Router has room, and every
+point pushed is delivered exactly once.
 .PP
 Time is cut into
 .IR rounds .
@@ -94,11 +90,8 @@ to the Router for delivery to receiver
 .BR Router_rank ().
 Delivery is batched: a pushed point may reach its receiver much later, and
 possibly not before the sender closes.
-Lossless: the call may block until the Router has room, and the point is
-delivered exactly once.
-Lossy: the call never waits, and the point may be dropped, in which case it is
-counted (see
-.BR STATISTICS ).
+The call may block until the Router has room, and the point is delivered
+exactly once.
 .SS Router_Pop()
 Takes one point delivered to this receiver: stores it in
 .RI * a ", *" b
@@ -121,7 +114,7 @@ and it holds nothing: nothing delivered and unread, no block out (see
 .SS Router_Init()
 Collective over every thread of the team on every node, called once per thread
 inside one OpenMP parallel region.
-.IR comm ", " tag ", " lossy " and " opts
+.IR comm ", " tag " and " opts
 are the same on every thread of every node.
 .TP
 .I role
@@ -144,9 +137,6 @@ The caller sends nothing else on
 .I comm
 with this tag.
 .TP
-.I lossy
-Drop, or wait.
-.TP
 .I opts
 The options (see
 .BR OPTIONS ),
@@ -156,8 +146,7 @@ or
 It returns once the whole team on every node is connected: the shape is agreed
 with the peers, every thread is pinned, every handle exists.
 A node needs at least one sender and one receiver; every node must have the
-same number of each and the same
-.IR lossy .
+same number of each.
 .PP
 The handle is the caller's, kept named for the whole life of the team; it is
 neither copyable nor assignable.
@@ -443,11 +432,6 @@ Points pushed by this node's senders; points delivered to its receivers.
 Points sent to and received from other nodes; points delivered to a receiver of
 this node without leaving it.
 .TP
-.B ROUTER_DROPPED_SERVICE, ROUTER_DROPPED_NET, ROUTER_DROPPED_RECV
-Lossy only.
-Points dropped by a sender; at the end of the round for want of room towards
-another node; towards a receiver of this node.
-.TP
 .B ROUTER_MSGS_SENT, ROUTER_MSGS_RECV, ROUTER_BYTES_SENT, ROUTER_BYTES_RECV
 MPI messages and bytes, each way.
 .TP
@@ -455,7 +439,6 @@ MPI messages and bytes, each way.
 Blocks recycled, by the receivers and by the service thread.
 .TP
 .B ROUTER_STALL_OUT
-Lossless only.
 Blocks the service thread had to hold back because their destination had no
 room yet.
 .TP
@@ -497,7 +480,7 @@ The next round may begin.
     int tid  = omp_get_thread_num();
     int role = (tid <= R) ? ROUTER_RECEIVER : ROUTER_SENDER;   /* thread 0's is ignored */
     Router_thread rt = Router_Init(role, ROUTER_GROUP_AUTO, MPI_COMM_WORLD, 42,
-                                   false, ROUTER_DEFAULT_OPTS);
+                                   ROUTER_DEFAULT_OPTS);
     int n_recv = Router_num_recv(rt);
     for (int round = 0; round < N; round++) {
         if (tid == 0) {
@@ -543,9 +526,8 @@ The Router sends nothing on
 outside a round and the barrier of
 .BR Router_Reset ().
 .SH SEE ALSO
-The header comment of
-.IR include/router/router.hpp ,
-the interface's own summary.
+.I include/router/router.hpp
+is the umbrella include; this page is the interface's specification.
 .I examples/router_test.cpp
 .RB ( "ctest \-\-test\-dir build" )
 and

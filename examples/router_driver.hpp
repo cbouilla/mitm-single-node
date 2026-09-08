@@ -20,7 +20,6 @@ struct RouterArgs {
 	int receivers = 2;               /* per node */
 	u64 points = 100000;             /* per sender and per round (test) */
 	int rounds = 3;
-	bool lossy = false;
 	Router_Opts opts;
 	bool pop_one = false;            /* test: receivers take points one at a time (Router_Pop), not whole blocks */
 	int skew = 0;                    /* hot destinations; 0 == uniform */
@@ -38,7 +37,6 @@ static void router_usage()
 	printf("Router drivers.  Options:\n");
 	printf("  --senders N --receivers N        threads per node (default 4 and 2)\n");
 	printf("  --points N --rounds N            per sender per round; rounds\n");
-	printf("  --lossy                          drop instead of waiting\n");
 	printf("  --block N --swc N --n-recv N --inbox BLOCKS --credit N\n");
 	printf("  --sweep N                        sealed blocks handled per turn\n");
 	printf("  --dests N                        destinations per node: a virtual fan-out (default: the receivers)\n");
@@ -55,15 +53,14 @@ static void router_usage()
 static void router_parse(int argc, char **argv, RouterArgs &a)
 {
 	enum {
-		O_SENDERS = 1000, O_RECEIVERS, O_POINTS, O_ROUNDS, O_LOSSY, O_BLOCK, O_SWC, O_NRECV, O_INBOX,
+		O_SENDERS = 1000, O_RECEIVERS, O_POINTS, O_ROUNDS, O_BLOCK, O_SWC, O_NRECV, O_INBOX,
 		O_SWEEP, O_DESTS, O_CREDIT, O_POPONE, O_SKEW, O_STAGGER, O_PARTIAL, O_SLOW,
 		O_SEED, O_SECONDS, O_NOBIND, O_CACHE, O_GROUP, O_LOCAL, O_TEST, O_QUIET, O_HELP
 	};
 	struct option longopts[] = {
 		{"senders", required_argument, NULL, O_SENDERS}, {"receivers", required_argument, NULL, O_RECEIVERS},
 		{"points", required_argument, NULL, O_POINTS}, {"rounds", required_argument, NULL, O_ROUNDS},
-		{"lossy", no_argument, NULL, O_LOSSY}, {"block", required_argument, NULL, O_BLOCK},
-		{"swc", required_argument, NULL, O_SWC},
+		{"block", required_argument, NULL, O_BLOCK}, {"swc", required_argument, NULL, O_SWC},
 		{"n-recv", required_argument, NULL, O_NRECV}, {"inbox", required_argument, NULL, O_INBOX},
 		{"sweep", required_argument, NULL, O_SWEEP},
 		{"dests", required_argument, NULL, O_DESTS}, {"credit", required_argument, NULL, O_CREDIT},
@@ -85,7 +82,6 @@ static void router_parse(int argc, char **argv, RouterArgs &a)
 		case O_RECEIVERS: a.receivers = atoi(optarg); break;
 		case O_POINTS: a.points = human_parse(optarg); break;
 		case O_ROUNDS: a.rounds = atoi(optarg); break;
-		case O_LOSSY: a.lossy = true; break;
 		case O_BLOCK: a.opts.block_points = human_parse(optarg); break;
 		case O_SWC: a.opts.swc_linesize = human_parse(optarg); break;
 		case O_NRECV: a.opts.n_recv = atoi(optarg); break;

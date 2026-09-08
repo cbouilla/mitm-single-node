@@ -133,8 +133,7 @@ static void receiver_round(Router_thread &rt, const RouterArgs &a, Shared &sh, i
 	sh.got[r] = got;
 }
 
-/* rank 0's verdict on the round: every point pushed was popped or dropped and counted, what was sent was received,
- * and lossless lost nothing */
+/* rank 0's verdict on the round: every point pushed was popped, and what was sent was received */
 static void check_round(const Router_thread &rt, const RouterArgs &a, Shared &sh, int round)
 {
 	int F = Router_num_recv(rt);
@@ -167,22 +166,16 @@ static void check_round(const Router_thread &rt, const RouterArgs &a, Shared &sh
 	MPI_Reduce(st, tot, ROUTER_STATS_SIZE, MPI_UINT64_T, MPI_SUM, 0, MPI_COMM_WORLD);
 	if (g_rank != 0)
 		return;
-	u64 drops = tot[ROUTER_DROPPED_SERVICE] + tot[ROUTER_DROPPED_NET] + tot[ROUTER_DROPPED_RECV];
-	CHECK(tot[ROUTER_PUSHED] == tot[ROUTER_POPPED] + drops);
+	CHECK(tot[ROUTER_PUSHED] == tot[ROUTER_POPPED]);
 	CHECK(tot[ROUTER_SENT] == tot[ROUTER_RECV]);
 	CHECK(tot[ROUTER_MSGS_SENT] == tot[ROUTER_MSGS_RECV]);
 	CHECK(tot[ROUTER_BYTES_SENT] == tot[ROUTER_BYTES_RECV]);
-	if (not a.lossy) {
-		CHECK(drops == 0);
-		for (int d = 0; d < F; d++)
-			CHECK(tot_sent[d] == tot_got[d]);
-	}
+	for (int d = 0; d < F; d++)
+		CHECK(tot_sent[d] == tot_got[d]);
 	if (a.opts.verbose)
 		printf("  round %d: pushed %" PRIu64 " popped %" PRIu64 " local %" PRIu64 " net %" PRIu64
-		       " dropped %" PRIu64 "/%" PRIu64 "/%" PRIu64 " msgs %" PRIu64 " blocks %" PRIu64
-		       " turns %" PRIu64 " (%" PRIu64 " idle)\n",
+		       " msgs %" PRIu64 " blocks %" PRIu64 " turns %" PRIu64 " (%" PRIu64 " idle)\n",
 		       round, tot[ROUTER_PUSHED], tot[ROUTER_POPPED], tot[ROUTER_LOCAL], tot[ROUTER_SENT],
-		       tot[ROUTER_DROPPED_SERVICE], tot[ROUTER_DROPPED_NET], tot[ROUTER_DROPPED_RECV],
 		       tot[ROUTER_MSGS_SENT], tot[ROUTER_BLOCKS], tot[ROUTER_TURNS], tot[ROUTER_IDLE_TURNS]);
 }
 
@@ -238,8 +231,8 @@ static void check_placement(const Router_thread &rt, const RouterArgs &a, Shared
 static void run_config(const RouterArgs &a, const char *name, bool use_colors = false)
 {
 	if (g_rank == 0 && a.opts.verbose)
-		printf("== %s (%s, %d senders, %d receivers, %" PRIu64 " points, %d rounds)\n", name,
-		       a.lossy ? "lossy" : "lossless", a.senders, a.receivers, a.points, a.rounds);
+		printf("== %s (%d senders, %d receivers, %" PRIu64 " points, %d rounds)\n", name,
+		       a.senders, a.receivers, a.points, a.rounds);
 	int S = a.senders;
 	int R = a.receivers;
 	int nt = 1 + S + R;
@@ -261,7 +254,7 @@ static void run_config(const RouterArgs &a, const char *name, bool use_colors = 
 		int group = ROUTER_GROUP_AUTO;
 		if (use_colors && role != ROUTER_SERVICE)
 			group = (S >= 2 && R >= 2) ? (li % 2) : 0;
-		Router_thread rt = Router_Init(role, group, MPI_COMM_WORLD, 42, a.lossy, &a.opts);
+		Router_thread rt = Router_Init(role, group, MPI_COMM_WORLD, 42, &a.opts);
 		sh.t_group[tid] = Router_group(rt);
 		sh.t_cpu[tid] = Router_cpu(rt);
 		sh.t_domain[tid] = Router_domain(rt);
@@ -315,7 +308,6 @@ int main(int argc, char **argv)
 		errx(1, "router_test: --dests is for the bench, the checks assume real destinations");
 	a.opts.verbose = a.opts.verbose && g_rank == 0;
 	bool all = a.test == "all";
-	bool both = all;
 
 	if (all || a.test == "connect_only") {
 		RouterArgs c = a;
@@ -325,10 +317,6 @@ int main(int argc, char **argv)
 	if (all || a.test == "basic") {
 		RouterArgs c = a;
 		run_config(c, "basic");
-		if (both) {
-			c.lossy = true;
-			run_config(c, "basic");
-		}
 	}
 	if (all || a.test == "tiny") {
 		RouterArgs c = a;
@@ -339,10 +327,6 @@ int main(int argc, char **argv)
 		c.opts.sweep_blocks = 2;
 		c.points = a.points / 5;
 		run_config(c, "tiny");
-		if (both) {
-			c.lossy = true;
-			run_config(c, "tiny");
-		}
 	}
 	if (all || a.test == "rounds") {
 		RouterArgs c = a;
@@ -358,10 +342,6 @@ int main(int argc, char **argv)
 		RouterArgs c = a;
 		c.skew = 1;
 		run_config(c, "skew");
-		if (both) {
-			c.lossy = true;
-			run_config(c, "skew");
-		}
 	}
 	if (all || a.test == "partial_lines") {
 		RouterArgs c = a;

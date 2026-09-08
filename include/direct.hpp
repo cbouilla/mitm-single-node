@@ -15,7 +15,6 @@
 #include "router/router.hpp"
 #include "direct_common.hpp"
 #include "direct_dict.hpp"
-#include "direct_producer.hpp"
 
 /*
  * The direct engine: the exhaustive meet-in-the-middle over a distributed dictionary, on the Router.
@@ -23,8 +22,6 @@
  * domain, PROBE probes g on the whole domain.  One Router round per phase, so the Router's own end of round
  * is the barrier the algorithm needs -- every entry of the round is in its shard before the first probe of
  * the round is delivered -- and nothing is dropped, so "no solution" is a proof.
- * The problem wrappers, the three thread rounds, the printing and the two entry points, claw_search /
- * collision_search.
  */
 
 namespace mitm::direct {
@@ -235,6 +232,49 @@ static void done(const Params &params, u64 phases, bool found, double seconds)
 }
 
 
+/*
+ * A producer's phase: evaluate the phase's function on its own contiguous piece of the phase's span -- the
+ * round's chunk while filling, the whole domain while probing -- vlen inputs at a time, push every image as
+ * (murmur64(image), preimage) to the receiver the hash's low word names, then close.  The pieces of the
+ * n_producers producers cut the span into equal parts, the same on every node, so the partition needs no
+ * message; the hash spares the producer a 64-bit division per point.
+ */
+template <class Wrapper>
+void producer_round(Router_thread &rt, const Wrapper &wrapper, const Params &params, u64 *ctr, u64 round, int phase)
+{
+	constexpr int vlen = Wrapper::vlen;
+	const u64 n_recv = Router_num_recv(rt);
+	u64 lo = 0;
+	u64 hi = params.domain;
+	if (phase == FILL) {
+		lo = round * params.per_round;
+		hi = std::min(lo + params.per_round, params.domain);
+	}
+	u64 p = Router_rank(rt);
+	u64 n_pieces = Router_num_send(rt);
+	u64 span = hi - lo;
+	u64 piece = span / n_pieces;
+	u64 extra = span % n_pieces;
+	u64 my_lo = lo + piece * p + std::min(p, extra);
+	u64 my_hi = my_lo + piece + ((p < extra) ? 1 : 0);
+
+	u64 x[vlen] __attribute__ ((aligned(sizeof(u64) * vlen)));
+	u64 y[vlen] __attribute__ ((aligned(sizeof(u64) * vlen)));
+	for (u64 base = my_lo; base < my_hi; base += vlen) {
+		int valid = (my_hi - base < (u64) vlen) ? (int) (my_hi - base) : vlen;
+		for (int k = 0; k < vlen; k++)
+			x[k] = (k < valid) ? base + k : base;   /* a lane past the end still gets an input in the domain */
+		wrapper.veval(phase, x, y);
+		for (int k = 0; k < valid; k++) {
+			u64 h = murmur64(y[k]);
+			int dest = (int) (((h & 0xffffffffull) * n_recv) >> 32);
+			Router_Push(h, x[k], dest, rt);
+		}
+		ctr[N_EVAL] += valid;
+	}
+	Router_Close(rt);
+}
+
 /******************************** the service thread and the epilogue ********************************/
 
 /*
@@ -328,11 +368,6 @@ static void self_test(const Wrapper &wrapper, const Params &params, PRNG &prng)
 template <class Wrapper>
 optional<tuple<u64, u64, u64>> run(const Wrapper &wrapper, u64 nbytes_memory, const Options &opts, PRNG &prng)
 {
-	int provided;
-	MPI_Query_thread(&provided);
-	if (provided < MPI_THREAD_FUNNELED)
-		errx(1, "direct: this MPI does not provide MPI_THREAD_FUNNELED");
-
 	const Params params(opts, nbytes_memory, wrapper.n, wrapper.m);
 	self_test(wrapper, params, prng);
 	if (params.verbose)
@@ -349,8 +384,7 @@ optional<tuple<u64, u64, u64>> run(const Wrapper &wrapper, u64 nbytes_memory, co
 			role = ROUTER_SERVICE;
 		else if (tid <= params.R)
 			role = ROUTER_RECEIVER;
-		Router_thread rt = Router_Init(role, ROUTER_GROUP_AUTO, params.mpi_comm, ROUTER_TAG, false,
-		                               &params.router);
+		Router_thread rt = Router_Init(role, ROUTER_GROUP_AUTO, params.mpi_comm, ROUTER_TAG, &params.router);
 		u64 *ctr = shared.tally[tid].ctr;
 
 		std::unique_ptr<DirectDict> dict;      /* a dict thread's shard, zero-filled here: its own first touch */
@@ -386,8 +420,7 @@ optional<tuple<u64, u64, u64>> run(const Wrapper &wrapper, u64 nbytes_memory, co
 			Router_Reset(rt);      /* its own team barriers and MPI_Barrier: every tally is written by now */
 
 			if (role == ROUTER_SERVICE)
-				epilogue(params, shared, stats.data(), records.data(), total.data(), round, phase,
-				         wtime() - t0);
+				epilogue(params, shared, stats.data(), records.data(), total.data(), round, phase, wtime() - t0);
 
 			#pragma omp barrier    /* the verdict, and every thread's next tally, are thread 0's to publish */
 			if (shared.stop)

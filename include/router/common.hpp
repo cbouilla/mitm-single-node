@@ -29,7 +29,6 @@ namespace mitm {
 /* Router_Stats layout */
 enum router_stat {
 	ROUTER_PUSHED, ROUTER_POPPED, ROUTER_SENT, ROUTER_RECV, ROUTER_LOCAL,
-	ROUTER_DROPPED_SERVICE, ROUTER_DROPPED_NET, ROUTER_DROPPED_RECV,
 	ROUTER_MSGS_SENT, ROUTER_MSGS_RECV, ROUTER_BYTES_SENT, ROUTER_BYTES_RECV, ROUTER_BLOCKS,
 	ROUTER_STALL_OUT, ROUTER_STALL_IN, ROUTER_TURNS, ROUTER_IDLE_TURNS,
 	ROUTER_STATS_SIZE
@@ -56,12 +55,11 @@ static constexpr const Router_Opts *ROUTER_DEFAULT_OPTS = NULL;
 
 /****************************** internal constants and wire format ******************************/
 
-static constexpr u32 ROUTER_NONE = 0xffffffffu;   /* "no block": a bare destination, an empty list, an idle slot */
+static constexpr u32 ROUTER_NONE = 0xffffffffu;   /* "no block": an empty list, an idle slot, no block out */
 static constexpr size_t ROUTER_HDR_BYTES = 64;    /* a block's header slot: the message header, one cache line */
 static constexpr size_t ROUTER_DEST_WORDS = 8;    /* u64 words per destination: its two words fill one cache line */
 static constexpr u32 ROUTER_MAX_L = 4096;         /* lines per block at most */
 static constexpr u32 ROUTER_BATCH = 32;           /* blocks off the free ring at a time: a sender's cache, the stash */
-static constexpr u64 ROUTER_LINK_BARE = 1ull << 63; /* in a sealed block's link: its destination has no block */
 
 enum router_kind { ROUTER_DATA = 0, ROUTER_END = 1 };
 
@@ -138,7 +136,7 @@ struct alignas(64) Router_thread {
 	/* the push's fast path */
 	Point *swc;                          /* a sender's F private lines of swc_linesize points, 64-byte aligned */
 	const size_t swc_linesize;           /* the node's, copied: a push that does not stage never reads the node */
-	u64 ctr[ROUTER_STATS_SIZE] = {};     /* a sender's PUSHED and DROPPED_SERVICE, a receiver's POPPED and BLOCKS; plain */
+	u64 ctr[ROUTER_STATS_SIZE] = {};     /* a sender's PUSHED, a receiver's POPPED and BLOCKS; plain */
 	/* identity */
 	const int role;                      /* ROUTER_SERVICE, ROUTER_SENDER or ROUTER_RECEIVER */
 	const int index;                     /* among the threads of its role */
@@ -179,7 +177,6 @@ public:
 	const int tag;                       /* the caller's: every message of ours carries it, nothing else may */
 	int rank;                            /* on it */
 	int n_nodes;                         /* its size */
-	const bool lossy;                    /* drop, or wait */
 	Router_Opts opt;                     /* as agreed with the other nodes */
 
 	/* fixed at connection */
@@ -225,11 +222,10 @@ public:
 	u32 sealed_pad[15] = {};             /* the rest of that line */
 
 	/* the service thread's own */
-	u64 ctr[ROUTER_STATS_SIZE] = {};     /* its share of the tallies: the network, the drops it makes, the turns */
+	u64 ctr[ROUTER_STATS_SIZE] = {};     /* its share of the tallies: the network, the blocks, the turns */
 	std::vector<u32> free_list;          /* its stash: its own frees, for its own needs; a batch to or from the ring */
 	u32 todo = ROUTER_NONE;              /* the service's take off the sealed stack, what is left to handle of it */
 	std::vector<u64> pending;            /* popped blocks with a line still being written: dest << 32 | blk */
-	std::vector<int> repairs;            /* destinations naming ROUTER_NONE, waiting for a free block */
 	std::vector<int> blk_dest;           /* per block: its destination, while parked */
 	std::vector<u32> blk_count;          /* per block: its points, while parked */
 	std::vector<u32> park_head;          /* per receiver, then per peer: the parked FIFOs */
@@ -266,7 +262,7 @@ public:
 	std::atomic<u32> input_closed;       /* nothing can enter an inbox any more; receivers acquire it */
 	bool quiescent = false;              /* what Router_Test_quiescent returns */
 
-	Router_node(int n_threads, MPI_Comm mpi_comm, int tag, bool lossy, const Router_Opts *options);
+	Router_node(int n_threads, MPI_Comm mpi_comm, int tag, const Router_Opts *options);
 	~Router_node();
 	Router_node(const Router_node &) = delete;
 	Router_node &operator=(const Router_node &) = delete;
@@ -285,9 +281,9 @@ public:
 	void stage_line(Router_thread &s, int d, const Point *line);
 	void refill(Router_thread &s);
 	void zero_valid(u32 blk);
-	void seal(int d, u32 blk, bool bare);
+	void seal(int d, u32 blk);
 
-	/* the service loop: Router_Progress; Router_Init and Router_Reset for the stash, repairs and receive slots */
+	/* the service loop: Router_Progress; Router_Init and Router_Reset for the stash and the receive slots */
 	u32 stash_pop();
 	void spill(size_t n);
 	bool complete(u32 blk);
@@ -297,7 +293,6 @@ public:
 	void park(int d, u32 blk, u32 count);
 	void retry_parked(int target);
 	void handle_block(int d, u32 blk);
-	void repair(int d);
 	void poll_out();
 	void repost(int k);
 	void repost_idle();

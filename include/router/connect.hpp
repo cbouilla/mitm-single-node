@@ -41,11 +41,11 @@ inline Router_thread::~Router_thread()
 
 /*
  * The shell, no MPI: the caller's communicator as is, `tag` for every message of ours -- the caller keeps both
- * and sends nothing else with that tag --, `lossy`, the options (NULL: the defaults) and room for the team's
- * roles.  Reached from Router_Init's single, on any thread of the team; connect() does the rest on thread 0.
+ * and sends nothing else with that tag --, the options (NULL: the defaults) and room for the team's roles.
+ * Reached from Router_Init's single, on any thread of the team; connect() does the rest on thread 0.
  */
-inline Router_node::Router_node(int n_threads, MPI_Comm mpi_comm, int tag_, bool lossy_, const Router_Opts *options)
-	: comm(mpi_comm), tag(tag_), rank(-1), n_nodes(0), lossy(lossy_), opt(options ? *options : Router_Opts()),
+inline Router_node::Router_node(int n_threads, MPI_Comm mpi_comm, int tag_, const Router_Opts *options)
+	: comm(mpi_comm), tag(tag_), rank(-1), n_nodes(0), opt(options ? *options : Router_Opts()),
 	  input_closed(0)
 {
 	roles.assign(n_threads, -1);
@@ -100,21 +100,21 @@ inline void Router_node::connect()
 	if (S < 1 || R < 1)
 		errx(1, "Router: a node needs at least one sender and one receiver (S=%d, R=%d)", S, R);
 
-	/* every node must agree: lossy, S or R differing is fatal, an option differing means the defaults */
-	const int N_AGREE = 13;
-	double mine[N_AGREE] = {(double) lossy, (double) S, (double) R, (double) opt.block_points,
+	/* every node must agree: S or R differing is fatal, an option differing means the defaults */
+	const int N_AGREE = 12;
+	double mine[N_AGREE] = {(double) S, (double) R, (double) opt.block_points,
 							(double) opt.swc_linesize, (double) opt.n_recv, (double) opt.inbox_blocks,
 							(double) opt.sweep_blocks, (double) opt.credit, (double) opt.dests_per_node,
 							(double) opt.pin, (double) opt.cache_level, (double) opt.group_size};
 	double lo[N_AGREE], hi[N_AGREE];
 	MPI_Allreduce(mine, lo, N_AGREE, MPI_DOUBLE, MPI_MIN, comm);
 	MPI_Allreduce(mine, hi, N_AGREE, MPI_DOUBLE, MPI_MAX, comm);
-	if (lo[0] != hi[0] || lo[1] != hi[1] || lo[2] != hi[2]) {
+	if (lo[0] != hi[0] || lo[1] != hi[1]) {
 		if (rank == 0)
-			warnx("Router: the nodes disagree on `lossy`, or have different numbers of senders or receivers");
+			warnx("Router: the nodes have different numbers of senders or receivers");
 		MPI_Abort(comm, 1);
 	}
-	for (int k = 3; k < N_AGREE; k++)
+	for (int k = 2; k < N_AGREE; k++)
 		if (lo[k] != hi[k]) {
 			if (rank == 0)
 				warnx("Router: the nodes disagree on the options; using the defaults everywhere");
@@ -287,9 +287,8 @@ inline void Router_node::banner() const
 	double lines = (double) S * F * swc_linesize * sizeof(Point);
 	double inboxes = (double) R * opt.inbox_blocks * sizeof(Point);
 	double closing = (double) F * partial_cap * sizeof(Point);
-	printf("Router: %s, %d node%s, %d sender%s and %d receiver%s per node, %d destinations (%d per node)\n",
-	       lossy ? "lossy" : "lossless", n_nodes, n_nodes > 1 ? "s" : "", S, S > 1 ? "s" : "",
-	       R, R > 1 ? "s" : "", F, per_node);
+	printf("Router: %d node%s, %d sender%s and %d receiver%s per node, %d destinations (%d per node)\n",
+	       n_nodes, n_nodes > 1 ? "s" : "", S, S > 1 ? "s" : "", R, R > 1 ? "s" : "", F, per_node);
 	printf("Router: blocks of %zu points, lines of %zu (%u lines per block), %u blocks (%.1f MB, %u cached per"
 	       " sender), messages of %zu bytes\n", opt.block_points, swc_linesize, L, n_blocks, blocks / 1e6,
 	       ROUTER_BATCH, block_bytes);
@@ -308,13 +307,13 @@ inline void Router_node::banner() const
  * the pool and builds its object, which every later call of this thread takes; the caller keeps it, named, for
  * the team's whole life.
  */
-[[nodiscard]] inline Router_thread Router_Init(int role, int group, MPI_Comm comm, int tag, bool lossy,
+[[nodiscard]] inline Router_thread Router_Init(int role, int group, MPI_Comm comm, int tag,
                                                const Router_Opts *opts)
 {
 	int tid = omp_get_thread_num();
 	Router_node *rn = NULL;
 	#pragma omp single copyprivate(rn)
-	rn = new Router_node(omp_get_num_threads(), comm, tag, lossy, opts);
+	rn = new Router_node(omp_get_num_threads(), comm, tag, opts);
 	if (tid == 0)
 		rn->roles[0] = ROUTER_SERVICE;
 	else if (role == ROUTER_SENDER || role == ROUTER_RECEIVER)

@@ -76,13 +76,13 @@ inline u32 Router_node::free_pop_many(u32 k, u32 *out, u32 floor)
 
 /*
  * A sender's cache filled off the free ring, a batch in one CAS, every block zeroed here rather than at its
- * install: lossless waits for at least one block, holding nothing meanwhile, lossy takes what there is.
+ * install: it waits for at least one block, holding nothing meanwhile, so that no point is ever lost.
  * Reached from Router_Init (the sender's constructor) and Router_Push, by the sealer whose install emptied it.
  */
 inline void Router_node::refill(Router_thread &s)
 {
 	u32 n = free_pop_many(ROUTER_BATCH, s.cache, n_nodes > 1 ? (u32) opt.n_recv : 0);
-	while (n == 0 && not lossy) {
+	while (n == 0) {
 		cpu_relax();
 		n = free_pop_many(ROUTER_BATCH, s.cache, n_nodes > 1 ? (u32) opt.n_recv : 0);
 	}
@@ -103,13 +103,10 @@ inline void Router_node::zero_valid(u32 blk)
 		n_valid[(size_t) nv_stride * blk + k].store(0, std::memory_order_relaxed);
 }
 
-/*
- * Put a sealed block onto the sealed stack, its destination in the link's high word 
- * with the BARE bit when the sealer left the slot without a block
- */
-inline void Router_node::seal(int d, u32 blk, bool bare)
+/* Put a sealed block onto the sealed stack, its destination in the link's high word. */
+inline void Router_node::seal(int d, u32 blk)
 {
-	u64 hi = ((u64) d << 32) | (bare ? ROUTER_LINK_BARE : 0);
+	u64 hi = (u64) d << 32;
 	u32 top = sealed_top.load(std::memory_order_relaxed);
 	for (;;) {
 		blk_link[blk].store(hi | top, std::memory_order_relaxed);
@@ -121,8 +118,8 @@ inline void Router_node::seal(int d, u32 blk, bool bare)
 /*
  * Reserve one line slot in the block of destination `d` and write the full line there, so that a block in
  * flight never has a hole; seal the block when the reservation lands on its end, the fresh one coming out of
- * the sender's cache, refilled after the seal once empty; drop the line in lossy mode when the destination has
- * no block or a sealer is installing one: lossy never waits.
+ * the sender's cache, refilled after the seal once empty; wait for that install when another sender is the
+ * sealer.  A destination always names a block: connect installs one and every seal replaces it.
  * Reached from Router_Push, by the push that fills the sender's private line for `d`.
  */
 inline void Router_node::stage_line(Router_thread &s, int d, const Point *line)
@@ -133,29 +130,23 @@ inline void Router_node::stage_line(Router_thread &s, int d, const Point *line)
 		u64 v = next.fetch_add(1ull << 32, std::memory_order_acq_rel);
 		u32 k = (u32) (v >> 32);
 		u32 blk = (u32) v;
-		if (blk == ROUTER_NONE) {         /* the service thread repairs it, once it pops the note */
-			s.ctr[ROUTER_DROPPED_SERVICE] += n;
-			return;
-		}
+		if (blk == ROUTER_NONE)
+			errx(1, "Router: destination %d has no block", d);
 		if (k < L) {
 			Point *pts = (Point *) (pool + (size_t) blk * block_bytes + ROUTER_HDR_BYTES);
 			router_stream_copy(pts + (size_t) k * swc_linesize, line, (size_t) n * sizeof(Point));
 			n_valid[(size_t) nv_stride * blk + k].store(1, std::memory_order_release);
 			return;
 		}
-		if (k == L) {                     /* the sealer; lossless never finds its cache empty, lossy may */
-			u32 fresh = s.cache_n ? s.cache[--s.cache_n] : ROUTER_NONE;
+		if (k == L) {                     /* the sealer; refill waits, so its cache is never empty here */
+			u32 fresh = s.cache[--s.cache_n];
 			next.store((u64) fresh, std::memory_order_release);
-			seal(d, blk, fresh == ROUTER_NONE);
+			seal(d, blk);
 			if (s.cache_n == 0)
 				refill(s);
 			continue;
 		}
-		if (lossy) {                      /* k > L: a sealer is installing, and lossy waits for nobody */
-			s.ctr[ROUTER_DROPPED_SERVICE] += n;
-			return;
-		}
-		for (;;) {                        /* at exactly L nobody is installing, and I may become the sealer */
+		for (;;) {                        /* k > L: at exactly L nobody is installing, and I may become the sealer */
 			u64 w = next.load(std::memory_order_acquire);
 			if ((u32) (w >> 32) <= L)
 				break;
@@ -164,7 +155,7 @@ inline void Router_node::stage_line(Router_thread &s, int d, const Point *line)
 	}
 }
 
-/* Sender.  Lossy: wait-free, may drop the line; lossless: may spin, never loses the point. */
+/* Sender.  May spin until the Router has room; the point is delivered exactly once. */
 inline void Router_Push(u64 a, u64 b, int d, Router_thread &rt)
 {
 	Point *line = rt.swc + (size_t) d * rt.swc_linesize;

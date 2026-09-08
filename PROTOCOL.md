@@ -847,7 +847,7 @@ is then not exhaustive -- the banner and the last line say so.  Nothing here is 
 
 One MPI rank per node, `MPI_THREAD_FUNNELED`, one OpenMP team of `1 + I + W` threads per rank
 (`I = --dicts-per-node`, `W = --producers-per-node`, 0 == fill the affinity mask).  Every thread
-calls `Router_Init(role, ROUTER_GROUP_AUTO, comm, ROUTER_TAG, /*lossy=*/false, &opts.router)` once,
+calls `Router_Init(role, ROUTER_GROUP_AUTO, comm, ROUTER_TAG, &opts.router)` once,
 inside the one parallel region, and keeps its handle for the team's whole life.
 
 | thread | Router role | does |
@@ -958,10 +958,10 @@ mutex and an `std::atomic` flag, because any dict thread of the node may find on
 bytes and messages on the wire, blocks stalled, the service thread's turns -- is the Router's own
 tallies, in the same record; the engine keeps no counter of its own for it.
 
-**Lossless.**  The Router is opened with `lossy = false`, so a `Router_Push` may block but no point
-is ever lost.  A dropped point would be a missing entry or a missing probe, and "no solution" is a
-proof only when none was dropped.  The round report prints the Router's two stall counters when they
-are nonzero, and complains if the points pushed and the points delivered do not agree.
+**Lossless.**  The Router loses nothing: a `Router_Push` may block, but no point is ever dropped.
+A dropped point would be a missing entry or a missing probe, and "no solution" is a proof only when
+none was dropped.  The round report prints the Router's two stall counters when they are nonzero,
+and complains if the points pushed and the points delivered do not agree.
 
 **The live line** is rank 0's own node, read from its tallies without synchronisation while the
 phase runs, and scaled by the number of nodes: approximate on purpose.  The round report comes from

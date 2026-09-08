@@ -15,10 +15,10 @@
  * destinations; receivers pop the points one at a time and hash each (murmur128), folding the hashes by XOR; the
  * service thread
  * runs until quiescent.  Prints, per round, the aggregate rate of points routed (delivered to a receiver), then
- * per node the push and pop rates, the network traffic, the drops, the service thread's duty cycle, the cost of
- * a point on a sender (the PRNG call and the destination pick included) and the XOR of every hash folded over
- * the receivers and the nodes: it keeps the hashes from being optimised away, and in lossless mode it depends
- * on the points alone, not on their order or their route.  Before the rounds, the raw benchmark: the senders
+ * per node the push and pop rates, the network traffic, the service thread's duty cycle, the cost of a point
+ * on a sender (the PRNG call and the destination pick included) and the XOR of every hash folded over the
+ * receivers and the nodes: it keeps the hashes from being optimised away, and it depends on the points alone,
+ * not on their order or their route.  Before the rounds, the raw benchmark: the senders
  * run that same loop for a second with Router_Push taken out of it, so the difference between the raw rate and
  * the routed rate is the router and nothing else.
  */
@@ -153,7 +153,6 @@ static void bench_report(const Router_thread &rt, const RouterArgs &a, int round
 		return;
 	int P = rt.node.n_nodes;
 	double t = hi[3];
-	u64 drops = tot[ROUTER_DROPPED_SERVICE] + tot[ROUTER_DROPPED_NET] + tot[ROUTER_DROPPED_RECV];
 	char routed_s[8];
 	char push_s[8];
 	char pop_s[8];
@@ -169,16 +168,13 @@ static void bench_report(const Router_thread &rt, const RouterArgs &a, int round
 	human_format((u64) (tot[ROUTER_MSGS_SENT] / t / P), msg_s);
 	human_format((u64) (tot[ROUTER_BLOCKS] / t / P), blk_s);
 	printf("round %d: %.2fs | routed %s pts/s | per node: push %s/s (%.0f-%.0f M/s) pop %s/s net %s pts/s %.2f GB/s"
-	       " %s msgs/s %s blocks/s | %.1f ns/point | service %.0f%% busy (%s turns/s)"
-	       " | dropped %.3f%% (%" PRIu64 " svc, %" PRIu64 " net, %" PRIu64 " recv) | xor %016" PRIx64 "\n",
+	       " %s msgs/s %s blocks/s | %.1f ns/point | service %.0f%% busy (%s turns/s) | xor %016" PRIx64 "\n",
 	       round, t, routed_s, push_s, lo[0] / 1e6, hi[0] / 1e6, pop_s, net_s,
 	       (double) tot[ROUTER_BYTES_SENT] / t / P / 1e9, msg_s, blk_s, sum[1] / P,
-	       100. * sum[2] / P, turn_s,
-	       tot[ROUTER_PUSHED] ? 100. * drops / tot[ROUTER_PUSHED] : 0.,
-	       tot[ROUTER_DROPPED_SERVICE], tot[ROUTER_DROPPED_NET], tot[ROUTER_DROPPED_RECV], folded);
-	if (tot[ROUTER_PUSHED] != tot[ROUTER_POPPED] + drops)
-		printf("  ACCOUNTING BROKEN: pushed %" PRIu64 " != popped %" PRIu64 " + dropped %" PRIu64 "\n",
-		       tot[ROUTER_PUSHED], tot[ROUTER_POPPED], drops);
+	       100. * sum[2] / P, turn_s, folded);
+	if (tot[ROUTER_PUSHED] != tot[ROUTER_POPPED])
+		printf("  ACCOUNTING BROKEN: pushed %" PRIu64 " != popped %" PRIu64 "\n",
+		       tot[ROUTER_PUSHED], tot[ROUTER_POPPED]);
 }
 
 int main(int argc, char **argv)
@@ -203,7 +199,7 @@ int main(int argc, char **argv)
 	{
 		int tid = omp_get_thread_num();
 		int role = (tid == 0) ? ROUTER_SERVICE : (tid <= R ? ROUTER_RECEIVER : ROUTER_SENDER);
-		Router_thread rt = Router_Init(role, ROUTER_GROUP_AUTO, MPI_COMM_WORLD, 42, a.lossy, &a.opts);
+		Router_thread rt = Router_Init(role, ROUTER_GROUP_AUTO, MPI_COMM_WORLD, 42, &a.opts);
 		if (role == ROUTER_SENDER)
 			bench_raw(rt, a);
 		#pragma omp barrier

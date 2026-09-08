@@ -8,8 +8,7 @@ namespace mitm {
 /******************************** the service thread ********************************/
 
 /* a block from the stash, refilled from the free ring by the batch when empty; NONE if both are empty.  Reached
- * from Router_Init (the installs), Router_Progress (a repost, a repair, the F-scan) and
- * Router_Reset (a repair, a repost). */
+ * from Router_Init (the installs), Router_Progress (a repost, the F-scan) and Router_Reset (a repost). */
 inline u32 Router_node::stash_pop()
 {
 	if (free_list.empty()) {
@@ -84,22 +83,17 @@ inline bool Router_node::place(int d, u32 blk, u32 count)
 	return true;
 }
 
-/* a complete block to its destination: placed, parked (lossless) or dropped (lossy), never kept by the caller.
+/* a complete block to its destination: placed, or parked until it fits, never kept by the caller.
  * Reached from Router_Progress: a sealed block once complete, a DATA message received, the F-scan's blocks. */
 inline void Router_node::dispatch(int d, u32 blk, u32 count)
 {
 	if (place(d, blk, count))
 		return;
-	if (lossy) {
-		ctr[(d / per_node == rank) ? ROUTER_DROPPED_RECV : ROUTER_DROPPED_NET] += count;
-		release(blk);
-		return;
-	}
 	park(d, blk, count);
 }
 
 /* a block the service is done with: into its stash, which spills a batch to the free ring when it grows.  Reached
- * from Router_Progress: a send that completed, or (lossy) a block dropped for want of room. */
+ * from Router_Progress, for a send that completed. */
 inline void Router_node::release(u32 blk)
 {
 	ctr[ROUTER_BLOCKS] += 1;
@@ -108,9 +102,9 @@ inline void Router_node::release(u32 blk)
 		spill(ROUTER_BATCH);
 }
 
-/* lossless: keep a block whose target is full, in arrival order, until the target has room; parking rather
- * than refusing to pop is what keeps one slow receiver from stalling every other destination.  Reached from
- * Router_Progress, lossless only, when a block finds its inbox full or its peer out of slots or credit. */
+/* keep a block whose target is full, in arrival order, until the target has room; parking rather than
+ * refusing to pop is what keeps one slow receiver from stalling every other destination.  Reached from
+ * Router_Progress, when a block finds its inbox full or its peer out of slots or credit. */
 inline void Router_node::park(int d, u32 blk, u32 count)
 {
 	int node = d / per_node;
@@ -127,7 +121,7 @@ inline void Router_node::park(int d, u32 blk, u32 count)
 }
 
 /* one target's parked blocks, in order, as far as they place.  Reached from Router_Progress, every turn for every
- * target; a no-op unless lossless with blocks parked.  careful: the link is read before the block is placed,
+ * target; a no-op unless blocks are parked.  careful: the link is read before the block is placed,
  * since once placed the block is on its way round and a later seal may rewrite its link. */
 inline void Router_node::retry_parked(int target)
 {
@@ -151,28 +145,6 @@ inline void Router_node::handle_block(int d, u32 blk)
 		return;
 	}
 	dispatch(d, blk, (u32) opt.block_points);
-}
-
-/* lossy: a destination left without a block gets one from the stash, if it still has none.  Reached from
- * Router_Progress (a sealed block flagged BARE, the repairs list, a bare slot at the F-scan) and from
- * Router_Reset (the repairs list, which must then empty). */
-inline void Router_node::repair(int d)
-{
-	std::atomic<u64> &next = dest[ROUTER_DEST_WORDS * d];
-	u64 v = next.load(std::memory_order_acquire);
-	if ((u32) v != ROUTER_NONE)
-		return;
-	u32 fresh = stash_pop();
-	if (fresh == ROUTER_NONE) {
-		repairs.push_back(d);
-		return;
-	}
-	zero_valid(fresh);
-	while (not next.compare_exchange_weak(v, (u64) fresh, std::memory_order_acq_rel))
-		if ((u32) v != ROUTER_NONE) {     /* a block appeared meanwhile: keep this one */
-			free_list.push_back(fresh);
-			return;
-		}
 }
 
 /* the sends that completed: their blocks are the service's again, their slots and their peer's credit too.
@@ -220,7 +192,7 @@ inline void Router_node::repost_idle()
 
 /*
  * Take delivery of what arrived: an END is recorded and its block reposted; a DATA block goes to its receiver
- * as it is -- parked if the inbox is full (lossless), dropped (lossy) -- and its slot gets a fresh block.
+ * as it is -- parked if the inbox is full -- and its slot gets a fresh block.
  * Reached from Router_Progress, every turn.
  */
 inline void Router_node::poll_in()
@@ -255,7 +227,7 @@ inline void Router_node::poll_in()
 	}
 }
 
-/* the pending and repair lists, then the sealed blocks: the stack taken whole in one exchange once the previous
+/* the pending list, then the sealed blocks: the stack taken whole in one exchange once the previous
  * take is handled, and at most opt.sweep_blocks of the take handled per turn, newest first, so that the turn
  * stays bounded.  Reached from Router_Progress, every turn. */
 inline void Router_node::sweep()
@@ -266,28 +238,20 @@ inline void Router_node::sweep()
 		for (size_t i = 0; i < again.size(); i++)
 			handle_block((int) (again[i] >> 32), (u32) again[i]);
 	}
-	if (not repairs.empty()) {
-		std::vector<int> again;
-		again.swap(repairs);
-		for (size_t i = 0; i < again.size(); i++)
-			repair(again[i]);
-	}
 	if (todo == ROUTER_NONE)
 		todo = sealed_top.exchange(ROUTER_NONE, std::memory_order_acquire);
 	for (int b = 0; b < opt.sweep_blocks && todo != ROUTER_NONE; b++) {
 		u32 blk = todo;
 		u64 link = blk_link[blk].load(std::memory_order_relaxed);   /* careful: handled, park or a later seal rewrites it */
 		todo = (u32) link;
-		int d = (int) ((link >> 32) & 0x7fffffffu);
-		if (link & ROUTER_LINK_BARE)
-			repair(d);
+		int d = (int) (link >> 32);
 		handle_block(d, blk);
 	}
 }
 
 /*
  * Destination `d` at closure, once every sender is closed: what its installed block holds, and how many
- * points its closing buffer holds.  A NONE slot gets a block from the stash if there is one.
+ * points its closing buffer holds.
  * Reached from Router_Progress in the F-scan phase, once per destination and round.
  */
 inline void Router_node::start_flush(int d)
@@ -295,16 +259,13 @@ inline void Router_node::start_flush(int d)
 	u64 v = dest[ROUTER_DEST_WORDS * d].load(std::memory_order_acquire);
 	u32 k = (u32) (v >> 32);
 	u32 blk = (u32) v;
-	if (blk == ROUTER_NONE) {
-		repair(d);
-		k = 0;
-	} else {
-		if (k > L)
-			errx(1, "Router: destination %d has %u lines reserved at closure", d, k);
-		for (u32 i = 0; i < k; i++)
-			if (n_valid[(size_t) nv_stride * blk + i].load(std::memory_order_acquire) == 0)
-				errx(1, "Router: destination %d has an unwritten line at closure", d);
-	}
+	if (blk == ROUTER_NONE)
+		errx(1, "Router: destination %d has no block at closure", d);
+	if (k > L)
+		errx(1, "Router: destination %d has %u lines reserved at closure", d, k);
+	for (u32 i = 0; i < k; i++)
+		if (n_valid[(size_t) nv_stride * blk + i].load(std::memory_order_acquire) == 0)
+			errx(1, "Router: destination %d has an unwritten line at closure", d);
 	flush_blk = blk;
 	flush_k = k;
 	flush_install = false;
@@ -317,7 +278,7 @@ inline void Router_node::start_flush(int d)
  * The closing runs, one destination per step.  The installed block's full lines go as one short block, the
  * block itself, and a fresh one is installed in its place; then the closing buffer is copied into fresh
  * blocks, at most a block at a time, each dispatched -- the service's one copy, per round.  Both need free
- * blocks: lossless stops where there is none and resumes there next turn, lossy drops the run.
+ * blocks: it stops where there is none and resumes there next turn.
  * Reached from Router_Progress, every turn of the F-scan phase, until it returns true.
  */
 inline bool Router_node::fscan()
@@ -332,15 +293,10 @@ inline bool Router_node::fscan()
 		}
 		if (flush_install) {
 			u32 fresh = stash_pop();
-			if (fresh == ROUTER_NONE) {
-				if (not lossy)
-					return false;
-				dest[ROUTER_DEST_WORDS * flush_d].store((u64) ROUTER_NONE, std::memory_order_release);
-				repair(flush_d);
-			} else {
-				zero_valid(fresh);
-				dest[ROUTER_DEST_WORDS * flush_d].store((u64) fresh, std::memory_order_release);
-			}
+			if (fresh == ROUTER_NONE)
+				return false;
+			zero_valid(fresh);
+			dest[ROUTER_DEST_WORDS * flush_d].store((u64) fresh, std::memory_order_release);
 			flush_install = false;
 		}
 		const Point *buf = partial + (size_t) flush_d * partial_cap;
@@ -349,13 +305,8 @@ inline bool Router_node::fscan()
 			if (chunk > opt.block_points)
 				chunk = (u32) opt.block_points;
 			u32 blk = stash_pop();
-			if (blk == ROUTER_NONE) {
-				if (not lossy)
-					return false;
-				ctr[(flush_d / per_node == rank) ? ROUTER_DROPPED_RECV : ROUTER_DROPPED_NET] += chunk;
-				flush_off += chunk;
-				continue;
-			}
+			if (blk == ROUTER_NONE)
+				return false;
 			memcpy(pool + (size_t) blk * block_bytes + ROUTER_HDR_BYTES, buf + flush_off, (size_t) chunk * sizeof(Point));
 			dispatch(flush_d, blk, chunk);
 			flush_off += chunk;
@@ -494,14 +445,14 @@ inline void Router_Dump(FILE *f, const Router_thread &rt)
 	u64 in = rn.free_in.load();
 	u64 out = rn.free_out.load();
 	fprintf(f, "rank %d round %u phase %d input_closed %u quiescent %d flush_d %d run %u/%u pending %zu"
-	        " repairs %zu sealed top %u todo %u stash %zu ring %" PRIu64 " (in %" PRIu64 " out %" PRIu64 ")"
+	        " sealed top %u todo %u stash %zu ring %" PRIu64 " (in %" PRIu64 " out %" PRIu64 ")"
 	        " send slots free %zu\n", rn.rank, rn.round, rn.phase, rn.input_closed.load(), (int) rn.quiescent,
-	        rn.flush_d, rn.flush_off, rn.flush_len, rn.pending.size(), rn.repairs.size(), rn.sealed_top.load(),
+	        rn.flush_d, rn.flush_off, rn.flush_len, rn.pending.size(), rn.sealed_top.load(),
 	        rn.todo, rn.free_list.size(), in - out, in, out, rn.out_free.size());
 	for (int s = 0; s < rn.S; s++) {
 		Router_thread &sd = *rn.senders[s];
-		fprintf(f, "  sender %d (grp %d cpu %d): closed %u pushed %" PRIu64 " dropped %" PRIu64 " cached %u\n", s,
-		        sd.group, sd.cpu, sd.closed.load(), sd.ctr[ROUTER_PUSHED], sd.ctr[ROUTER_DROPPED_SERVICE], sd.cache_n);
+		fprintf(f, "  sender %d (grp %d cpu %d): closed %u pushed %" PRIu64 " cached %u\n", s,
+		        sd.group, sd.cpu, sd.closed.load(), sd.ctr[ROUTER_PUSHED], sd.cache_n);
 	}
 	for (int r = 0; r < rn.R; r++) {
 		Router_thread &rr = *rn.receivers[r];
@@ -577,14 +528,6 @@ inline void Router_Reset(Router_thread &rt)
 	}
 	if (not rn.quiescent)
 		errx(1, "Router_Reset: not quiescent");
-	if (not rn.repairs.empty()) {         /* lossy: destinations left without a block at the F-scan */
-		std::vector<int> again;
-		again.swap(rn.repairs);
-		for (size_t i = 0; i < again.size(); i++)
-			rn.repair(again[i]);
-		if (not rn.repairs.empty())
-			errx(1, "Router_Reset: a destination has no block");
-	}
 	rn.repost_idle();
 #ifdef ROUTER_PARANOID
 	size_t accounted = rn.F + rn.free_list.size();
