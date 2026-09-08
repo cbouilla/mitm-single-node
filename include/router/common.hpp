@@ -246,8 +246,9 @@ public:
 	Router_node(const Router_node &) = delete;
 	Router_node &operator=(const Router_node &) = delete;
 
-	/* connection: Router_Init, thread 0 */
+	/* connection: Router_Init; connect and banner on thread 0, touch_pool on every thread */
 	void connect();
+	void touch_pool(int tid, int n_threads);
 	void banner() const;
 
 	/* the free ring: any thread.  Router_Pop pushes the block it read through, a sender's cache takes a batch, the

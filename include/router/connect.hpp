@@ -78,8 +78,8 @@ inline Router_node::~Router_node()
 
 /*
  * Reached from Router_Init, thread 0 only, once every thread has declared its role and before any object is
- * built: the MPI checks, the agreement with the peers, the pool and the shared area, one block per destination,
- * the receives posted, a stash kept, every other block onto the free ring in one run of tickets.
+ * built: the MPI checks, the agreement with the peers, the pool (reserved, not touched) and the shared area, one
+ * block per destination, a stash kept, every other block onto the free ring in one run of tickets.
  */
 inline void Router_node::connect()
 {
@@ -223,7 +223,9 @@ inline void Router_node::connect()
 		errx(1, "Router: too many blocks (%zu)", nb);
 	n_blocks = (u32) nb;
 	dest = (std::atomic<u64> *) router_alloc((size_t) F * ROUTER_DEST_WORDS * sizeof(u64));
-	pool = (char *) router_alloc((size_t) n_blocks * block_bytes);
+	pool = (char *) aligned_alloc(64, (size_t) n_blocks * block_bytes);   /* untouched: every thread writes a slice */
+	if (pool == NULL)
+		err(1, "Router: aligned_alloc(%zu)", (size_t) n_blocks * block_bytes);
 	n_valid = (std::atomic<u8> *) router_alloc((size_t) n_blocks * nv_stride);
 	partial_cap = ((size_t) S * (swc_linesize - 1) + 3) & ~(size_t) 3;
 	partial = (Point *) router_alloc((size_t) F * partial_cap * sizeof(Point));
@@ -261,13 +263,21 @@ inline void Router_node::connect()
 
 	for (int d = 0; d < F; d++)
 		dest[ROUTER_DEST_WORDS * d].store((u64) stash_pop(), std::memory_order_relaxed);
-	for (int k = 0; k < opt.n_recv; k++)
-		repost(k);
 	if (free_list.size() > ROUTER_BATCH)
 		spill(free_list.size() - ROUTER_BATCH);
 	connected = true;
 	if (rank == 0 && opt.verbose)
 		banner();
+}
+
+/* This thread's slice of the pool, written once, pinned, so that its pages land on this thread's NUMA node
+ * rather than all on the service's.  Whole blocks, T equal slices: no block is written by two threads.
+ * Reached from Router_Init, every thread, between the pinning and the objects. */
+inline void Router_node::touch_pool(int tid, int n_threads)
+{
+	size_t lo = (size_t) n_blocks * tid / n_threads;
+	size_t hi = (size_t) n_blocks * (tid + 1) / n_threads;
+	memset(pool + lo * block_bytes, 0, (hi - lo) * block_bytes);
 }
 
 /* the sizes, once.  Reached from connect(), on rank 0 only, when opt.verbose. */
@@ -294,8 +304,9 @@ inline void Router_node::banner() const
  * Collective over every thread of the team and every node, the same arguments on every thread except `group`,
  * a thread's own (ROUTER_GROUP_AUTO to let the Router form the groups, or a color in 0..G-1).  Thread 0 is the
  * service whatever `role` says.  Each thread records its role, its group and its own affinity mask; thread 0
- * connects and builds the plan; then every thread pins itself, confirms the kernel obeyed, and builds its
- * object, which every later call of this thread takes; the caller keeps it, named, for the team's whole life.
+ * connects and builds the plan; then every thread pins itself, confirms the kernel obeyed, touches its slice of
+ * the pool and builds its object, which every later call of this thread takes; the caller keeps it, named, for
+ * the team's whole life.
  */
 [[nodiscard]] inline Router_thread Router_Init(int role, int group, MPI_Comm comm, int tag, bool lossy,
                                                const Router_Opts *opts)
@@ -336,6 +347,7 @@ inline void Router_node::banner() const
 	#pragma omp barrier                   /* everybody is pinned, or nobody builds an object */
 	if (tid == 0 && rn->misplaced > 0)
 		MPI_Abort(comm, 1);
+	rn->touch_pool(tid, (int) rn->roles.size());
 
 	int mine = rn->roles[tid];
 	int index = 0;                        /* among the threads of my role: those before me */

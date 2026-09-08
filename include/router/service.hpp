@@ -8,7 +8,7 @@ namespace mitm {
 /******************************** the service thread ********************************/
 
 /* a block from the stash, refilled from the free ring by the batch when empty; NONE if both are empty.  Reached
- * from Router_Init (the installs, the receives), Router_Progress (a repost, a repair, the F-scan) and
+ * from Router_Init (the installs), Router_Progress (a repost, a repair, the F-scan) and
  * Router_Reset (a repair, a repost). */
 inline u32 Router_node::stash_pop()
 {
@@ -193,8 +193,8 @@ inline void Router_node::poll_out()
 }
 
 /* post a block from the stash on receive slot k; none == the slot idles, and repost_idle retries every turn.
- * Reached from Router_Init (every slot), Router_Progress (a slot whose DATA block went to its receiver, and
- * the idle slots) and Router_Reset (the idle slots). */
+ * Reached from Router_Progress (a slot whose DATA block went to its receiver, and the idle slots, every slot on
+ * the first turn) and Router_Reset (the idle slots). */
 inline void Router_node::repost(int k)
 {
 	u32 blk = stash_pop();
