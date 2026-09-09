@@ -59,3 +59,23 @@ add_test(NAME direct_np1 COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 1
 add_test(NAME direct_np2 COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 2 ${MPIEXEC_PREFLAGS}
          $<TARGET_FILE:double_speck64_demo> --n 20 --ram 256K --seed 1
          --producers-per-node 2 --dicts-per-node 1 --no-bind --quiet)
+
+
+###### PCS: the same planted claw and a planted collision, over trails this time
+
+# PCS needs ~2^n/w versions of the function to single out one claw among the 2^n the problem has, so
+# these are sized for a difficulty worth having: the whole dictionary is 32000 slots either way, which
+# puts 1/theta near 2.3 and the trails a couple of points long.  A larger dictionary over so small a
+# domain drives theta towards 1, where every point is distinguished and the trails stop being trails.
+# No --nrounds: the search runs until it finds the pair, and the exit status is whether it did.
+add_test(NAME pcs_np1 COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 1 ${MPIEXEC_PREFLAGS}
+         $<TARGET_FILE:double_speck64_demo> --n 20 --ram 256K --seed 1 --engine pcs
+         --producers-per-node 4 --dicts-per-node 3 --quiet)
+add_test(NAME pcs_np2 COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 2 ${MPIEXEC_PREFLAGS}
+         $<TARGET_FILE:double_speck64_demo> --n 20 --ram 128K --seed 1 --engine pcs
+         --producers-per-node 2 --dicts-per-node 1 --no-bind --quiet)
+
+# the scalar path (vlen == 1, so the one-candidate-at-a-time resolver) and the collision wrapper
+add_test(NAME pcs_collision COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 1 ${MPIEXEC_PREFLAGS}
+         $<TARGET_FILE:sha2_collision_demo> --n 20 --ram 256K --seed 1 --engine pcs
+         --producers-per-node 4 --dicts-per-node 3 --quiet)

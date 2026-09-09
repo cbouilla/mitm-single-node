@@ -1,17 +1,22 @@
-#ifndef MITM_WALKER
-#define MITM_WALKER
+#ifndef MITM_PCS_TRAIL
+#define MITM_PCS_TRAIL
 
 #include <cmath>
 #include <cassert>
 #include <cstdio>
-#include <vector>
+#include <algorithm>
 
-#include "parameters.hpp"
-#include "pcs_common.hpp"
+#include "tools.hpp"
+#include "pcs/params.hpp"
+#include "pcs/shared.hpp"
+
+/*
+ * The trails: what a distinguished point is, and how the collision behind a dictionary hit is located by
+ * walking the two chains that end there.  One candidate at a time when the problem has no vector
+ * implementation, vlen/2 of them at once in the VecResolver when it has.
+ */
 
 namespace mitm::pcs {
-
-/* The walker side: trails, the collision behind a dictionary hit, and the walker thread. */
 
 inline bool is_distinguished_point(u64 x, u64 threshold)
 {
@@ -19,12 +24,12 @@ inline bool is_distinguished_point(u64 x, u64 threshold)
 }
 
 /*
- * A located collision (x0, x1), inputs of the same evaluation: tally it, fold it into the node's
- * HyperLogLog, test the pair (PROTOCOL.md §3.4).  Shared by the scalar and the vectorized resolver.
- * True == it was the golden pair, already published.
+ * A located collision (x0, x1), inputs of the same evaluation: tally it, fold it into this walker's
+ * HyperLogLog, test the pair.  Shared by the scalar and the vectorized resolver.  True == it was the
+ * golden pair, already published.
  */
 template<class ProblemWrapper>
-bool retire_collision(const ProblemWrapper &wrapper, u64 ctr[], u8 hll[], SharedContext<Scheme> &shared,
+bool retire_collision(const ProblemWrapper &wrapper, u64 ctr[], u8 hll[], Shared &shared,
                       u64 seed0, u64 seed1, u64 x0, u64 x1, u64 len0, u64 len1)
 {
 	const u64 i = shared.header.i;
@@ -57,7 +62,7 @@ bool retire_collision(const ProblemWrapper &wrapper, u64 ctr[], u8 hll[], Shared
 /*
  * The collision behind a dictionary hit, both trail lengths known: (x0, x1) with mixf(x0) == mixf(x1),
  * or nothing when one trail is a suffix of the other (robin-hood) or they never meet (a false
- * positive).  Trusts the lengths, not that the trails end at the same DP.
+ * positive).  Trusts the lengths, not that the trails end at the same distinguished point.
  */
 template<class ProblemWrapper>
 optional<pair<u64,u64>> walk(const ProblemWrapper &wrapper, u64 ctr[], const Params &params,
@@ -95,8 +100,8 @@ optional<pair<u64,u64>> walk(const ProblemWrapper &wrapper, u64 ctr[], const Par
 
 /*
  * The trail length of one chain of a candidate, recovered by re-walking it to its distinguished point:
- * what a length that saturated on the wire or in the dictionary costs (PROTOCOL.md §3.2).  Nothing when
- * the chain reaches no distinguished point within dp_max_it steps, or reaches one other than `end`.
+ * what a length that saturated on the wire or in the dictionary costs.  Nothing when the chain reaches
+ * no distinguished point within dp_max_it steps, or reaches one other than `end`.
  */
 template<class ProblemWrapper>
 optional<u64> measure_trail(const ProblemWrapper &wrapper, u64 ctr[], const Params &params,
@@ -181,14 +186,14 @@ optional<tuple<u64,u64,u64>> walk_recorded(const ProblemWrapper &wrapper, u64 ct
 
 /*
  * Resolve one candidate, scalar: recover whichever of the two trail lengths saturated, walk both
- * trails, locate the collision, retire it (PROTOCOL.md §3.2).  The path taken when the problem has no
- * vector implementation (vlen == 1); VecResolver is the other one.  A chain whose length is unknown is
- * the one recorded, and when both are unknown the other is measured first, because walk_recorded()
- * steps it and has to know how far.
+ * trails, locate the collision, retire it.  The path taken when the problem has no vector
+ * implementation (vlen == 1); VecResolver is the other one.  A chain whose length is unknown is the one
+ * recorded, and when both are unknown the other is measured first, because walk_recorded() steps it and
+ * has to know how far.
  */
 template<class ProblemWrapper>
 void resolve_collision(const ProblemWrapper &wrapper, u64 ctr[], u8 hll[], const Params &params,
-                       SharedContext<Scheme> &shared, const CollisionCandidate &c, u64 trail[])
+                       Shared &shared, const CollisionCandidate &c, u64 trail[])
 {
 	const u64 i = shared.header.i;
 	const u64 root_seed = shared.header.root_seed;
@@ -234,11 +239,11 @@ void resolve_collision(const ProblemWrapper &wrapper, u64 ctr[], u8 hll[], const
 
 /*
  * Why: a round spends ~2/beta of its evaluations locating collisions, and a scalar resolver makes
- * each of them vlen times dearer than the ones that produce DPs -- which is most of a walker's time
- * once the dictionary fills.  This one keeps vlen/2 candidates in flight and steps them all with one
- * vmixf.  A candidate walks its two chains through three phases:
+ * each of them vlen times dearer than the ones that produce distinguished points -- which is most of a
+ * walker's time once the dictionary fills.  This one keeps vlen/2 candidates in flight and steps them
+ * all with one vmixf.  A candidate walks its two chains through three phases:
  *
- *   MEASURE  a length saturated: re-walk that chain to its DP to learn it -- either chain, or both
+ *   MEASURE  a length saturated: re-walk that chain to its endpoint to learn it -- either chain, or both
  *   ALIGN    step the longer chain until both are the same distance from their shared endpoint
  *   MARCH    step both and compare, until they meet or the shorter trail runs out
  *
@@ -246,7 +251,7 @@ void resolve_collision(const ProblemWrapper &wrapper, u64 ctr[], u8 hll[], const
  * vlen lanes and the pool cannot run dry: an empty slot always finds its pair.  A chain that is not
  * moving is still stepped by vmixf, its lane simply not committed.  Unlike walk_recorded() this
  * re-walks a chain instead of recording it, which trades a few evaluations for a bounded per-lane
- * footprint.  PROTOCOL.md §3.2.
+ * footprint.
  */
 template<class ProblemWrapper>
 struct alignas(sizeof(u64) * ProblemWrapper::vlen) VecResolver {
@@ -267,8 +272,8 @@ struct alignas(sizeof(u64) * ProblemWrapper::vlen) VecResolver {
 	u64 seed1[nslots];        /* chain 1: its index, ... */
 	u64 start1[nslots];       /* ... where it starts, ... */
 	u64 len1[nslots];         /* ... and how long its trail is; counted up while it measures */
-	bool measuring0[nslots];  /* chain 0 is still walking to its DP: its length saturated on the wire */
-	bool measuring1[nslots];  /* chain 1 is still walking to its DP: it saturated in the dictionary */
+	bool measuring0[nslots];  /* chain 0 is still walking to its endpoint: its length saturated on the wire */
+	bool measuring1[nslots];  /* chain 1 is still walking to its endpoint: it saturated in the dictionary */
 	u64 end[nslots];          /* the shared endpoint, in full: what a measured chain must reach */
 	u64 remaining[nslots];    /* steps left in ALIGN, then in MARCH */
 
@@ -277,7 +282,7 @@ struct alignas(sizeof(u64) * ProblemWrapper::vlen) VecResolver {
 	int n_busy;               /* slots that are not SLOT_EMPTY: the walker is idle when this is 0 */
 	u64 n_retired;            /* candidates finished or abandoned, ever: what coll_per_chunk budgets */
 
-	/* the run this walker took from its group's queue; the scalar resolver draws from it too (§3.2) */
+	/* the run this walker took from its dict thread's queue; the scalar resolver draws from it too */
 	static constexpr int PENDING = 64;
 	CollisionCandidate pending[PENDING];
 	int first;                /* the next candidate to start, pending[first] */
@@ -309,7 +314,7 @@ struct alignas(sizeof(u64) * ProblemWrapper::vlen) VecResolver {
 		if (n_pending > 0)
 			return n_pending;
 		if (coll_q.is_empty())
-			return 0;              /* relaxed read: an idle queue costs no lock traffic (PROTOCOL.md §3.2) */
+			return 0;              /* relaxed read: an idle queue costs no lock traffic */
 		first = 0;
 		n_pending = (int) coll_q.pop_bulk(pending, PENDING);
 		return n_pending;
@@ -384,7 +389,7 @@ struct alignas(sizeof(u64) * ProblemWrapper::vlen) VecResolver {
 			return true;
 		}
 		if (len == params.dp_max_it) {
-			ctr[BAD_DP] += 1;                  /* the re-walk never reached a DP */
+			ctr[BAD_DP] += 1;                  /* the re-walk never reached a distinguished point */
 			release(s);
 			return false;
 		}
@@ -392,7 +397,7 @@ struct alignas(sizeof(u64) * ProblemWrapper::vlen) VecResolver {
 	}
 
 	/* start queued candidates in the empty slots.  Returns how many, so a caller can tell an empty queue */
-	int fill(const ProblemWrapper &wrapper, u64 ctr[], const Params &params, SharedContext<Scheme> &shared,
+	int fill(const ProblemWrapper &wrapper, u64 ctr[], const Params &params, Shared &shared,
 	         CollisionQueue &coll_q)
 	{
 		/* the lane budget: two lanes per busy slot, so an empty slot always finds its pair */
@@ -440,8 +445,7 @@ struct alignas(sizeof(u64) * ProblemWrapper::vlen) VecResolver {
 	 * One vmixf over every lane, then one step of every slot.  N_EVAL counts the evaluations a scalar
 	 * resolver would have made, not the lanes burnt, so that it stays comparable across the two paths.
 	 */
-	void step(const ProblemWrapper &wrapper, u64 ctr[], u8 hll[], const Params &params,
-	          SharedContext<Scheme> &shared)
+	void step(const ProblemWrapper &wrapper, u64 ctr[], u8 hll[], const Params &params, Shared &shared)
 	{
 		wrapper.vmixf(shared.header.i, x, y);
 
@@ -481,162 +485,6 @@ struct alignas(sizeof(u64) * ProblemWrapper::vlen) VecResolver {
 		}
 	}
 };
-
-/* start chain k from the next chain index j (stepping by jinc) that is not itself a DP.  theta == 1: never returns */
-static inline void start_chain(const Params &params, u64 out_mask, u64 root_seed, u64 &j,
-                        u64 x[], u64 len[], u64 seed[], u64 jinc, int k)
-{
-	u64 start;
-	for (;;) {
-		j += jinc;
-		start = (root_seed + j * params.multiplier) & out_mask;
-		if (not is_distinguished_point(start, params.threshold))
-			break;
-	}
-	x[k] = start;
-	len[k] = 0;
-	seed[k] = j;
-}
-
-
-/*
- * Retire up to `budget` candidates (0 == no limit) from `coll_q`, the queue of this walker's own
- * inserter.  A step costs a whole vmixf however few slots are in flight, so in the steady state we
- * stop as soon as nothing more is in hand and the batch is not full, and let the rest wait for the
- * next chunk: running the batch down to its last candidate would spend full-width steps on one or two
- * live lanes.  `drain` is the end of the round, where every candidate must be retired whatever it
- * costs.  `trail` is the scalar path's recording buffer, and is unused when vlen > 1.
- * PROTOCOL.md §3.2, §3.3.
- */
-template <class ProblemWrapper>
-void service_collisions(const ProblemWrapper &wrapper, u64 ctr[], u8 hll[], const Params &params,
-                        SharedContext<Scheme> &shared, CollisionQueue &coll_q,
-                        VecResolver<ProblemWrapper> &resolver, size_t budget, bool drain, u64 trail[])
-{
-	constexpr int vlen = ProblemWrapper::vlen;
-
-	if constexpr (vlen == 1) {
-		for (size_t c = 0; resolver.refill(coll_q) > 0; c++) {
-			if (budget && c >= budget)
-				return;
-			CollisionCandidate cand = resolver.pending[resolver.first++];
-			resolver.n_pending -= 1;
-			assert(cand.i == shared.header.i);
-			resolve_collision(wrapper, ctr, hll, params, shared, cand, trail);
-		}
-		return;
-	} else {
-		u64 retired = resolver.n_retired;
-		for (;;) {
-			resolver.fill(wrapper, ctr, params, shared, coll_q);
-			if (resolver.n_busy == 0)
-				return;                /* nothing in hand, nothing queued, nothing in flight */
-			if (not drain && resolver.n_busy < resolver.nslots && resolver.refill(coll_q) == 0)
-				return;                /* a partial batch: park it rather than step it at this price */
-			resolver.step(wrapper, ctr, hll, params, shared);
-			if (budget && resolver.n_retired - retired >= budget)
-				return;
-		}
-	}
-}
-
-
-/*
- * PCS's producer, the walker: walks vlen trails in lockstep, ships every DP to the comm thread over its SPSC
- * queue, and between chunks retires the candidates queued by the one inserter of its own thread group
- * (ctx.group, PROTOCOL.md §1).  Chain indices are strided by n_producers from the global walker index.
- * Wind-down: ctx.state, PROTOCOL.md §3.3.
- */
-template <class ProblemWrapper>
-void Scheme::producer_thread(ThreadContext<Scheme> &ctx, const ProblemWrapper &wrapper, const Params &params,
-                             SharedContext<Scheme> &shared, int walker_index)
-{
-	constexpr int vlen = ProblemWrapper::vlen;
-	SPSCQueue &out = *ctx.q;
-	CollisionQueue &coll_q = *shared.scheme.coll_q[ctx.group];
-	u64 *ctr = ctx.ctr;
-	u8 *hll = ctx.scheme.hll.data();
-
-	const u64 i = shared.header.i;
-	const u64 root_seed = shared.header.root_seed;
-
-	int jbits = params.jbits;
-	u64 jmask = make_mask(jbits);
-
-	/* state of the vlen chains being walked */
-	u64 x[vlen] __attribute__ ((aligned(sizeof(u64) * vlen)));
-	u64 y[vlen] __attribute__ ((aligned(sizeof(u64) * vlen)));
-	u64 len[vlen];                  /* steps walked so far */
-	u64 seed[vlen];                 /* the chain index j of each */
-
-	/* the candidates being resolved, vlen/2 of them at once (PROTOCOL.md §3.2) */
-	VecResolver<ProblemWrapper> resolver;
-
-	/* the trail a scalar resolution records: the longest one a round can produce, plus its start */
-	std::vector<u64> trail;
-	if constexpr (vlen == 1)
-		trail.resize(params.dp_max_it + 1);
-
-	u64 j = (u64) params.rank * params.producers_per_node + walker_index;
-	for (int k = 0; k < vlen; k++)
-		start_chain(params, wrapper.out_mask, root_seed, j, x, len, seed, params.n_producers, k);
-	assert((j & jmask) == j);
-
-	for (;;) {
-		int st = ctx.state.load(std::memory_order_acquire);
-
-		if (st == HOLD) {
-			ctx.state.store(HELD, std::memory_order_release);
-			continue;
-		}
-
-		if (st == DRAIN) {
-			service_collisions(wrapper, ctr, hll, params, shared, coll_q, resolver, 0, true,
-			                   trail.data());
-			assert(resolver.n_busy == 0);
-			assert(resolver.n_pending == 0);
-			ctx.state.store(QUIESCENT, std::memory_order_release);
-			return;
-		}
-
-		service_collisions(wrapper, ctr, hll, params, shared, coll_q, resolver, params.coll_per_chunk,
-		                   false, trail.data());
-
-		if (st == HELD) {
-			cpu_relax();
-			continue;
-		}
-
-		for (size_t c = 0; c < params.chunk_size; c++) {
-			wrapper.vmixf(i, x, y);
-
-			for (int k = 0; k < vlen; k++) {
-				len[k] += 1;
-				x[k] = y[k];
-				bool dp = is_distinguished_point(x[k], params.threshold);
-				bool failure = (len[k] == params.dp_max_it);
-
-				if (dp) {
-					ctr[N_DP] += 1;
-					ctr[N_POINTS_TRAILS] += len[k];
-					u64 l = std::min(len[k], params.len_sat);
-					Point p = {x[k], (seed[k] & jmask) | (l << jbits)};
-					if (not out.push(p))
-						ctr[DROP_PRODUCERQ] += 1;
-				}
-				if (dp || failure) {
-					if (failure && not dp)
-						ctr[BAD_DP] += 1;
-					start_chain(params, wrapper.out_mask, root_seed, j,
-					            x, len, seed, params.n_producers, k);
-					assert((j & jmask) == j);
-				}
-			}
-		}
-		/* the chunk always runs to completion: exactly one vmixf per turn */
-		ctr[N_EVAL] += params.chunk_size * vlen;
-	}
-}
 
 }
 #endif

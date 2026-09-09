@@ -10,6 +10,8 @@
 #include "tools.hpp"
 #include "parameters.hpp"
 #include "benchmark.hpp"
+#include "direct.hpp"
+#include "pcs/pcs.hpp"
 
 /*
  * The command line and the MPI startup shared by the drivers.  Part of the examples, not of the
@@ -34,11 +36,11 @@ static void usage(const char *argv0)
 {
 	printf("usage: %s --ram <bytes> [options]\n\n", argv0);
 	printf("  --ram B          RAM for the dictionary, per node (accepts 512M, 4G, ...).  MANDATORY\n");
-	printf("  --engine S       the search scheme: direct (default).  pcs is being rebuilt on the Router\n");
+	printf("  --engine S       the search scheme: direct (default) or pcs\n");
 	printf("  --n BITS         problem size.  Small == easy\n");
 	printf("  --seed S         PRNG seed.  0 == draw a fresh one from /dev/urandom\n");
 	printf("  --fill F         dictionary fill ratio, entries per round == F * slots.  Default: 0.5\n");
-	printf("  --nrounds R      give up after R rounds\n");
+	printf("  --nrounds R      give up after R rounds (PCS: R versions of the function)\n");
 	printf("  --benchmark      measure the problem's f/g rate and exit, no search: --ram is then useless\n");
 	printf("\n");
 	printf("  --producers-per-node W   default: fill the affinity mask\n");
@@ -54,7 +56,11 @@ static void usage(const char *argv0)
 	printf("  --sweep N        blocks the service thread ships per turn.  Default: 256\n");
 	printf("  --credit N       blocks in flight to one peer node at most.  Default: 4\n");
 	printf("\n");
-	printf("  --difficulty T --alpha A --beta B --dp-len-bits N   (PCS, unused today)\n");
+	printf("  --difficulty T   PCS: proportion of distinguished points, in (0, 1).  Default: auto\n");
+	printf("  --alpha A        PCS: the auto-chosen difficulty is A * sqrt(w / 2^n).  Default: 2.5\n");
+	printf("  --beta B         PCS: each version of the function is used for B * w points.  Default: 8\n");
+	printf("  --dp-len-bits N  PCS: bits of trail length shipped with a point.  0 == all that fit\n");
+	printf("  --chunk N        PCS: evaluations a walker makes between two queue checks.  Default: 64\n");
 	printf("  --quiet          no progress information\n");
 	exit(EXIT_SUCCESS);
 }
@@ -142,10 +148,8 @@ static void init(int argc, char **argv, Options &opts, Driver &drv)
 		errx(1, "MPI: this MPI does not provide MPI_THREAD_FUNNELED");
 
 	process_command_line_options(argc, argv, opts, drv);
-	if (drv.engine == "pcs")
-		errx(1, "--engine pcs: the PCS scheme is being rebuilt on the Router and is not available");
-	if (drv.engine != "direct")
-		errx(1, "--engine %s: unknown scheme (direct)", drv.engine.c_str());
+	if (drv.engine != "direct" && drv.engine != "pcs")
+		errx(1, "--engine %s: unknown scheme (direct, pcs)", drv.engine.c_str());
 
 	int rank;
 	MPI_Comm_rank(MPI_COMM_WORLD, &rank);
@@ -155,6 +159,28 @@ static void init(int argc, char **argv, Options &opts, Driver &drv)
 		drv.seed = PRNG::read_urandom();
 		MPI_Bcast(&drv.seed, 1, MPI_UINT64_T, 0, MPI_COMM_WORLD);
 	}
+}
+
+/*
+ * --engine: which search a driver runs.  The engines are independent libraries; this is the one place a
+ * driver chooses between them, so every driver takes the flag and none of them names an engine itself.
+ */
+template <class Problem>
+static optional<pair<u64, u64>> claw_search(const Problem &pb, const Driver &drv, const Options &opts,
+                                            PRNG &prng)
+{
+	if (drv.engine == "pcs")
+		return pcs::claw_search(pb, drv.ram, opts, prng);
+	return direct::claw_search(pb, drv.ram, opts, prng);
+}
+
+template <class Problem>
+static optional<pair<u64, u64>> collision_search(const Problem &pb, const Driver &drv, const Options &opts,
+                                                 PRNG &prng)
+{
+	if (drv.engine == "pcs")
+		return pcs::collision_search(pb, drv.ram, opts, prng);
+	return direct::collision_search(pb, drv.ram, opts, prng);
 }
 
 /*

@@ -1,6 +1,5 @@
 #include <mpi.h>
 
-#include "direct.hpp"
 #include "driver.hpp"
 #include "sha2_problem.hpp"
 
@@ -17,7 +16,7 @@ int main(int argc, char* argv[])
     mitm::SHA2ClawProblem pb(drv.n, prng);
     mitm::benchmark_and_exit(pb, drv, opts);   // --benchmark: the f/g rate, then exit
 
-    optional<pair<u64, u64>> claw = mitm::direct::claw_search(pb, drv.ram, opts, prng);
+    optional<pair<u64, u64>> claw = mitm::claw_search(pb, drv, opts, prng);
     if (opts.verbose) {
         if (claw) {
             auto [x0, x1] = *claw;

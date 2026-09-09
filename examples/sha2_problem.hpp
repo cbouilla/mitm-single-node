@@ -65,9 +65,10 @@ public:
         return sha2_truncated(x, 0, mask);
     }
 
+    /* symmetric, as the contract requires: an engine that finds the pair in either order retires it */
     bool is_good_pair(u64 x0, u64 x1) const
     {
-        return (x0 == golden_x) && (x1 == golden_y);
+        return ((x0 == golden_x) && (x1 == golden_y)) || ((x0 == golden_y) && (x1 == golden_x));
     }
 };
 

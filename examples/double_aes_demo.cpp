@@ -1,6 +1,5 @@
 #include <mpi.h>
 
-#include "direct.hpp"
 #include "driver.hpp"
 #include "double_aes_problem.hpp"
 
@@ -17,7 +16,7 @@ int main(int argc, char* argv[])
     mitm::DoubleAES_Problem Pb(drv.n, prng);
     mitm::benchmark_and_exit(Pb, drv, opts);   // --benchmark: the f/g rate, then exit
 
-    optional<pair<u64, u64>> claw = mitm::direct::claw_search(Pb, drv.ram, opts, prng);
+    optional<pair<u64, u64>> claw = mitm::claw_search(Pb, drv, opts, prng);
     if (opts.verbose) {
         if (claw) {
             auto [x0, x1] = *claw;

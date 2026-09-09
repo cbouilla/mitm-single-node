@@ -198,7 +198,7 @@ inline void Router_node::connect()
 
 	size_t swc = opt.swc_linesize;
 	if (swc == 0) {                       /* the lines fit L2, and a block switch is at most one line in 8 */
-		size_t budget = (512 << 10) / ((size_t) F * sizeof(Point));
+		size_t budget = (1024 << 10) / ((size_t) F * sizeof(Point));
 		swc = 4;
 		while (swc * 2 <= budget && swc * 2 <= opt.block_points / 8)
 			swc *= 2;
