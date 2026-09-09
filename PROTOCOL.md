@@ -4,8 +4,7 @@
 
 **§8 is the direct engine, the only one that runs today**: the exhaustive meet-in-the-middle
 built on the Router (`include/router/`, its interface specified in `router.3`).  It is
-self-contained -- `include/direct_common.hpp`, `include/direct_dict.hpp`,
-`include/direct_producer.hpp`, `include/direct.hpp` -- and uses **none** of the core described in
+self-contained -- one header, `include/direct.hpp` -- and uses **none** of the core described in
 §1--§7: no comm thread, no control channel, no controller, no SPSC queue, no scheme template.  All
 it asks of the communicator is that nothing else on it carries the Router's tag.
 
@@ -838,10 +837,10 @@ Also gone with the direct scheme: `Parameters` and the tags now live in `comm.hp
 
 ## 8. The direct engine, on the Router
 
-`mitm::direct` (`direct_common.hpp`, `direct_dict.hpp`, `direct_producer.hpp`, `direct.hpp`): the
-exhaustive meet-in-the-middle, the baseline PCS will be measured against.  `w' = fill * w` entries
-per round (`--fill`, default 0.5), `R = ceil(2^n / w')` rounds; `--nrounds` caps `R`, and the search
-is then not exhaustive -- the banner and the last line say so.  Nothing here is shared with §1--§7.
+`mitm::direct` (`direct.hpp`): the exhaustive meet-in-the-middle, the baseline PCS will be
+measured against.  `w' = fill * w` entries per round (`--fill`, default 0.5),
+`R = ceil(2^n / w')` rounds; `--nrounds` caps `R`, and the search is then not exhaustive -- the
+banner and the last line say so.  Nothing here is shared with §1--§7.
 
 ### 8.1 The team
 
@@ -883,7 +882,7 @@ One phase, on each thread:
 
 1. zero its own tallies;
 2. its role's work, above -- a producer ends with `Router_Close`, a dict thread loops until
-   `Router_Grab` returns 0 and `Router_Test_drained` is true, thread 0 turns the Router until the
+   `Router_Pop` finds nothing and `Router_Test_drained` is true, thread 0 turns the Router until the
    node is quiescent and then reads `Router_Stats`, which `Router_Reset` would clear;
 3. `Router_Reset`, which every thread of every node calls;
 4. thread 0 alone: the epilogue (§8.4);
@@ -901,22 +900,24 @@ buys the producer a fan-out with no 64-bit division on the hot path; `murmur64` 
 distinct images stay distinct and a match is verified against `key` itself.
 
 **The shard.**  `DirectDict` is linear probing over 8-byte slots, `OCCUPIED | check << n | preimage`,
-zero empty, `n <= 63`.  It mixes the key once more, `h = murmur64(key)`: the run starts at
-`home(h) = (h * n_slots) >> 64`, from `h`'s top bits, and `tag(h)` -- bit 63 and `h`'s low `63 - n`
-bits, shifted above the preimage -- is what every slot holding that key carries.  The second mix is
+zero empty, `n <= 63`, with three operations: `insert`, `probe` and `flush`.  It mixes the key once
+more, `h = murmur64(key)`: the run starts at `(h * n_slots) >> 64`, from `h`'s top bits, and its tag
+-- bit 63 and `h`'s low `63 - n` bits, shifted above the preimage -- is what every slot holding that
+key carries.  The second mix is
 required, not cosmetic: routing consumed the top bits of the key's low word, and a shard of more than
 2^32 slots cut from the key itself would leave part of its slots unreachable.
 
 `FILL`: insert into the first empty slot of the run; a full shard is fatal, which `fill <= 0.9` rules
 out.  `PROBE`: every slot of the run carrying the key's tag is a match, verified with **one
-evaluation**, `murmur64(wrapper.fill(x)) == key` -- the check bits' false positives die here
+evaluation**, `murmur64(wrapper.pb.f(x)) == key` -- the check bits' false positives die here
 (`BAD_MATCH`) -- counted as a collision (`N_COLLISIONS`) and tested with `good(x, y)`: `is_good_pair`,
-a collision problem demanding `x != y` and trying both orders, the pair coming back in the order that
-passed.  A golden pair goes to `set_golden(round, x, y)` at once.  No collision queue and no
+which is symmetric by contract, so the pair is judged in the order it came, a collision problem
+demanding `x != y` on top.  A golden pair goes to `set_golden(x, y)` at once.  No collision queue and no
 candidate: a match costs about what a probe does, and a hand-off would cost more than it saves.
 
-A dict thread reads each block **where it lies**, between `Router_Grab` and `Router_Release`, and
-copies nothing.  A block may hold fewer than `block_points` points.
+A dict thread takes its points one at a time, with `Router_Pop`, which reads the block **where it
+lies** and releases it on its last point: nothing is copied, and a block may hold fewer than
+`block_points` points.
 
 ### 8.4 The epilogue: one `MPI_Allgather` per phase
 
@@ -969,7 +970,7 @@ the `MPI_Allgather` and is exact.  Do not expect the two to agree to the unit.
 
 ### 8.6 Answer
 
-The golden slot holds `(round, x, y)`.  `claw_search` returns `(x, y)` with `f(x) == g(y)`,
-`collision_search` the pair in the order `is_good_pair` accepted.  With no solution the search
+The golden slot holds `(x, y)`.  `claw_search` returns `(x, y)` with `f(x) == g(y)`,
+`collision_search` a pair of distinct preimages of one image.  With no solution the search
 returns nothing after `R` rounds, and that is a proof of absence -- unless `--nrounds` cut it short,
 which the last line says.  The demos' exit status is that outcome.

@@ -41,7 +41,7 @@ struct Router_Opts {
 	int n_recv = 32;                    /* always-posted MPI_Irecv(ANY_SOURCE) slots, and as many send slots */
 	int inbox_blocks = 64;              /* a receiver's inbox, in blocks */
 	int sweep_blocks = 256;             /* sealed blocks the service handles per Router_Progress: the turn's bound */
-	int credit = 4;                     /* blocks in flight to one peer at most: a stalled peer holds no more send slots */
+	int credit = 4;                     /* blocks in flight to one peer at most: a stalled peer hogs no send slot */
 	int dests_per_node = 0;             /* destinations per node, the bench's virtual fan-out; 0 == the receivers */
 	bool pin = true;                    /* pin the threads and form the groups, or leave the CPUs to the caller */
 	int cache_level = 0;                /* the cache level a group sits in; 0 == the lowest shared by several cores */
@@ -180,7 +180,6 @@ public:
 	Router_Opts opt;                     /* as agreed with the other nodes */
 
 	/* fixed at connection */
-	bool connected = false;              /* Router_Init has run */
 	int S = 0;                           /* senders per node */
 	int R = 0;                           /* receivers per node */
 	int per_node = 0;                    /* destinations per node: R, or opt.dests_per_node */
@@ -205,7 +204,7 @@ public:
 	char *pool = NULL;                   /* n_blocks blocks of block_bytes: staging, send and receive memory alike */
 	std::atomic<u8> *n_valid = NULL;     /* n_blocks * nv_stride: byte k is 0 until line k is written, then 1 */
 	Point *partial = NULL;               /* F closing buffers of partial_cap points each, filled at Router_Close */
-	std::atomic<u64> *blk_link = NULL;   /* per block: its link in the sealed stack, its destination above, or parked */
+	std::atomic<u64> *blk_link = NULL;   /* per block, sealed or parked: destination << 32 | the next block */
 
 	/* the free ring: block ids in cells of one word, (sequence << 32) | block.  A pusher's ticket comes off free_in
 	 * by fetch_add and never waits for more than the popper of the cell's previous element, the ring being never
@@ -213,9 +212,7 @@ public:
 	std::atomic<u64> *free_cell = NULL;  /* free_mask + 1 cells; cell i starts as (i << 32) | ROUTER_NONE */
 	u32 free_mask = 0;                   /* cells - 1, cells the power of two >= n_blocks */
 	alignas(64) std::atomic<u64> free_in{0};   /* push tickets issued */
-	u64 free_in_pad[7] = {};             /* the rest of that line */
 	alignas(64) std::atomic<u64> free_out{0};  /* elements claimed */
-	u64 free_out_pad[7] = {};            /* the rest of that line */
 
 	/* the sealed stack, its word alone on a cache line: the sealers push, the service takes it whole */
 	alignas(64) std::atomic<u32> sealed_top{ROUTER_NONE};
@@ -226,7 +223,6 @@ public:
 	std::vector<u32> free_list;          /* its stash: its own frees, for its own needs; a batch to or from the ring */
 	u32 todo = ROUTER_NONE;              /* the service's take off the sealed stack, what is left to handle of it */
 	std::vector<u64> pending;            /* popped blocks with a line still being written: dest << 32 | blk */
-	std::vector<int> blk_dest;           /* per block: its destination, while parked */
 	std::vector<u32> blk_count;          /* per block: its points, while parked */
 	std::vector<u32> park_head;          /* per receiver, then per peer: the parked FIFOs */
 	std::vector<u32> park_tail;          /* their last blocks */
@@ -304,6 +300,9 @@ public:
 	bool flush_all();
 	void check_input_closed();
 	void check_quiescent();
+
+	/* the round's end: Router_Reset, on the service thread, between the team's two barriers */
+	void reset_round();
 };
 
 static inline bool router_pow2(size_t x)

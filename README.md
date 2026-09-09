@@ -48,8 +48,9 @@ Two things to know before trusting any number that comes out:
 ## Run
 
 Every driver takes the same options (`--help` lists them all).  `--ram` is
-**mandatory** for the demos and accepts human units.  The exit status says whether the
-golden pair was found.
+**mandatory** for a search and accepts human units.  The exit status says whether the
+golden pair was found.  `--benchmark` measures the problem's f/g rate and exits instead
+of searching, so it needs no `--ram`.
 
 ```bash
 mpirun -np 4 --bind-to none build/examples/double_speck64_demo \
@@ -87,11 +88,10 @@ include/
   tools.hpp          PRNG (TRIVIUM), timing, hashing, human-readable numbers, Point
   problem.hpp        the interface a cipher implements: f, g, is_good_pair, vfg
   parameters.hpp     Options: every user knob, all defaulted, the Router's among them
-  benchmark.hpp      f/g throughput per rank and across ranks, for the *_bench drivers
-  direct_common.hpp  the direct engine: parameters, counters, the shared tallies
-  direct_dict.hpp      the dictionary shard and the thread that fills and probes it
-  direct_producer.hpp  the thread that evaluates the phase's function and pushes
-  direct.hpp           the problem wrappers, the service round, the epilogue, run()
+  benchmark.hpp      f/g throughput per rank and across ranks: every driver's --benchmark
+  direct.hpp         the direct engine, whole: parameters, counters, the shared tallies,
+                     the problem wrappers, the dictionary shard, the dict, producer and
+                     service rounds, the epilogue, run()
   router/            the Router: ring, common, placement, connect, workers, service
                      (router.hpp is the umbrella; router.3 at the root is its man page)
   pcs_common.hpp, walker.hpp, inserter.hpp, pcs.hpp    PCS -- disconnected
@@ -101,8 +101,7 @@ examples/
   driver.hpp             command line + MPI startup, shared by every example
   router_driver.hpp      the same for the Router's own two programs
   <cipher>_problem.hpp   f, g, and a planted golden pair
-  <cipher>_demo.cpp      run the attack
-  <cipher>_bench.cpp     measure f evaluations per second
+  <cipher>_demo.cpp      run the attack (--benchmark: measure f/s and stop there)
   router_test.cpp        the Router's test suite
   router_bench.cpp       the Router's throughput benchmark
 ```

@@ -77,13 +77,13 @@ struct RouterPlacement {
 		}
 
 		if (not auto_groups)
-			group_by_colors(roles, colors, rank);
+			group_by_colors(colors, rank);
 
 		if (not pin) {
-			place_unpinned(roles, auto_groups, S, R, group_size);
+			place_unpinned(auto_groups, S, R, group_size);
 			return;
 		}
-		place_pinned(mask, roles, auto_groups, cache_level_opt, group_size, rank);
+		place_pinned(mask, auto_groups, cache_level_opt, group_size, rank);
 	}
 
 	/* the group in `groups` with the fewest of `count` so far, ties to the lowest id.  Reached from the
@@ -102,11 +102,11 @@ struct RouterPlacement {
 	 * be used (contiguous, MPI_Comm_split style).  No cache domain: group_domain is -1.  Reached from the
 	 * constructor when any worker passed a color rather than ROUTER_GROUP_AUTO.
 	 */
-	void group_by_colors(const std::vector<int> &roles, const std::vector<int> &colors, int rank)
+	void group_by_colors(const std::vector<int> &colors, int rank)
 	{
 		n_groups = 0;
 		for (int t = 0; t < n_threads; t++) {
-			if (roles[t] == ROUTER_SERVICE)
+			if (thread_role[t] == ROUTER_SERVICE)
 				continue;
 			if (colors[t] < 0)
 				errx(1, "Router: rank %d: a group must be set on every worker or none (a worker passed"
@@ -119,11 +119,11 @@ struct RouterPlacement {
 		std::vector<char> used(n_groups, 0);
 		int r_local = 0;
 		for (int t = 0; t < n_threads; t++) {
-			if (roles[t] == ROUTER_SERVICE)
+			if (thread_role[t] == ROUTER_SERVICE)
 				continue;
 			thread_group[t] = colors[t];
 			used[colors[t]] = 1;
-			if (roles[t] == ROUTER_SENDER)
+			if (thread_role[t] == ROUTER_SENDER)
 				group_nsend[colors[t]] += 1;
 			else
 				group_receivers[colors[t]].push_back(r_local++);
@@ -138,7 +138,7 @@ struct RouterPlacement {
 	 * max(ceil(S / group_size), ceil(R / group_size)) groups and slices both roles across them; colors were
 	 * already applied.  Reached from the constructor when pin is false.
 	 */
-	void place_unpinned(const std::vector<int> &roles, bool auto_groups, int S, int R, int group_size)
+	void place_unpinned(bool auto_groups, int S, int R, int group_size)
 	{
 		n_domains = 0;
 		cache_level = 0;
@@ -153,11 +153,11 @@ struct RouterPlacement {
 		int r_local = 0;
 		int s_local = 0;
 		for (int t = 0; t < n_threads; t++) {
-			if (roles[t] == ROUTER_RECEIVER) {
+			if (thread_role[t] == ROUTER_RECEIVER) {
 				int g = r_local % n_groups;
 				thread_group[t] = g;
 				group_receivers[g].push_back(r_local++);
-			} else if (roles[t] == ROUTER_SENDER) {
+			} else if (thread_role[t] == ROUTER_SENDER) {
 				int g = s_local++ % n_groups;
 				thread_group[t] = g;
 				group_nsend[g] += 1;
@@ -173,8 +173,7 @@ struct RouterPlacement {
 	 * the globally emptiest core) and, in AUTO, into its domain's least-filled group.  Reached from the
 	 * constructor when pin is true.
 	 */
-	void place_pinned(const cpu_set_t &mask, const std::vector<int> &roles, bool auto_groups, int cache_level_opt,
-	                  int group_size, int rank)
+	void place_pinned(const cpu_set_t &mask, bool auto_groups, int cache_level_opt, int group_size, int rank)
 	{
 		std::vector<int> numa_of_cpu;
 		std::vector<int> cache_of_cpu;
@@ -238,47 +237,31 @@ struct RouterPlacement {
 
 		int dc = n_domains > 1 ? 1 : 0;             /* the domain cursor: the service already took a core of domain 0 */
 		int r_local = 0;
-		for (int t = 0; t < n_threads; t++) {
-			if (roles[t] != ROUTER_RECEIVER)
-				continue;
-			int d = dc;
-			dc = (dc + 1) % n_domains;
-			int k = emptiest_core(cache_cores[d], core_cpus, next_cpu);
-			if (k < 0) {                    /* domain d is full: take the globally emptiest core */
-				k = emptiest_core(all_cores, core_cpus, next_cpu);
-				d = core_domain[k];
-			}
-			thread_cpu[t] = core_cpus[k][next_cpu[k]++];
-			thread_domain[t] = d;
-			thread_numa[t] = numa_of_cpu[thread_cpu[t]];
-			if (auto_groups) {
-				int g = least_filled(domain_groups[d], grp_recv);
+		for (int pass = 0; pass < 2; pass++) {      /* the receivers, then the senders, on one cursor over the whole
+		                                             * team, so the two passes' remainders do not stack up on the
+		                                             * low domains, on top of the service's core */
+			int want = (pass == 0) ? ROUTER_RECEIVER : ROUTER_SENDER;
+			std::vector<int> &count = (pass == 0) ? grp_recv : group_nsend;
+			for (int t = 0; t < n_threads; t++) {
+				if (thread_role[t] != want)
+					continue;
+				int d = dc;
+				dc = (dc + 1) % n_domains;
+				int k = emptiest_core(cache_cores[d], core_cpus, next_cpu);
+				if (k < 0) {                /* domain d is full: take the globally emptiest core */
+					k = emptiest_core(all_cores, core_cpus, next_cpu);
+					d = core_domain[k];
+				}
+				thread_cpu[t] = core_cpus[k][next_cpu[k]++];
+				thread_domain[t] = d;
+				thread_numa[t] = numa_of_cpu[thread_cpu[t]];
+				if (not auto_groups)
+					continue;
+				int g = least_filled(domain_groups[d], count);
 				thread_group[t] = g;
-				grp_recv[g] += 1;
-				group_receivers[g].push_back(r_local);
-			}
-			r_local += 1;
-		}
-
-		for (int t = 0; t < n_threads; t++) {   /* dc carries on from the receivers: one cursor over the whole
-		                                         * team, so the two passes' remainders do not stack up on the low
-		                                         * domains, on top of the service's core */
-			if (roles[t] != ROUTER_SENDER)
-				continue;
-			int d = dc;
-			dc = (dc + 1) % n_domains;
-			int k = emptiest_core(cache_cores[d], core_cpus, next_cpu);
-			if (k < 0) {
-				k = emptiest_core(all_cores, core_cpus, next_cpu);
-				d = core_domain[k];
-			}
-			thread_cpu[t] = core_cpus[k][next_cpu[k]++];
-			thread_domain[t] = d;
-			thread_numa[t] = numa_of_cpu[thread_cpu[t]];
-			if (auto_groups) {
-				int g = least_filled(domain_groups[d], group_nsend);
-				thread_group[t] = g;
-				group_nsend[g] += 1;
+				count[g] += 1;
+				if (want == ROUTER_RECEIVER)
+					group_receivers[g].push_back(r_local++);
 			}
 		}
 	}

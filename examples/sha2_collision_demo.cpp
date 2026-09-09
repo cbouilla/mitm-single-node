@@ -7,18 +7,17 @@
 int main(int argc, char* argv[])
 {
     mitm::Options opts;
-    u64 ram = 0;         // RAM per node for the dictionary (--ram, mandatory)
-    int n = 20;          // default problem size (easy)
-    u64 seed = 0;        // 0 == draw a fresh one
-    std::string engine = "direct";   // --engine: the search scheme
-    mitm::init(argc, argv, opts, ram, n, seed, engine);
+    mitm::Driver drv;
+    mitm::init(argc, argv, opts, drv);
 
-    mitm::PRNG prng(seed);
+    mitm::PRNG prng(drv.seed);
     if (opts.verbose)
-        printf("sha2-collision demo! seed=%016" PRIx64 ", n=%d\n", prng.seed, n);
+        printf("sha2-collision demo! seed=%016" PRIx64 ", n=%d\n", prng.seed, drv.n);
 
-    mitm::SHA2CollisionProblem pb(n, prng);
-    optional<pair<u64, u64>> collision = mitm::direct::collision_search(pb, ram, opts, prng);
+    mitm::SHA2CollisionProblem pb(drv.n, prng);
+    mitm::benchmark_and_exit(pb, drv, opts);   // --benchmark: the f/g rate, then exit
+
+    optional<pair<u64, u64>> collision = mitm::direct::collision_search(pb, drv.ram, opts, prng);
     if (opts.verbose) {
         if (collision) {
             auto [x0, x1] = *collision;

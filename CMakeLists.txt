@@ -28,6 +28,10 @@ set_target_properties(hwloc::hwloc PROPERTIES IMPORTED_LOCATION "${HWLOC_LIBRARY
                       INTERFACE_INCLUDE_DIRECTORIES "${HWLOC_INCLUDE_DIR}")
 message(STATUS "hwloc: ${HWLOC_LIBRARY}")
 
+# {fmt}, vendored as a git submodule: the reports format with it, not with printf.  EXCLUDE_FROM_ALL
+# so that `make` builds the library only because a driver needs it, and none of fmt's own targets.
+add_subdirectory(fmt EXCLUDE_FROM_ALL)
+
 # The router tests run under ctest (examples/CMakeLists.txt).  Open MPI binds a rank to one core at
 # np <= 2, which serialises a spinning OpenMP team: unbind by default there.
 enable_testing()

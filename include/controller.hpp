@@ -17,17 +17,14 @@ namespace mitm {
  */
 static inline void layout_banner(const Parameters &params)
 {
-	char hbuf[8], hdict[8];
 	u64 bufbytes = (u64) 2 * params.n_nodes * POINT_WORDS * sizeof(u64) * params.buffer_capacity;
-	human_format(bufbytes, hbuf);
-	human_format(params.w * sizeof(u64), hdict);
-	printf("MPI: %d node(s) x (1 comm + %d dict + %d prod) = %d threads/node\n",
+	fmt::print("MPI: {} node(s) x (1 comm + {} dict + {} prod) = {} threads/node\n",
 		params.n_nodes, params.dicts_per_node, params.producers_per_node, params.n_threads);
-	printf("MPI: %d dictionary shards, %d producer threads in total\n",
+	fmt::print("MPI: {} dictionary shards, {} producer threads in total\n",
 		params.n_dicts, params.n_producers);
 	params.place.report();
-	printf("RAM per node == %sB buffers + dict.  Total dict == %sB (2^%.2f slots)\n",
-		hbuf, hdict, std::log2((double) params.w));
+	fmt::print("RAM per node == {}B buffers + dict.  Total dict == {}B (2^{:.2f} slots)\n",
+		human_format(bufbytes), human_format(params.w * sizeof(u64)), std::log2((double) params.w));
 }
 
 

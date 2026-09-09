@@ -91,11 +91,9 @@ inline void Router_node::refill(Router_thread &s)
 	s.cache_n = n;
 }
 
-/* 
- * Clears a block about to be installed: none of its lines is written(sets the
- * number of lines it)  contains to zero).  Reached from Router_Init and
- * Router_Push (a sender's refill), Router_Progress (a repair, the F-scan's
- * fresh block) and Router_Reset (a repair). 
+/*
+ * No line of a block about to be installed is written yet.
+ * Reached from Router_Init and Router_Push (a sender's refill), and Router_Progress (the F-scan's fresh block).
  */
 inline void Router_node::zero_valid(u32 blk)
 {

@@ -1,8 +1,9 @@
-# Every driver runs the same engine (MPI + OpenMP), so they all link the same way.
+# Every driver runs the same engine (MPI + OpenMP), so they all link the same way.  One driver per
+# problem: --benchmark measures its f/g instead of searching, so no separate bench binary.
 function(mitm_example name)
     add_executable(${name} ${name}.cpp ${ARGN})
     target_include_directories(${name} PRIVATE ../include)
-    target_link_libraries(${name} PRIVATE MPI::MPI_C OpenMP::OpenMP_CXX Threads::Threads hwloc::hwloc)
+    target_link_libraries(${name} PRIVATE MPI::MPI_C OpenMP::OpenMP_CXX Threads::Threads hwloc::hwloc fmt::fmt)
     # Keep <mpi.h> from pulling in the deprecated MPI-2 C++ bindings; we never use them.
     target_compile_definitions(${name} PRIVATE OMPI_SKIP_MPICXX MPICH_SKIP_MPICXX _MPICC_H)
 endfunction()
@@ -11,7 +12,6 @@ endfunction()
 ###### Speck
 
 mitm_example(double_speck64_demo)
-mitm_example(double_speck64_bench)
 
 
 ###### DES
@@ -19,14 +19,10 @@ mitm_example(double_speck64_bench)
 mitm_example(double_DES_demo usuba_des.cpp)
 target_link_libraries(double_DES_demo PRIVATE OpenSSL::Crypto)
 
-mitm_example(double_DES_bench usuba_des.cpp)
-target_link_libraries(double_DES_bench PRIVATE OpenSSL::Crypto)
-
 
 ###### AES
 
 mitm_example(double_aes_demo aes.c)
-mitm_example(double_aes_bench aes.c)
 
 
 ###### SHA256

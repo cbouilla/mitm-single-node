@@ -11,6 +11,8 @@
 #include <err.h>
 #include <sched.h>
 
+#include <fmt/format.h>
+
 using std::vector;
 using std::pair;
 using std::tuple;
@@ -50,11 +52,10 @@ struct Point {
 /* wall-clock seconds */
 double wtime()
 {
-
-  auto clock = std::chrono::high_resolution_clock::now();
-  auto nanoseconds = std::chrono::duration_cast<std::chrono::nanoseconds>(clock.time_since_epoch()).count();
-  double seconds = nanoseconds / (static_cast<double>(1000000000.0));
-  return seconds;
+    auto clock = std::chrono::high_resolution_clock::now();
+    auto nanoseconds = std::chrono::duration_cast<std::chrono::nanoseconds>(clock.time_since_epoch()).count();
+    double seconds = nanoseconds / (static_cast<double>(1000000000.0));
+    return seconds;
 }
 
 /* murmur64 hash, tailored for 64-bit ints.  Cf. Daniel Lemire */
@@ -162,29 +163,20 @@ public:
     PRNG() : seed(read_urandom()), seq(0) { setseed(); }
 };
 
-/* n as a short human string ("1.5G"): at most 7 characters plus the NUL, so an 8-byte target */
-void human_format(u64 n, char *target)
+/* n as a short human string ("1.5G"), for the reports */
+std::string human_format(u64 n)
 {
-    if (n < 1000) {
-        sprintf(target, "%" PRId64, n);
-        return;
-    }
-    if (n < 1000000) {
-        sprintf(target, "%.1fK", n / 1e3);
-        return;
-    }
-    if (n < 1000000000) {
-        sprintf(target, "%.1fM", n / 1e6);
-        return;
-    }
-    if (n < 1000000000000ll) {
-        sprintf(target, "%.1fG", n / 1e9);
-        return;
-    }
-    if (n < 1000000000000000ll) {
-        sprintf(target, "%.1fT", n / 1e12);
-        return;
-    }
+    if (n < 1000)
+        return fmt::format("{}", n);
+    if (n < 1000000)
+        return fmt::format("{:.1f}K", n / 1e3);
+    if (n < 1000000000)
+        return fmt::format("{:.1f}M", n / 1e6);
+    if (n < 1000000000000ull)
+        return fmt::format("{:.1f}G", n / 1e9);
+    if (n < 1000000000000000ull)
+        return fmt::format("{:.1f}T", n / 1e12);
+    return fmt::format("{:.1f}P", n / 1e15);
 }
 
 /* the inverse of human_format: "4G" -> 4000000000, a bare number as is */

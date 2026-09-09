@@ -58,7 +58,7 @@ inline Router_node::Router_node(int n_threads, MPI_Comm mpi_comm, int tag_, cons
 inline Router_node::~Router_node()
 {
 	bool idle = phase == ROUTER_OPEN && ctr[ROUTER_BLOCKS] == 0 && ctr[ROUTER_MSGS_SENT] == 0;
-	if (connected && not quiescent && not idle)
+	if (not quiescent && not idle)
 		errx(1, "Router: destroyed while not quiescent");
 	for (size_t k = 0; k < in_req.size(); k++)
 		if (in_req[k] != MPI_REQUEST_NULL) {
@@ -145,9 +145,7 @@ inline void Router_node::connect()
 	cpu_set_t umask;
 	CPU_ZERO(&umask);
 	for (int t = 0; t < n_threads; t++)
-		for (int c = 0; c < CPU_SETSIZE; c++)
-			if (CPU_ISSET(c, &masks[t]))
-				CPU_SET(c, &umask);
+		CPU_OR(&umask, &umask, &masks[t]);
 
 	/* pinning must own the CPUs: refuse a mask too small for the team, or one shared with a co-hosted rank */
 	if (opt.pin) {
@@ -166,11 +164,9 @@ inline void Router_node::connect()
 			for (int o = 0; o < hn; o++) {
 				if (o == hr)
 					continue;
-				int inter = 0;
-				for (int c = 0; c < CPU_SETSIZE; c++)
-					if (CPU_ISSET(c, &umask) && CPU_ISSET(c, &all[o]))
-						inter += 1;
-				if (inter > 0) {
+				cpu_set_t both;
+				CPU_AND(&both, &umask, &all[o]);
+				if (CPU_COUNT(&both) > 0) {
 					warnx("Router: rank %d shares CPUs with another rank on its host; use --map-by numa"
 					      " --bind-to numa, --map-by slot:PE=n, or pin = false", rank);
 					MPI_Abort(comm, 1);
@@ -241,7 +237,6 @@ inline void Router_node::connect()
 		blk_link[b].store(ROUTER_NONE, std::memory_order_relaxed);
 		free_list.push_back(b);
 	}
-	blk_dest.assign(n_blocks, -1);
 	blk_count.assign(n_blocks, 0);
 	park_head.assign(R + n_nodes, ROUTER_NONE);
 	park_tail.assign(R + n_nodes, ROUTER_NONE);
@@ -265,7 +260,6 @@ inline void Router_node::connect()
 		dest[ROUTER_DEST_WORDS * d].store((u64) stash_pop(), std::memory_order_relaxed);
 	if (free_list.size() > ROUTER_BATCH)
 		spill(free_list.size() - ROUTER_BATCH);
-	connected = true;
 	if (rank == 0 && opt.verbose)
 		banner();
 }

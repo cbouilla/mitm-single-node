@@ -20,7 +20,10 @@ public:
 	/* f : {0, 1}^n ---> {0, 1}^m */
 	u64 f(u64 x) const;
 
-	/* assuming that f(x0) == f(x1) and x0 != x1, is (x0, x1) an acceptable outcome? */
+	/* 
+	 * assuming that f(x0) == f(x1) and x0 != x1, is (x0, x1) an acceptable outcome? 
+	 * The predicate must be symmetric. 
+	 */
 	bool is_good_pair(u64 x0, u64 x1) const;
 
 	/* only with vlen > 1: f() on vlen inputs at once, same results */

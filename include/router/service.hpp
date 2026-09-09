@@ -109,13 +109,14 @@ inline void Router_node::park(int d, u32 blk, u32 count)
 {
 	int node = d / per_node;
 	int target = (node == rank) ? (d % per_node) % R : R + node;
-	blk_dest[blk] = d;
 	blk_count[blk] = count;
-	blk_link[blk].store(ROUTER_NONE, std::memory_order_relaxed);
+	blk_link[blk].store(((u64) d << 32) | ROUTER_NONE, std::memory_order_relaxed);
 	if (park_head[target] == ROUTER_NONE)
 		park_head[target] = blk;
-	else
-		blk_link[park_tail[target]].store(blk, std::memory_order_relaxed);
+	else {                                /* the tail keeps its own destination in the high word */
+		std::atomic<u64> &tail = blk_link[park_tail[target]];
+		tail.store((tail.load(std::memory_order_relaxed) & ~(u64) ROUTER_NONE) | blk, std::memory_order_relaxed);
+	}
 	park_tail[target] = blk;
 	ctr[ROUTER_STALL_OUT] += 1;
 }
@@ -127,8 +128,9 @@ inline void Router_node::retry_parked(int target)
 {
 	while (park_head[target] != ROUTER_NONE) {
 		u32 blk = park_head[target];
-		u32 after = (u32) blk_link[blk].load(std::memory_order_relaxed);
-		if (not place(blk_dest[blk], blk, blk_count[blk]))
+		u64 link = blk_link[blk].load(std::memory_order_relaxed);
+		u32 after = (u32) link;
+		if (not place((int) (link >> 32), blk, blk_count[blk]))
 			return;
 		park_head[target] = after;
 		if (after == ROUTER_NONE)
@@ -242,7 +244,7 @@ inline void Router_node::sweep()
 		todo = sealed_top.exchange(ROUTER_NONE, std::memory_order_acquire);
 	for (int b = 0; b < opt.sweep_blocks && todo != ROUTER_NONE; b++) {
 		u32 blk = todo;
-		u64 link = blk_link[blk].load(std::memory_order_relaxed);   /* careful: handled, park or a later seal rewrites it */
+		u64 link = blk_link[blk].load(std::memory_order_relaxed);   /* careful: park or a later seal rewrites it */
 		todo = (u32) link;
 		int d = (int) (link >> 32);
 		handle_block(d, blk);
@@ -301,13 +303,12 @@ inline bool Router_node::fscan()
 		}
 		const Point *buf = partial + (size_t) flush_d * partial_cap;
 		while (flush_off < flush_len) {
-			u32 chunk = flush_len - flush_off;
-			if (chunk > opt.block_points)
-				chunk = (u32) opt.block_points;
+			u32 chunk = (u32) std::min((size_t) (flush_len - flush_off), opt.block_points);
 			u32 blk = stash_pop();
 			if (blk == ROUTER_NONE)
 				return false;
-			memcpy(pool + (size_t) blk * block_bytes + ROUTER_HDR_BYTES, buf + flush_off, (size_t) chunk * sizeof(Point));
+			memcpy(pool + (size_t) blk * block_bytes + ROUTER_HDR_BYTES, buf + flush_off,
+			       (size_t) chunk * sizeof(Point));
 			dispatch(flush_d, blk, chunk);
 			flush_off += chunk;
 		}
@@ -508,9 +509,72 @@ inline void Router_Stats(u64 *stats, const Router_thread &rt)
 }
 
 /*
+ * The node itself, back to a fresh round: the service thread's own state, its peers' bookkeeping and the round
+ * counter, then an MPI_Barrier so that no peer starts the next round before this node has left this one.
+ * Reached from Router_Reset, on the service thread, between the team's two barriers.
+ */
+inline void Router_node::reset_round()
+{
+	if (not quiescent)
+		errx(1, "Router_Reset: not quiescent");
+	repost_idle();
+#ifdef ROUTER_PARANOID
+	size_t accounted = F + free_list.size();
+	for (int k = 0; k < opt.n_recv; k++)
+		if (in_blk[k] != ROUTER_NONE)
+			accounted += 1;
+	for (int s = 0; s < S; s++)
+		accounted += senders[s]->cache_n;
+	u64 out = free_out.load();         /* the ring, nobody else touching it now: exact, and every cell ready */
+	u64 in = free_in.load();
+	for (u64 p = out; p < in; p++)
+		if ((u32) (free_cell[p & free_mask].load() >> 32) != (u32) (p + 1))
+			errx(1, "Router_Reset: a free cell is not ready");
+	accounted += in - out;
+	if (accounted != n_blocks)
+		errx(1, "Router_Reset: %zu of %u blocks accounted for (%" PRIu64 " in the ring)", accounted, n_blocks,
+		     in - out);
+	if (out_free.size() != (size_t) opt.n_recv)
+		errx(1, "Router_Reset: a send is still in flight");
+	for (int p = 0; p < n_nodes; p++)
+		if (credit_used[p] != 0)
+			errx(1, "Router_Reset: credit in use");
+	if (not pending.empty())
+		errx(1, "Router_Reset: pending work left");
+	if (todo != ROUTER_NONE || sealed_top.load() != ROUTER_NONE)
+		errx(1, "Router_Reset: sealed blocks left");
+	for (int d = 0; d < F; d++)
+		if (dest[ROUTER_DEST_WORDS * d + 1].load(std::memory_order_relaxed) != 0)
+			errx(1, "Router_Reset: a closing buffer was left behind");
+#endif
+	for (int k = 0; k < ROUTER_STATS_SIZE; k++)
+		ctr[k] = 0;
+	for (int r = 0; r < R; r++)
+		inbox_pushed[r] = 0;
+	for (int p = 0; p < n_nodes; p++) {
+		seq_sent[p] = 0;
+		n_data_recv[p] = 0;
+		end_seq[p] = -1;
+		end_sent[p] = 0;
+	}
+	input_closed.store(0, std::memory_order_relaxed);
+	quiescent = false;
+	phase = ROUTER_OPEN;
+	flush_d = 0;
+	flush_built = false;
+	flush_blk = ROUTER_NONE;
+	flush_k = 0;
+	flush_install = false;
+	flush_len = 0;
+	flush_off = 0;
+	round += 1;
+	MPI_Barrier(comm);
+}
+
+/*
  * Collective over the team.  Back to a fresh round: once every worker is out of the round, each thread clears
- * its own tallies and flags, the service thread resets the node and holds an MPI_Barrier so that no peer starts
- * the next round before this node has left this one; nobody pushes or pops before all of that is done.  The
+ * its own tallies and flags while the service thread resets the node, and nobody pushes or pops before all of
+ * that is done, here and on every peer.  Both barriers are the team's, so every thread meets the same two.  The
  * tallies are gone past this call: Router_Stats reads them before it.
  */
 inline void Router_Reset(Router_thread &rt)
@@ -523,63 +587,8 @@ inline void Router_Reset(Router_thread &rt)
 		for (int k = 0; k < ROUTER_STATS_SIZE; k++)
 			rt.ctr[k] = 0;
 		rt.closed.store(0, std::memory_order_relaxed);
-		#pragma omp barrier               /* the node is fresh, here and on every peer, before anybody pushes or pops */
-		return;
-	}
-	if (not rn.quiescent)
-		errx(1, "Router_Reset: not quiescent");
-	rn.repost_idle();
-#ifdef ROUTER_PARANOID
-	size_t accounted = rn.F + rn.free_list.size();
-	for (int k = 0; k < rn.opt.n_recv; k++)
-		if (rn.in_blk[k] != ROUTER_NONE)
-			accounted += 1;
-	for (int s = 0; s < rn.S; s++)
-		accounted += rn.senders[s]->cache_n;
-	u64 out = rn.free_out.load();         /* the ring, nobody else touching it now: exact, and every cell ready */
-	u64 in = rn.free_in.load();
-	for (u64 p = out; p < in; p++)
-		if ((u32) (rn.free_cell[p & rn.free_mask].load() >> 32) != (u32) (p + 1))
-			errx(1, "Router_Reset: a free cell is not ready");
-	accounted += in - out;
-	if (accounted != rn.n_blocks)
-		errx(1, "Router_Reset: %zu of %u blocks accounted for (%" PRIu64 " in the ring)", accounted, rn.n_blocks,
-		     in - out);
-	if (rn.out_free.size() != (size_t) rn.opt.n_recv)
-		errx(1, "Router_Reset: a send is still in flight");
-	for (int p = 0; p < rn.n_nodes; p++)
-		if (rn.credit_used[p] != 0)
-			errx(1, "Router_Reset: credit in use");
-	if (not rn.pending.empty())
-		errx(1, "Router_Reset: pending work left");
-	if (rn.todo != ROUTER_NONE || rn.sealed_top.load() != ROUTER_NONE)
-		errx(1, "Router_Reset: sealed blocks left");
-	for (int d = 0; d < rn.F; d++)
-		if (rn.dest[ROUTER_DEST_WORDS * d + 1].load(std::memory_order_relaxed) != 0)
-			errx(1, "Router_Reset: a closing buffer was left behind");
-#endif
-	for (int k = 0; k < ROUTER_STATS_SIZE; k++)
-		rn.ctr[k] = 0;
-	for (int r = 0; r < rn.R; r++)
-		rn.inbox_pushed[r] = 0;
-	for (int p = 0; p < rn.n_nodes; p++) {
-		rn.seq_sent[p] = 0;
-		rn.n_data_recv[p] = 0;
-		rn.end_seq[p] = -1;
-		rn.end_sent[p] = 0;
-	}
-	rn.input_closed.store(0, std::memory_order_relaxed);
-	rn.quiescent = false;
-	rn.phase = ROUTER_OPEN;
-	rn.flush_d = 0;
-	rn.flush_built = false;
-	rn.flush_blk = ROUTER_NONE;
-	rn.flush_k = 0;
-	rn.flush_install = false;
-	rn.flush_len = 0;
-	rn.flush_off = 0;
-	rn.round += 1;
-	MPI_Barrier(rn.comm);
+	} else
+		rn.reset_round();
 	#pragma omp barrier                   /* the node is fresh, here and on every peer, before anybody pushes or pops */
 }
 

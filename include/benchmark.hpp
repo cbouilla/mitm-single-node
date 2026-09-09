@@ -3,15 +3,17 @@
 
 #include <mpi.h>
 #include <cmath>
+#include <type_traits>
 
 #include "tools.hpp"
 #include "parameters.hpp"
+#include "problem.hpp"
 
 /*
- * How fast do a problem's f / g (and vfg) iterate, per rank and over the ranks?  For the *_bench
- * drivers; needs no RAM budget, only the Options.  The dictionary and staging benchmarks that used to
- * live here were built on PCS's parameters and come back when PCS does; router_bench measures the
- * communication path on its own.
+ * How fast do a problem's functions iterate, per rank and over the ranks?  What every driver's
+ * --benchmark runs; needs no RAM budget, only the Options.  The dictionary and staging benchmarks
+ * that used to live here were built on PCS's parameters and come back when PCS does; router_bench
+ * measures the communication path on its own.
  */
 
 namespace mitm {
@@ -32,26 +34,23 @@ static void display_stats(u64 N, double start, int vlen, MPI_Comm comm, int rank
 	MPI_Allreduce(MPI_IN_PLACE, &rate_std, 1, MPI_DOUBLE, MPI_SUM, comm);
 	rate_std /= n_nodes;
 	rate_std = std::sqrt(rate_std);
-	if (rank == 0) {
-		char hmin[8], hmax[8], havg[8], hstd[8];
-		human_format(rate_min, hmin);
-		human_format(rate_max, hmax);
-		human_format(rate_avg, havg);
-		human_format(rate_std, hstd);
-		printf("Benchmark. f/s: min %s max %s avg %s std %s\n", hmin, hmax, havg, hstd);
-	}
+	if (rank == 0)
+		fmt::print("Benchmark. f/s: min {} max {} avg {} std {}\n", human_format(rate_min),
+		           human_format(rate_max), human_format(rate_avg), human_format(rate_std));
 }
 
 /*
- * Iterate f / g 2^26 times, then vfg 2^20 times if vlen > 1, on every rank, and print the rates.
- * Both loops walk ONE dependent chain per lane, the shape a trail and a collision resolution both
- * have, so that the two rates can be divided: what that ratio is worth is how much a producer gains by
- * batching its resolutions (PROTOCOL.md §3.2).  Each loop's last value is printed, and that is the
- * only reason it survives -O3: nothing else here is observable.  Collective
+ * Iterate the scalar functions 2^26 times, then the vector ones 2^20 times if vlen > 1, on every rank,
+ * and print the rates.  A claw problem alternates f and g, a collision problem iterates f alone.  Both
+ * loops walk ONE dependent chain per lane, the shape a trail and a collision resolution both have, so
+ * that the two rates can be divided: what that ratio is worth is how much a producer gains by batching
+ * its resolutions.  Each loop's last value is printed, and that is the only reason it survives -O3:
+ * nothing else here is observable.  Collective
  */
 template<typename Problem>
 void benchmark(const Problem& pb, const Options &opts)
 {
+	constexpr bool claw = std::is_base_of<AbstractClawProblem, Problem>::value;
 	int rank, n_nodes;
 	MPI_Comm_rank(opts.mpi_comm, &rank);
 	MPI_Comm_size(opts.mpi_comm, &n_nodes);
@@ -65,8 +64,12 @@ void benchmark(const Problem& pb, const Options &opts)
 	u64 N = 1ull << 26;
 	u64 x1 = 1;
 	double start = wtime();
-	for (u64 i = 0; i < N; i++)
-		x1 = ((i & 1) ? pb.f(x1) : pb.g(x1)) & mask;
+	for (u64 i = 0; i < N; i++) {
+		if constexpr (claw)
+			x1 = ((i & 1) ? pb.f(x1) : pb.g(x1)) & mask;
+		else
+			x1 = pb.f(x1) & mask;
+	}
 	display_stats(N, start, 1, opts.mpi_comm, rank, n_nodes);
 	if (rank == 0)
 		printf("  checksum %016" PRIx64 "\n", x1);
@@ -78,7 +81,7 @@ void benchmark(const Problem& pb, const Options &opts)
 
 		u64 x[vlen] __attribute__ ((aligned(sizeof(u64) * vlen)));
 		u64 z[vlen] __attribute__ ((aligned(sizeof(u64) * vlen)));
-		bool choice[vlen];
+		bool choice[vlen];      /* what vfg selects, for a claw problem: half the lanes f, the others g */
 		for (int i = 0; i < vlen; i++) {
 			choice[i] = i & 1;
 			x[i] = i;
@@ -89,7 +92,10 @@ void benchmark(const Problem& pb, const Options &opts)
 		double start = wtime();
 		u64 N = 1ull << 20;
 		for (u64 i = 0; i < N; i++) {
-			pb.vfg(x, choice, z);
+			if constexpr (claw)
+				pb.vfg(x, choice, z);
+			else
+				pb.vf(x, z);
 			for (int j = 0; j < vlen; j++)
 				x[j] = z[j] & mask;
 		}

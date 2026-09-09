@@ -86,10 +86,8 @@ static void raw_report(const Router_thread &rt)
 	if (rt.node.rank != 0)
 		return;
 	int nsend = Router_num_send(rt);
-	char raw_s[8];
-	human_format((u64) total, raw_s);
-	printf("raw: %d senders generate %s pts/s without pushing (%.1f ns/point) | xor %016" PRIx64 "\n",
-	       nsend, raw_s, 1e9 * nsend / total, folded);
+	fmt::print("raw: {} senders generate {} pts/s without pushing ({:.1f} ns/point) | xor {:016x}\n",
+	           nsend, human_format((u64) total), 1e9 * nsend / total, folded);
 }
 
 static void bench_sender(Router_thread &rt, const RouterArgs &a, double t_end)
@@ -153,28 +151,19 @@ static void bench_report(const Router_thread &rt, const RouterArgs &a, int round
 		return;
 	int P = rt.node.n_nodes;
 	double t = hi[3];
-	char routed_s[8];
-	char push_s[8];
-	char pop_s[8];
-	char net_s[8];
-	char msg_s[8];
-	char blk_s[8];
-	char turn_s[8];
-	human_format((u64) (tot[ROUTER_POPPED] / t), routed_s);
-	human_format((u64) (tot[ROUTER_TURNS] / t / P), turn_s);
-	human_format((u64) (tot[ROUTER_PUSHED] / t / P), push_s);
-	human_format((u64) (tot[ROUTER_POPPED] / t / P), pop_s);
-	human_format((u64) (tot[ROUTER_SENT] / t / P), net_s);
-	human_format((u64) (tot[ROUTER_MSGS_SENT] / t / P), msg_s);
-	human_format((u64) (tot[ROUTER_BLOCKS] / t / P), blk_s);
-	printf("round %d: %.2fs | routed %s pts/s | per node: push %s/s (%.0f-%.0f M/s) pop %s/s net %s pts/s %.2f GB/s"
-	       " %s msgs/s %s blocks/s | %.1f ns/point | service %.0f%% busy (%s turns/s) | xor %016" PRIx64 "\n",
-	       round, t, routed_s, push_s, lo[0] / 1e6, hi[0] / 1e6, pop_s, net_s,
-	       (double) tot[ROUTER_BYTES_SENT] / t / P / 1e9, msg_s, blk_s, sum[1] / P,
-	       100. * sum[2] / P, turn_s, folded);
+	fmt::print("round {}: {:.2f}s | routed {} pts/s | per node: push {}/s ({:.0f}-{:.0f} M/s) pop {}/s "
+	           "net {} pts/s {:.2f} GB/s {} msgs/s {} blocks/s | {:.1f} ns/point | service {:.0f}% busy "
+	           "({} turns/s) | xor {:016x}\n",
+	           round, t, human_format((u64) (tot[ROUTER_POPPED] / t)),
+	           human_format((u64) (tot[ROUTER_PUSHED] / t / P)), lo[0] / 1e6, hi[0] / 1e6,
+	           human_format((u64) (tot[ROUTER_POPPED] / t / P)),
+	           human_format((u64) (tot[ROUTER_SENT] / t / P)),
+	           (double) tot[ROUTER_BYTES_SENT] / t / P / 1e9,
+	           human_format((u64) (tot[ROUTER_MSGS_SENT] / t / P)),
+	           human_format((u64) (tot[ROUTER_BLOCKS] / t / P)), sum[1] / P, 100. * sum[2] / P,
+	           human_format((u64) (tot[ROUTER_TURNS] / t / P)), folded);
 	if (tot[ROUTER_PUSHED] != tot[ROUTER_POPPED])
-		printf("  ACCOUNTING BROKEN: pushed %" PRIu64 " != popped %" PRIu64 "\n",
-		       tot[ROUTER_PUSHED], tot[ROUTER_POPPED]);
+		fmt::print("  ACCOUNTING BROKEN: pushed {} != popped {}\n", tot[ROUTER_PUSHED], tot[ROUTER_POPPED]);
 }
 
 int main(int argc, char **argv)

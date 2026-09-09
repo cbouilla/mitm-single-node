@@ -344,15 +344,13 @@ inline void Scheme::display(const Params &params, const u64 reported[], double d
     u64 ndp = reported[N_DP];
     double dp_rate = ndp / delta;
     double completion = (double) ndp / params.points_per_version;
-    char hrate[8], hnrate[8], hprobe[8];
-    human_format(dp_rate / params.theta / params.n_producers, hrate);
-    human_format(ndp * POINT_WORDS * sizeof(u64) / params.n_nodes / delta, hnrate);
-    human_format((double) reported[N_PROBE] / params.n_dicts / delta, hprobe);
-    printf("\rRound %" PRId64 ":  %.1fs (%.1f%%, ETA %.1fs).  %.2f*w #DP.  %s #f/s per producer.  "
-           "%s probe/s per dict thread.  node-->%sB/s   ",
+    fmt::print("\rRound {}:  {:.1f}s ({:.1f}%, ETA {:.1f}s).  {:.2f}*w #DP.  {} #f/s per producer.  "
+           "{} probe/s per dict thread.  node-->{}B/s   ",
         nround, delta, 100. * completion,
         (completion > 0) ? delta * (1 - completion) / completion : 0.,
-        (double) ndp / params.w, hrate, hprobe, hnrate);
+        (double) ndp / params.w, human_format(dp_rate / params.theta / params.n_producers),
+        human_format((double) reported[N_PROBE] / params.n_dicts / delta),
+        human_format(ndp * POINT_WORDS * sizeof(u64) / params.n_nodes / delta));
     fflush(stdout);
 }
 
@@ -364,18 +362,17 @@ inline void Scheme::round_report(const Params &params, const u64 r[], const u64 
                                  const RoundStats &all, double delta, u64 nround)
 {
     u64 ndp = r[N_DP];
-    char hrate[8], hnrate[8];
-    human_format((double) r[N_EVAL] / params.n_producers / delta, hrate);
-    human_format((double) ndp * POINT_WORDS * sizeof(u64) / params.n_nodes / delta, hnrate);
 
-    printf("\n");
-    printf("Round %" PRId64 ".  %.1fs.  #DP %.2f*w (total 2^%.2f).  #coll %.2f*w (total 2^%.2f).  "
-           "Total #f=2^%.3f.  %s #f/s per producer.  node-->%sB/s\n",
+    fmt::print("\n");
+    fmt::print("Round {}.  {:.1f}s.  #DP {:.2f}*w (total 2^{:.2f}).  #coll {:.2f}*w (total 2^{:.2f}).  "
+           "Total #f=2^{:.3f}.  {} #f/s per producer.  node-->{}B/s\n",
         nround, delta,
         (double) ndp / params.w, std::log2((double) total[N_DP] ? (double) total[N_DP] : 1.),
         (double) r[N_COLLISIONS] / params.w,
         std::log2((double) total[N_COLLISIONS] ? (double) total[N_COLLISIONS] : 1.),
-        std::log2((double) total[N_EVAL] ? (double) total[N_EVAL] : 1.), hrate, hnrate);
+        std::log2((double) total[N_EVAL] ? (double) total[N_EVAL] : 1.),
+        human_format((double) r[N_EVAL] / params.n_producers / delta),
+        human_format((double) ndp * POINT_WORDS * sizeof(u64) / params.n_nodes / delta));
 
     if (ndp > 0) {
         double avglen = (double) r[N_POINTS_TRAILS] / ndp;
@@ -399,13 +396,10 @@ inline void Scheme::round_report(const Params &params, const u64 r[], const u64 
          * dictionary and still reports them complete: the DPs that reached a shard, and the share of
          * those found, is the number to read.  PROBLEM.md §2: it is the attack's speed, one for one.
          */
-        char hoff[8], hins[8], hprobe[8];
-        human_format((double) ndp / delta, hoff);
-        human_format((double) r[N_PROBE] / delta, hins);
-        human_format((double) r[N_PROBE] / params.n_dicts / delta, hprobe);
-        printf("            ROUTED  %s DP/s found --> %s DP/s inserted (%.2f%% reached a shard,"
-               " %s probe/s per dict thread).  dict load %.2f/slot\n",
-            hoff, hins, 100. * r[N_PROBE] / ndp, hprobe,
+        fmt::print("            ROUTED  {} DP/s found --> {} DP/s inserted ({:.2f}% reached a shard,"
+               " {} probe/s per dict thread).  dict load {:.2f}/slot\n",
+            human_format((double) ndp / delta), human_format((double) r[N_PROBE] / delta),
+            100. * r[N_PROBE] / ndp, human_format((double) r[N_PROBE] / params.n_dicts / delta),
             (double) r[N_PROBE] / params.w);
     }
 
