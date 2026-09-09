@@ -2115,3 +2115,230 @@ mpirun --hostfile ~/nodes.32 --map-by ppr:1:node --bind-to none --mca pml ucx \
 mpirun --hostfile ~/nodes.32 --map-by ppr:1:node --bind-to none --mca pml ucx ./netbw 262144 3 8 32 256
 mpirun ... -mca mtl psm2 -mca pml ^ucx,ofi -mca btl ^ofi,openib,tcp ./netbw ...   # aborts: psm2 is dead here
 ```
+
+---
+
+# Session 11 -- the staging fence and the line publication, priced on grdix and grvingt
+
+2026-09-09, **grdix-3** (2 x EPYC 9754, 256 cores / 512 PU, 2 NUMA nodes, 32 L3 of 16 MB) and
+**grvingt-11** (2 x Xeon Gold 6130, 32 cores / 64 PU, 2 NUMA nodes, 2 L3 of 22 MB), one rank per
+node, **np 1**, tree at `66d0648` built `-DCMAKE_BUILD_TYPE=release`, plus five out-of-tree `#ifdef`
+patches that each switch one mechanism off.  `router_bench --seconds 3 --rounds 2`, three repeats
+interleaved, median of the six rounds, reported as the node's push rate.  `--senders 150
+--receivers 105` on grdix, `26 + 5` and `50 + 12` on grvingt.  `--swc` is pinned throughout, since
+the fence rate is exactly what it sets.
+
+## The question
+
+Is the `_mm_sfence()` of `router_stream_copy` (`common.hpp:92`) worth removing -- by an epoch scheme
+where a sender fences once in a while, publishes the value of a counter the service advances, and a
+sealed block is complete once every sender has passed its tag -- and is `complete()`'s per-line scan
+(`service.hpp:41`) worth replacing by one atomic counter per block?
+
+## The variants
+
+| | define | what is off | sound |
+|---|---|---|---|
+| a | -- | the shipped code | yes |
+| b | `ROUTER_NO_SFENCE` | the fence | no |
+| c | `ROUTER_NO_PUBLISH` | the fence, the `n_valid` store, `zero_valid`, `complete()`'s scan | no |
+| d | `ROUTER_FENCE_EVERY_STORE` | *adds* a fence per 64 B store: the positive control | yes |
+| e | `ROUTER_NO_COMPLETE_SCAN` | `complete()`'s scan alone | no |
+| f | `ROUTER_NO_LINE_PUBLISH` | the `n_valid` store and the scan; the fence and `zero_valid` stay | no |
+
+b, c, e and f ship blocks whose data may not have landed, so the points they deliver are garbage.
+Nothing in the benchmark depends on the values and no counter it reports is affected, so the rates
+are valid -- with one caveat that runs through everything below: a receiver may now read a block
+whose streaming stores are still in flight, which can cost the *receiver* and therefore **biases
+every unsound variant's gain downwards**.  The positive control d is sound.  Note also that c, e and
+f all make `complete()` answer yes at once, so they remove not only work but the **wait** for a
+sealed block's last line -- §4 is where that turns out to matter more than any instruction.
+
+## Summary
+
+| | grdix 150+105 | grvingt 26+5 | grvingt 50+12 |
+|---|---|---|---|
+| the rate at the auto line size | 6.8 G pts/s (`--swc 256`) | 1.30 G (512) | 1.64 G (512) |
+| **the fence there (b)** | **+0.5 %** | **-0.2 %** | **-0.2 %** |
+| everything (c) | +2.2 % | +6.3 % | -3.1 % |
+| the fence at `--swc 64` (b) | +5.8 % | +17.2 % | +11.0 % |
+| everything at `--swc 32` (c) | +20.0 % | +21.7 % | +16.3 % |
+| one fence per 64 B store (d) | **-68 %** | **-72 %** | -- |
+
+**The fence is free at the rate it is fired.**  An `sfence` after a run of non-temporal stores costs
+~100 ns wherever its latency is exposed (§3), and the shipped configuration fires one per staged
+line, i.e. once per 2-8 KB, once per 2.5-5.7 us of a sender's time.  Sixty-four times that rate
+costs 68-72 % of the node (d), so the experiment resolves fences perfectly well; one per line is
+simply 1/64th of a mechanism.  What the c column contains is not ordering: on grdix it is
+`zero_valid`'s byte stores (§4), on grvingt it is the completion wait (§4), and on both the fence's
+share of it is nil.
+
+## 1. The fence, line size by line size
+
+grdix 150+105, push M/s, median of 6 rounds, spread +-2 %:
+
+| `--swc` | lines/block | a | b (no fence) | c (all off) | e (no scan) |
+|---|---|---|---|---|---|
+| 32 | 128 | 4838 | +1.1 % | +20.0 % | +0.8 % |
+| 64 | 64 | 6357 | +5.8 % | +10.2 % | -0.6 % |
+| 128 | 32 | 6796 | -1.4 % | +0.6 % | +0.2 % |
+| **256 (auto)** | 16 | **6769** | **+0.5 %** | +2.2 % | +0.5 % |
+| 512 | 8 | 6784 | +1.4 % | +3.6 % | +0.1 % |
+
+grvingt 26+5 (32 threads on 32 cores) and 50+12 (63 threads on 64 PU), the same:
+
+| `--swc` | 26+5 a | b | c | 50+12 a | b | c |
+|---|---|---|---|---|---|---|
+| 32 | 781 | +18.4 % | +21.7 % | 1163 | +15.0 % | +16.3 % |
+| 64 | 1067 | +17.2 % | +27.1 % | 1401 | +11.0 % | +12.4 % |
+| 128 | 1309 | -0.7 % | +6.4 % | 1530 | +6.2 % | +5.0 % |
+| 256 | 1306 | -0.1 % | +7.4 % | 1577 | +3.3 % | -0.6 % |
+| **512 (auto)** | **1300** | **-0.2 %** | +6.3 % | **1635** | **-0.2 %** | -3.1 % |
+
+On grvingt 50+12 the fence's cost follows a clean `1/swc` law: 15.0, 11.0, 6.2, 3.3 % is 207, 252,
+260, 269 ns per staged line -- **one number, ~250 ns per fence in situ**, more than the ~100 ns of a
+bare streaming loop (§3) because the fence also drains the sender's `dest[]` `fetch_add` and its
+`n_valid` store.  On grdix the same fence never costs more than 6 %, and nothing at all at the auto
+line size: 150 streaming senders keep the memory system busy while any one of them waits (§3).
+
+## 2. What an `sfence` costs, and when the cost is exposed
+
+`~/nt_fence.c`, out of tree: T threads each streaming `line` bytes at a time with
+`_mm512_stream_si512` into its own 64 MB region, one `_mm_sfence()` every k lines.  ns per line:
+
+| | grdix, 4 KB | grdix, 512 B | grvingt, 4 KB | grvingt, 512 B |
+|---|---|---|---|---|
+| 1 thread, no fence | 143 | 17.9 | 573 | 70.1 |
+| 1 thread, fence per line | 240 | 119.6 | 705 | 180.3 |
+| all cores, no fence | 1348 (150 thr) | 168.5 | 872 (32 thr) | 109.0 |
+| all cores, fence per line | 1368 | 170.4 | 940 | 197.7 |
+| the machine's write ceiling | 455 GB/s | 455 GB/s | 150 GB/s | 150 GB/s |
+
+A fence costs **~100 ns** wherever its latency is exposed, on both machines and at both line sizes:
+it is one write's trip to the coherence point and does not depend on how much was written before
+it.  Whether the *machine* loses that time depends on how many streams there are to cover it.
+grdix at 150 threads pays **1 %** for a fence per 512 B line; the same machine at 64 threads pays
+40 %; grvingt, with 32 cores, pays 45 % and cannot hide it at all.  That is why the Router's own
+numbers differ between the two machines, and why the fence is free on the bigger one.  A fence every
+8 lines is already free everywhere (30.1 ns against 17.9 at one thread, 34.2 against 23.8 at 16).
+
+## 3. `complete()`'s scan is free, so the atomic counter buys nothing
+
+Variant e -- `complete()` answers yes without reading a single valid byte -- is within noise at every
+line size on grdix (+0.8, -0.6, +0.2, +0.5, +0.1 %), **including `--swc 32`, where it skips 128
+bytes per block and the service handles 1.3 M blocks/s**.  The scan is not on anybody's critical
+path; the service thread has had slack in every configuration measured since session 4.  On grvingt
+e does move the rate (+5.9 % at `--swc 512`), but §4 shows that is the wait it also removes, not the
+scan.
+
+So the counter's stated benefit is worth zero, and its cost -- one contended RMW per line where
+there is a plain byte store today -- is not.  It keeps one real benefit, which is that it makes
+`zero_valid` one store instead of L (§4).
+
+## 4. What the c column really contains, and it is different on the two machines
+
+grdix, variant f (no `n_valid` store, no scan; the fence and `zero_valid` kept):
+
+| `--swc` | a | f | for comparison: b | e | c |
+|---|---|---|---|---|---|
+| 32 | 4820 | **+6.0 %** | +1.1 % | +0.8 % | +20.0 % |
+| 256 | 6830 | **+0.3 %** | +0.5 % | +0.5 % | +2.2 % |
+
+At the auto line size nothing here is resolvable: every variant is inside the +-2 % spread.  At
+`--swc 32` the per-line store is +5.2 % (f less e) and the components do not add up -- 1.1 + 5.2 +
+0.8 against 20.0 for all of them together -- so the small-line regime is superadditive, and it is
+the only one where a variant went bimodal (b's six rounds spread 2650..5051 M/s).  What is in c and
+in none of b, e, f is `zero_valid`'s **L single-byte atomic stores per installed block**
+(`workers.hpp:98`), a loop no compiler can vectorise, run for all 32 blocks of a sender's refill:
+about 13 % at L = 128, and lost in the noise at L = 16.
+
+grvingt tells a different story, and it is the more interesting one.  At `--swc 512` (L = 8, the
+auto value, 5 destinations):
+
+| variant | push M/s | vs a |
+|---|---|---|
+| a | 1300 | -- |
+| b (no fence) | 1298 | -0.2 % |
+| e (no scan) | 1375 | +5.9 % |
+| f (no store, no scan) | 1391 | +6.5 % |
+| c (all off) | 1381 | +6.3 % |
+
+Every variant that makes `complete()` answer yes gains the same ~6 %, and the one that does not
+gains nothing.  With L = 8 there are 8 byte stores per 4096 points, far too few to be worth 6 %, so
+what those three variants have in common is the only remaining candidate: **they never wait for a
+sealed block's last line.**  With 5 destinations, one block per destination installed and ~10 us for
+a sender to fill a 512-point line, a destination's throughput is bounded by one block per laggard
+line, and the pending list is the bottleneck.  grdix, with 105 destinations, shows none of it.
+
+This is the finding that matters for the epoch scheme: **the wait, not the ordering, is what the
+completion protocol costs**, and an epoch scheme replaces a wait for one block's own lines by a wait
+for every sender on the node to reach a checkpoint.  It moves in the wrong direction.
+
+## 5. The senders bind, and the private line is worth more than everything above
+
+grvingt, `--swc 256`, the same 31 worker threads split differently:
+
+| split | push M/s |
+|---|---|
+| 8 + 23 | 424 |
+| 14 + 17 | 748 |
+| 20 + 11 | 1092 |
+| 26 + 5 | 1310 |
+
+More senders is more throughput all the way to 26 + 5, so the ~1300 M/s plateau of §1 is a
+sender-side limit and not the receivers -- and, per §4, it is the completion wait behind it.
+
+The knob that dwarfs every effect in this session is the private line itself.  grdix, 150+105, with
+`--dests 1024` to fake the fan-out of 64 hosts x 16 dict threads:
+
+| `--swc` | push M/s |
+|---|---|
+| **32 (what the auto rule picks at F = 1024)** | **5340** |
+| 64 | 6194 |
+| **128** | **6258** |
+| 256 (private lines 4 MB per sender) | 5296 |
+
+The auto rule (`connect.hpp:201`) gives the private lines a 512 KB budget, which at F = 1024 forces
+`--swc 32` and **leaves 17 % on the table**; the optimum is 128, a 2 MB budget.  Session 2's
+"`--swc` is nearly irrelevant above ~128" was measured at F = 3.
+
+## What to change
+
+- **Nothing about the fence.**  One instruction per 2-8 KB of staged points, worth between -0.2 %
+  and +0.5 % at the shipped line size on three configurations of two machines, and ~100 ns when
+  fully exposed.  The epoch scheme would trade it for a global grace period, a rate limiter on the
+  counter, a livelock to design against in `refill`, the loss of a locally checkable invariant --
+  and a *longer* completion wait, which §4 says is the one thing in this mechanism that costs real
+  throughput.
+- **Nothing about `complete()`'s scan** (§3): free at every L measured, on a thread with slack.
+- **`zero_valid` deserves a patch** (§4) and needs no protocol change: its L atomic byte stores can
+  be one `memset` of the block's valid bytes -- the block is the sender's own, off the free ring,
+  until the install's release store publishes it -- or one counter per block.  Worth ~13 % at
+  L = 128 and nothing at L = 16, so it is insurance for the high-fan-out case, not a win today.
+- **Attack the completion wait at small fan-out** (§4): with F destinations there is exactly one
+  installed block each, so a laggard line stalls a whole destination.  More blocks in flight per
+  destination (a second installed block, or `--dests` above the receiver count) is the direction;
+  it is worth ~6 % at F = 5 and nothing at F = 105.
+- **Raise the private-line budget** (§5): 2 MB instead of 512 KB in `connect.hpp:201` changes
+  nothing below F = 128 and is worth 17 % at F = 1024.  Re-measure with `--block 262144` at the same
+  fan-out before settling it, since session 9 wants big blocks on a fabric.
+- Keep the `--swc` sweep in the tool box: it moves the fence rate, the reservation rate and the
+  private-line footprint at once, and four of this session's five findings came out of it.
+
+## Reproducing
+
+```bash
+# the A/B patches: each is a ~5-line #ifdef in common.hpp / workers.hpp / service.hpp
+cmake -S . -B build-b -DCMAKE_BUILD_TYPE=release -DCMAKE_CXX_FLAGS=-DROUTER_NO_SFENCE
+make -C build-b router_bench -j
+for rep in 1 2 3; do for swc in 32 64 128 256 512; do for v in a b c; do
+    mpirun -np 1 --bind-to none build-$v/examples/router_bench --senders 150 --receivers 105 \
+        --swc $swc --seconds 3 --rounds 2 --quiet
+done; done; done
+
+# the fence on its own, the split probe, the fan-out probe
+cc -O3 -march=native -fopenmp -o nt_fence nt_fence.c && ./nt_fence 150 512 1 2
+mpirun -np 1 --bind-to none build-a/examples/router_bench --senders 20 --receivers 11 --swc 256 ...
+mpirun -np 1 --bind-to none build-a/examples/router_bench --senders 150 --receivers 105 \
+    --dests 1024 --swc 128 --seconds 3 --rounds 2 --quiet
+```
