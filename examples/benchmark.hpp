@@ -5,6 +5,7 @@
 #include <omp.h>
 #include <cmath>
 #include <type_traits>
+#include <vector>
 
 #include "tools.hpp"
 #include "parameters.hpp"
@@ -81,9 +82,11 @@ static void routed_benchmark(const Wrapper &wrapper, const Options &opts, int ra
 		       vectorized ? "vector" : "scalar", n_nodes, R, S);
 	MPI_Barrier(opts.mpi_comm);
 
-	u64 xor_hash = 0;
+	/* a reduction clause only combines at the parallel region's own closing brace, not at a barrier written
+	   inside it, and tid 0 reads xor_hash before that point below -- so fold receivers' shares by hand */
+	std::vector<u64> xor_local(n_threads, 0);
 	double t0 = 0;
-	#pragma omp parallel num_threads(n_threads) reduction(^:xor_hash)
+	#pragma omp parallel num_threads(n_threads)
 	{
 		int tid = omp_get_thread_num();
 		int role = (tid == 0) ? ROUTER_SERVICE : (tid <= R ? ROUTER_RECEIVER : ROUTER_SENDER);
@@ -108,7 +111,7 @@ static void routed_benchmark(const Wrapper &wrapper, const Options &opts, int ra
 				}
 				x ^= a + b;
 			}
-			xor_hash ^= x;
+			xor_local[tid] = x;
 		} else if constexpr (vectorized) {
 			u64 x[vlen] __attribute__ ((aligned(sizeof(u64) * vlen)));
 			u64 y[vlen] __attribute__ ((aligned(sizeof(u64) * vlen)));
@@ -156,6 +159,9 @@ static void routed_benchmark(const Wrapper &wrapper, const Options &opts, int ra
 			u64 st[ROUTER_STATS_SIZE];
 			Router_Stats(st, rt);
 			u64 tot[ROUTER_STATS_SIZE];
+			u64 xor_hash = 0;              /* every receiver's slot wrote before the barrier above */
+			for (int t = 0; t < n_threads; t++)
+				xor_hash ^= xor_local[t];
 			u64 folded;
 			MPI_Reduce(st, tot, ROUTER_STATS_SIZE, MPI_UINT64_T, MPI_SUM, 0, opts.mpi_comm);
 			MPI_Reduce(&xor_hash, &folded, 1, MPI_UINT64_T, MPI_BXOR, 0, opts.mpi_comm);
