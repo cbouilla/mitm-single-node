@@ -41,7 +41,7 @@ inline void Router_node::spill(size_t n)
 inline bool Router_node::complete(u32 blk)
 {
 	for (u32 k = 0; k < L; k++)
-		if (n_valid[(size_t) nv_stride * blk + k].load(std::memory_order_acquire) == 0)
+		if (n_valid[(size_t) nv_stride * blk + k].load_acquire() == 0)
 			return false;
 	return true;
 }
@@ -110,12 +110,12 @@ inline void Router_node::park(int d, u32 blk, u32 count)
 	int node = d / per_node;
 	int target = (node == rank) ? (d % per_node) % R : R + node;
 	blk_count[blk] = count;
-	blk_link[blk].store(((u64) d << 32) | ROUTER_NONE, std::memory_order_relaxed);
+	blk_link[blk] = ((u64) d << 32) | ROUTER_NONE;
 	if (park_head[target] == ROUTER_NONE)
 		park_head[target] = blk;
 	else {                                /* the tail keeps its own destination in the high word */
-		std::atomic<u64> &tail = blk_link[park_tail[target]];
-		tail.store((tail.load(std::memory_order_relaxed) & ~(u64) ROUTER_NONE) | blk, std::memory_order_relaxed);
+		Atomic<u64> &tail = blk_link[park_tail[target]];
+		tail = (tail & ~(u64) ROUTER_NONE) | blk;
 	}
 	park_tail[target] = blk;
 	ctr[ROUTER_STALL_OUT] += 1;
@@ -128,7 +128,7 @@ inline void Router_node::retry_parked(int target)
 {
 	while (park_head[target] != ROUTER_NONE) {
 		u32 blk = park_head[target];
-		u64 link = blk_link[blk].load(std::memory_order_relaxed);
+		u64 link = blk_link[blk];
 		u32 after = (u32) link;
 		if (not place((int) (link >> 32), blk, blk_count[blk]))
 			return;
@@ -244,7 +244,7 @@ inline void Router_node::sweep()
 		todo = sealed_top.exchange(ROUTER_NONE, std::memory_order_acquire);
 	for (int b = 0; b < opt.sweep_blocks && todo != ROUTER_NONE; b++) {
 		u32 blk = todo;
-		u64 link = blk_link[blk].load(std::memory_order_relaxed);   /* careful: park or a later seal rewrites it */
+		u64 link = blk_link[blk];   /* careful: park or a later seal rewrites it */
 		todo = (u32) link;
 		int d = (int) (link >> 32);
 		handle_block(d, blk);
@@ -258,7 +258,7 @@ inline void Router_node::sweep()
  */
 inline void Router_node::start_flush(int d)
 {
-	u64 v = dest[ROUTER_DEST_WORDS * d].load(std::memory_order_acquire);
+	u64 v = dest[ROUTER_DEST_WORDS * d].load_acquire();
 	u32 k = (u32) (v >> 32);
 	u32 blk = (u32) v;
 	if (blk == ROUTER_NONE)
@@ -266,12 +266,12 @@ inline void Router_node::start_flush(int d)
 	if (k > L)
 		errx(1, "Router: destination %d has %u lines reserved at closure", d, k);
 	for (u32 i = 0; i < k; i++)
-		if (n_valid[(size_t) nv_stride * blk + i].load(std::memory_order_acquire) == 0)
+		if (n_valid[(size_t) nv_stride * blk + i].load_acquire() == 0)
 			errx(1, "Router: destination %d has an unwritten line at closure", d);
 	flush_blk = blk;
 	flush_k = k;
 	flush_install = false;
-	flush_len = (u32) dest[ROUTER_DEST_WORDS * d + 1].load(std::memory_order_relaxed);
+	flush_len = (u32) dest[ROUTER_DEST_WORDS * d + 1];
 	flush_off = 0;
 	flush_built = true;
 }
@@ -298,7 +298,7 @@ inline bool Router_node::fscan()
 			if (fresh == ROUTER_NONE)
 				return false;
 			zero_valid(fresh);
-			dest[ROUTER_DEST_WORDS * flush_d].store((u64) fresh, std::memory_order_release);
+			dest[ROUTER_DEST_WORDS * flush_d].store_release((u64) fresh);
 			flush_install = false;
 		}
 		const Point *buf = partial + (size_t) flush_d * partial_cap;
@@ -312,7 +312,7 @@ inline bool Router_node::fscan()
 			dispatch(flush_d, blk, chunk);
 			flush_off += chunk;
 		}
-		dest[ROUTER_DEST_WORDS * flush_d + 1].store(0, std::memory_order_relaxed);
+		dest[ROUTER_DEST_WORDS * flush_d + 1] = 0;
 		flush_built = false;
 	}
 	return true;
@@ -366,7 +366,7 @@ inline void Router_node::check_input_closed()
 	for (int p = 0; p < n_nodes; p++)
 		if (p != rank && (end_seq[p] < 0 || (u64) end_seq[p] != n_data_recv[p]))
 			return;
-	input_closed.store(1, std::memory_order_release);
+	input_closed.store_release(1);
 }
 
 /* out closed, input closed, and every block handed to a receiver given back: nobody holds anything.  The
@@ -374,7 +374,7 @@ inline void Router_node::check_input_closed()
  * Reached from Router_Progress, every turn; a no-op until the output side is closed and the input closed. */
 inline void Router_node::check_quiescent()
 {
-	if (phase != ROUTER_OUT_CLOSED || input_closed.load(std::memory_order_relaxed) == 0)
+	if (phase != ROUTER_OUT_CLOSED || input_closed == 0)
 		return;
 	for (int r = 0; r < R; r++)
 		if (inbox_pushed[r] != receivers[r]->ctr[ROUTER_BLOCKS])
@@ -389,12 +389,12 @@ inline void Router_node::closure()
 	switch (phase) {
 	case ROUTER_OPEN:
 		for (int s = 0; s < S; s++)
-			if (senders[s]->closed.load(std::memory_order_acquire) == 0)
+			if (senders[s]->closed.load_acquire() == 0)
 				return;
 		phase = ROUTER_COLLECTING;
 		return;
 	case ROUTER_COLLECTING:
-		if (not pending.empty() || todo != ROUTER_NONE || sealed_top.load(std::memory_order_acquire) != ROUTER_NONE)
+		if (not pending.empty() || todo != ROUTER_NONE || sealed_top.load_acquire() != ROUTER_NONE)
 			return;
 		phase = ROUTER_FSCAN;
 		flush_d = 0;
@@ -544,7 +544,7 @@ inline void Router_node::reset_round()
 	if (todo != ROUTER_NONE || sealed_top.load() != ROUTER_NONE)
 		errx(1, "Router_Reset: sealed blocks left");
 	for (int d = 0; d < F; d++)
-		if (dest[ROUTER_DEST_WORDS * d + 1].load(std::memory_order_relaxed) != 0)
+		if (dest[ROUTER_DEST_WORDS * d + 1] != 0)
 			errx(1, "Router_Reset: a closing buffer was left behind");
 #endif
 	for (int k = 0; k < ROUTER_STATS_SIZE; k++)
@@ -557,7 +557,7 @@ inline void Router_node::reset_round()
 		end_seq[p] = -1;
 		end_sent[p] = 0;
 	}
-	input_closed.store(0, std::memory_order_relaxed);
+	input_closed = 0;
 	quiescent = false;
 	phase = ROUTER_OPEN;
 	flush_d = 0;
@@ -586,7 +586,7 @@ inline void Router_Reset(Router_thread &rt)
 	if (rt.role != ROUTER_SERVICE) {
 		for (int k = 0; k < ROUTER_STATS_SIZE; k++)
 			rt.ctr[k] = 0;
-		rt.closed.store(0, std::memory_order_relaxed);
+		rt.closed = 0;
 	} else
 		rn.reset_round();
 	#pragma omp barrier                   /* the node is fresh, here and on every peer, before anybody pushes or pops */

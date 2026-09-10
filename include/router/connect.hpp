@@ -218,23 +218,23 @@ inline void Router_node::connect()
 	if (nb > ((size_t) 1 << 30))          /* the ring's sequence arithmetic is 32-bit */
 		errx(1, "Router: too many blocks (%zu)", nb);
 	n_blocks = (u32) nb;
-	dest = (std::atomic<u64> *) router_alloc((size_t) F * ROUTER_DEST_WORDS * sizeof(u64));
+	dest = (Atomic<u64> *) router_alloc((size_t) F * ROUTER_DEST_WORDS * sizeof(u64));
 	pool = (char *) aligned_alloc(64, (size_t) n_blocks * block_bytes);   /* untouched: every thread writes a slice */
 	if (pool == NULL)
 		err(1, "Router: aligned_alloc(%zu)", (size_t) n_blocks * block_bytes);
-	n_valid = (std::atomic<u8> *) router_alloc((size_t) n_blocks * nv_stride);
+	n_valid = (Atomic<u8> *) router_alloc((size_t) n_blocks * nv_stride);
 	partial_cap = ((size_t) S * (swc_linesize - 1) + 3) & ~(size_t) 3;
 	partial = (Point *) router_alloc((size_t) F * partial_cap * sizeof(Point));
-	blk_link = (std::atomic<u64> *) router_alloc((size_t) n_blocks * sizeof(u64));
+	blk_link = (Atomic<u64> *) router_alloc((size_t) n_blocks * sizeof(u64));
 	free_mask = 1;
 	while ((size_t) free_mask + 1 < n_blocks)   /* cells: the power of two >= n_blocks, so the ring is never full */
 		free_mask = 2 * free_mask + 1;
-	free_cell = (std::atomic<u64> *) router_alloc(((size_t) free_mask + 1) * sizeof(u64));
+	free_cell = (Atomic<u64> *) router_alloc(((size_t) free_mask + 1) * sizeof(u64));
 	for (u64 i = 0; i <= free_mask; i++)
-		free_cell[i].store((i << 32) | ROUTER_NONE, std::memory_order_relaxed);
+		free_cell[i] = (i << 32) | ROUTER_NONE;
 	free_list.reserve(n_blocks);
 	for (u32 b = 0; b < n_blocks; b++) {
-		blk_link[b].store(ROUTER_NONE, std::memory_order_relaxed);
+		blk_link[b] = ROUTER_NONE;
 		free_list.push_back(b);
 	}
 	blk_count.assign(n_blocks, 0);
@@ -257,7 +257,7 @@ inline void Router_node::connect()
 	receivers.assign(R, NULL);
 
 	for (int d = 0; d < F; d++)
-		dest[ROUTER_DEST_WORDS * d].store((u64) stash_pop(), std::memory_order_relaxed);
+		dest[ROUTER_DEST_WORDS * d] = (u64) stash_pop();
 	if (free_list.size() > ROUTER_BATCH)
 		spill(free_list.size() - ROUTER_BATCH);
 	if (rank == 0 && opt.verbose)

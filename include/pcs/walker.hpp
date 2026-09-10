@@ -105,7 +105,7 @@ void walker_round(Router_thread &rt, const ProblemWrapper &wrapper, const Params
 		start_chain(params, wrapper.out_mask, root_seed, j, x, len, seed, jinc, k);
 	assert((j & jmask) == j);
 
-	while (not shared.round_over.load(std::memory_order_relaxed)) {
+	while (not shared.round_over) {
 		service_collisions(wrapper, ctr, hll, params, shared, coll_q, resolver, params.coll_per_chunk,
 		                   false, trail);
 
@@ -141,7 +141,7 @@ void walker_round(Router_thread &rt, const ProblemWrapper &wrapper, const Params
 	/* the drain: `done` first, then the queue, or a run pushed between the two would be left behind */
 	for (;;) {
 		service_collisions(wrapper, ctr, hll, params, shared, coll_q, resolver, 0, true, trail);
-		if (shared.chan[r].done.load(std::memory_order_acquire) && coll_q.is_empty())
+		if (shared.chan[r].done.load_acquire() && coll_q.is_empty())
 			break;
 		cpu_relax();
 	}

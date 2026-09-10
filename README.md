@@ -6,23 +6,28 @@ Given `f` and `g`, find a **claw** (`f(x0) == g(x1)`) or a **collision**
 The library is header-only C++17, in `include/`.  `examples/` holds one driver per
 cipher: double-Speck64 (the current focus), double-DES, double-AES and SHA256.
 
-**One engine runs today: the direct, exhaustive meet-in-the-middle, built on the
-Router.**  MPI + OpenMP, one rank per node.  Inside a rank the team is one service
-thread doing all the MPI, `--dicts-per-node` threads owning a shard of the dictionary
-each, and `--producers-per-node` threads evaluating the functions.  A round is two
-phases: `f` fills the dictionary on a chunk of the domain, then `g` probes it on the
-whole domain; `ceil(2^n / (fill * w))` rounds cover the domain, and finding nothing is
-a proof of absence.  `PROTOCOL.md` §8 is its specification.
+**Two engines run today, both built on the Router.**  MPI + OpenMP, one rank per node.
+Inside a rank the team is one service thread doing all the MPI, `--dicts-per-node`
+threads each owning a shard of a distributed dictionary, and `--producers-per-node`
+threads evaluating the functions.  `--engine` picks which one runs (`direct`, the
+default, or `pcs`); every driver takes the flag, and neither engine shares a line of
+transport with the other.
+
+The **direct** engine is the exhaustive meet-in-the-middle: a round is two phases, `f`
+fills the dictionary on a chunk of the domain, then `g` probes it on the whole domain;
+`ceil(2^n / (fill * w))` rounds cover the domain, and finding nothing is a proof of
+absence.  `PROTOCOL.md` §1 is its specification.
+
+**PCS** is van Oorschot–Wiener parallel collision search over a dictionary of
+distinguished points: the problem becomes one random function per round, and the
+walkers' trails end at distinguished points that fill the dictionary.  A round ends on
+a count no single node holds, so PCS keeps a controller on rank 0 and a control channel
+to reach it; it is Monte-Carlo, so "not found" is never a proof.  `PROTOCOL.md` §2 is
+its specification.
 
 The **Router** (`include/router/`, spec `router.3`, `man -l router.3`) is the transport
-underneath: it carries pairs of `u64` from sender threads to globally numbered receiver
-threads across ranks, and it owns thread placement.
-
-Parallel collision search (**PCS**, van Oorschot–Wiener, over a dictionary of
-distinguished points) used to be the second engine.  It is **disconnected**: its files
-and the older core they sit on are still in the tree, no target compiles them, and
-`--engine pcs` is refused.  They are the record from which PCS will be rebuilt on the
-Router.
+underneath both engines: it carries pairs of `u64` from sender threads to globally
+numbered receiver threads across ranks, and it owns thread placement.
 
 ## Build
 
@@ -58,8 +63,11 @@ mpirun -np 4 --bind-to none build/examples/double_speck64_demo \
 ```
 
 - `--n` problem size in bits (small == easy), `--seed` (0 == draw one and broadcast it)
-- `--ram` dictionary bytes **per node**; `--fill` the fill ratio, so `fill * w` entries
-  per round; `--nrounds` gives up after that many rounds
+- `--engine direct` (default) or `--engine pcs`
+- `--ram` dictionary bytes **per node**; `--fill` is the direct engine's fill ratio, so
+  `fill * w` entries per round; `--difficulty` / `--alpha` / `--beta` / `--dp-len-bits`
+  / `--chunk` are PCS's; `--nrounds` gives up after that many rounds (for PCS, which
+  never exhausts anything, it is the only way to make it give up)
 - `--producers-per-node` / `--dicts-per-node` size the team.  Producers default to
   filling whatever affinity mask the launcher handed the rank, which is why
   `--bind-to none` matters
@@ -88,17 +96,15 @@ include/
   tools.hpp          PRNG (TRIVIUM), timing, hashing, human-readable numbers, Point
   problem.hpp        the interface a cipher implements: f, g, is_good_pair, vfg
   parameters.hpp     Options: every user knob, all defaulted, the Router's among them
-  benchmark.hpp      f/g throughput per rank and across ranks: every driver's --benchmark
-  direct.hpp         the direct engine, whole: parameters, counters, the shared tallies,
-                     the problem wrappers, the dictionary shard, the dict, producer and
-                     service rounds, the epilogue, run()
+  direct/            the direct engine: params, shared, wrappers, dict, producer, engine
+                     (direct.hpp is the umbrella)
+  pcs/               PCS: params, shared, wrappers, trail, dict, walker, control, engine
+                     (pcs.hpp is the umbrella)
   router/            the Router: ring, common, placement, connect, workers, service
                      (router.hpp is the umbrella; router.3 at the root is its man page)
-  pcs_common.hpp, walker.hpp, inserter.hpp, pcs.hpp    PCS -- disconnected
-  comm.hpp, spsc.hpp, controller.hpp, engine.hpp, placement.hpp
-                     the older core PCS sits on -- disconnected, does not compile
 examples/
   driver.hpp             command line + MPI startup, shared by every example
+  benchmark.hpp          f/g throughput per rank and across ranks: every driver's --benchmark
   router_driver.hpp      the same for the Router's own two programs
   <cipher>_problem.hpp   f, g, and a planted golden pair
   <cipher>_demo.cpp      run the attack (--benchmark: measure f/s and stop there)
@@ -118,8 +124,9 @@ Recurring notation: `n` = domain bits, `m` = range bits, `w` = dictionary slots,
 ## Documents
 
 - `router.3` — the Router's interface, the authoritative reference for it.
-- `PROTOCOL.md` — §8 specifies the direct engine; §1–§7 are the older core and PCS,
-  kept as the record to rebuild PCS from.
+- `PROTOCOL.md` — the bible of the two engines: §1 specifies the direct engine, §2
+  specifies PCS.  Kept in sync with the code in the same commit as any change to a
+  round's lifecycle, the wire format, a barrier, the control channel or loss semantics.
 - `PROBLEM.md` — the measurements that showed the single comm thread was the
   bottleneck, which is why the Router exists.
 - `FINDINGS.md` — one section per profiling session on Grid'5000.
@@ -130,7 +137,8 @@ Recurring notation: `n` = domain bits, `m` = range bits, `w` = dictionary slots,
 ctest --test-dir build
 ```
 
-Five tests: the Router's suite at one, two and four ranks, and the direct engine at one
-and two ranks.  The engine's tests are `double_speck64_demo` on a small `--n` against a
-planted golden pair — the demos `assert` their way to it
+Eight tests: the Router's suite at one, two and four ranks; the direct engine at one and
+two ranks; PCS at one and two ranks; and PCS's collision wrapper (`sha2_collision_demo`,
+scalar path).  The engine tests plant a golden pair on a small `--n` and search for it
+with `double_speck64_demo` -- the demos `assert` their way to it
 (`assert(pb.f(x0) == pb.g(x1))`) and their exit status reports whether they found it.

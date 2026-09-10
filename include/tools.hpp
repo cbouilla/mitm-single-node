@@ -1,6 +1,7 @@
 #ifndef MITM_TOOLS
 #define MITM_TOOLS
 
+#include <atomic>
 #include <chrono>
 #include <fstream>
 #include <cstdio>
@@ -33,6 +34,24 @@ static inline void cpu_relax()
     __asm__ __volatile__("yield");
 #endif
 }
+
+/* std::atomic, but plain "=" and a read via conversion (e.g. in an expression) default to relaxed:
+   every flag/counter here already reasons about its own ordering, so use store_release / load_acquire
+   where a happens-before edge is actually needed instead of paying for seq_cst everywhere else. */
+template<typename T>
+struct Atomic : std::atomic<T> {
+    using std::atomic<T>::atomic; // inherit constructors
+
+    // stores
+    T operator=(T v) noexcept { this->store(v, std::memory_order_relaxed); return v; }
+    void store_relaxed(T v) noexcept { this->store(v, std::memory_order_relaxed); }
+    void store_release(T v) noexcept { this->store(v, std::memory_order_release); }
+
+    // loads
+    operator T() const noexcept { return this->load(std::memory_order_relaxed); }
+    T load_relaxed()  const noexcept { return this->load(std::memory_order_relaxed); }
+    T load_acquire()  const noexcept { return this->load(std::memory_order_acquire); }
+};
 
 /* the low n bits; all 64 for n >= 64 */
 u64 make_mask(int n)

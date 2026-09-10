@@ -10,7 +10,7 @@
 #include "tools.hpp"
 #include "parameters.hpp"
 #include "benchmark.hpp"
-#include "direct.hpp"
+#include "direct/direct.hpp"
 #include "pcs/pcs.hpp"
 
 /*

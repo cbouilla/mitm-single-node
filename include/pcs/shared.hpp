@@ -49,7 +49,7 @@ class CollisionQueue {
 	std::vector<CollisionCandidate> buf;    /* the ring itself */
 	size_t head = 0;                        /* next to pop */
 	size_t tail = 0;                        /* next to push */
-	std::atomic<size_t> count;              /* probed without the lock on the hot path */
+	Atomic<size_t> count;                    /* probed without the lock on the hot path */
 
 public:
 	CollisionQueue(size_t capacity) : buf(capacity < 1 ? 1 : capacity), count(0) {}
@@ -57,14 +57,14 @@ public:
 	/* Relaxed on purpose: a stale answer costs a walker one wasted pop() at worst. */
 	bool is_empty() const
 	{
-		return count.load(std::memory_order_relaxed) == 0;
+		return count == 0;
 	}
 
 	/* the dict thread's side.  Returns how many of the run fitted; the caller tallies the rest. */
 	size_t push_bulk(const CollisionCandidate *in, size_t n)
 	{
 		std::lock_guard<std::mutex> lock(mtx);
-		size_t room = buf.size() - count.load(std::memory_order_relaxed);
+		size_t room = buf.size() - count;
 		size_t k = (room < n) ? room : n;
 		for (size_t t = 0; t < k; t++) {
 			buf[tail] = in[t];
@@ -79,7 +79,7 @@ public:
 	size_t pop_bulk(CollisionCandidate *out, size_t max)
 	{
 		std::lock_guard<std::mutex> lock(mtx);
-		size_t avail = count.load(std::memory_order_relaxed);
+		size_t avail = count;
 		size_t k = (avail < max) ? avail : max;
 		for (size_t t = 0; t < k; t++) {
 			out[t] = buf[head];
@@ -191,7 +191,7 @@ struct RoundStats {
 /* one dict thread's channel to its walkers, on a line of its own: the queue, and whether it is final */
 struct alignas(64) CollChannel {
 	std::unique_ptr<CollisionQueue> q;     /* the candidates, allocated by the dict thread once pinned */
-	std::atomic<u32> done{0};              /* 1 once the dict thread has left the round: nothing more comes */
+	Atomic<u32> done{0};                    /* 1 once the dict thread has left the round: nothing more comes */
 };
 
 /* what a rank's threads share.  Built before the team; every per-thread object is its owner's own */
@@ -200,10 +200,10 @@ struct Shared {
 	std::vector<int> group;                /* each worker's Router group, published once it is pinned */
 	std::vector<u8 *> hll;                 /* each walker's own registers; NULL for the other roles */
 	std::vector<CollChannel> chan;         /* per dict thread */
-	std::atomic<u32> round_over{0};        /* the controller closed the round: the walkers stop walking */
+	Atomic<u32> round_over{0};              /* the controller closed the round: the walkers stop walking */
 	Header header;                         /* the round's function; thread 0 draws it, the barrier publishes it */
 	std::mutex golden_mtx;                 /* serialises set_golden */
-	std::atomic<u32> found{0};             /* 1 once golden[] holds this node's pair */
+	Atomic<u32> found{0};                   /* 1 once golden[] holds this node's pair */
 	u64 golden[3] = {};                    /* the version and the two colliding points */
 	u64 stop = 0;                          /* no next round; thread 0 writes it, everyone reads it after the barrier */
 	u64 nround = 0;                        /* rounds run to their end, thread 0's count */
@@ -218,12 +218,12 @@ struct Shared {
 	void set_golden(u64 i, u64 x0, u64 x1)
 	{
 		std::lock_guard<std::mutex> lock(golden_mtx);
-		if (found.load(std::memory_order_relaxed))
+		if (found)
 			return;
 		golden[0] = i;
 		golden[1] = x0;
 		golden[2] = x1;
-		found.store(1, std::memory_order_release);
+		found.store_release(1);
 	}
 };
 

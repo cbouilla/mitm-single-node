@@ -78,11 +78,11 @@ public:
 
 		MPI_Test(&req_end_round, &flag, MPI_STATUS_IGNORE);
 		if (flag) {
-			shared.round_over.store(1, std::memory_order_release);
+			shared.round_over.store_release(1);
 			MPI_Irecv(NULL, 0, MPI_UINT64_T, 0, TAG_END_ROUND, params.mpi_comm, &req_end_round);
 		}
 
-		if (not golden_sent && shared.found.load(std::memory_order_acquire)) {
+		if (not golden_sent && shared.found.load_acquire()) {
 			MPI_Bsend(shared.golden, 3, MPI_UINT64_T, 0, TAG_SOLUTION, params.mpi_comm);
 			golden_sent = true;
 		}
@@ -90,7 +90,7 @@ public:
 		/* report by volume and by time both: on a timer alone a short round overshoots its quota */
 		double now = wtime();
 		bool due = cur[N_DP] - prev[N_DP] >= params.report_points || now - last_ping >= params.ping_delay;
-		if (due && not shared.round_over.load(std::memory_order_relaxed)) {
+		if (due && not shared.round_over) {
 			u64 msg[REC_FOUND];
 			for (int k = 0; k < REC_FOUND; k++) {
 				msg[k] = cur[k] - prev[k];

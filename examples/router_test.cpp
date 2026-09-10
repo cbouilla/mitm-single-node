@@ -19,7 +19,7 @@ using namespace mitm;
 
 static int g_rank = 0;
 static int g_nodes = 1;
-static std::atomic<int> g_failed(0);
+static Atomic<int> g_failed(0);
 
 #define CHECK(cond) do { if (!(cond)) { \
 	fprintf(stderr, "CHECK failed on rank %d: %s (%s:%d)\n", g_rank, #cond, __FILE__, __LINE__); \

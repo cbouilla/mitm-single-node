@@ -150,7 +150,7 @@ struct alignas(64) Router_thread {
 	u32 cache[ROUTER_BATCH];             /* the blocks, cache_n of them, the next to install last */
 	u32 cache_n = 0;                     /* how many */
 	/* a sender's flag, on a line of its own: the service reads it every turn */
-	alignas(64) std::atomic<u32> closed; /* release-stored by Router_Close, acquired by the service */
+	alignas(64) Atomic<u32> closed; /* release-stored by Router_Close, acquired by the service */
 	/* a receiver's */
 	RouterRing inbox;                    /* from the service: (block, count), blocks it now holds */
 	u32 cur_blk = ROUTER_NONE;           /* the block out: grabbed, not yet released; NONE when none */
@@ -200,22 +200,22 @@ public:
 	/* a destination's line, alone on a cache line.  Word 0: (lines reserved << 32) | block id, the counter in the
 	 * high word so that a runaway counter carries out of the word, not into the block id.  Word 1: the points in
 	 * its closing buffer, a closer's fetch_add taking its offset. */
-	std::atomic<u64> *dest = NULL;       /* F * ROUTER_DEST_WORDS */
+	Atomic<u64> *dest = NULL;             /* F * ROUTER_DEST_WORDS */
 	char *pool = NULL;                   /* n_blocks blocks of block_bytes: staging, send and receive memory alike */
-	std::atomic<u8> *n_valid = NULL;     /* n_blocks * nv_stride: byte k is 0 until line k is written, then 1 */
+	Atomic<u8> *n_valid = NULL;           /* n_blocks * nv_stride: byte k is 0 until line k is written, then 1 */
 	Point *partial = NULL;               /* F closing buffers of partial_cap points each, filled at Router_Close */
-	std::atomic<u64> *blk_link = NULL;   /* per block, sealed or parked: destination << 32 | the next block */
+	Atomic<u64> *blk_link = NULL;         /* per block, sealed or parked: destination << 32 | the next block */
 
 	/* the free ring: block ids in cells of one word, (sequence << 32) | block.  A pusher's ticket comes off free_in
 	 * by fetch_add and never waits for more than the popper of the cell's previous element, the ring being never
 	 * full (cells >= n_blocks); a popper claims a ready prefix at free_out by one CAS, or fails at once. */
-	std::atomic<u64> *free_cell = NULL;  /* free_mask + 1 cells; cell i starts as (i << 32) | ROUTER_NONE */
+	Atomic<u64> *free_cell = NULL;         /* free_mask + 1 cells; cell i starts as (i << 32) | ROUTER_NONE */
 	u32 free_mask = 0;                   /* cells - 1, cells the power of two >= n_blocks */
-	alignas(64) std::atomic<u64> free_in{0};   /* push tickets issued */
-	alignas(64) std::atomic<u64> free_out{0};  /* elements claimed */
+	alignas(64) Atomic<u64> free_in{0};   /* push tickets issued */
+	alignas(64) Atomic<u64> free_out{0};  /* elements claimed */
 
 	/* the sealed stack, its word alone on a cache line: the sealers push, the service takes it whole */
-	alignas(64) std::atomic<u32> sealed_top{ROUTER_NONE};
+	alignas(64) Atomic<u32> sealed_top{ROUTER_NONE};
 	u32 sealed_pad[15] = {};             /* the rest of that line */
 
 	/* the service thread's own */
@@ -255,7 +255,7 @@ public:
 	bool flush_install = false;          /* that block went: a fresh one has to be installed */
 	u32 flush_len = 0;                   /* points in its closing buffer */
 	u32 flush_off = 0;                   /* of which delivered */
-	std::atomic<u32> input_closed;       /* nothing can enter an inbox any more; receivers acquire it */
+	Atomic<u32> input_closed;             /* nothing can enter an inbox any more; receivers acquire it */
 	bool quiescent = false;              /* what Router_Test_quiescent returns */
 
 	Router_node(int n_threads, MPI_Comm mpi_comm, int tag, const Router_Opts *options);

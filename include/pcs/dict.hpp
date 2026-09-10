@@ -130,7 +130,7 @@ static void dict_round(Router_thread &rt, const Params &params, Shared &shared, 
 	}
 
 	/* the queue is final before the shard is emptied, so a walker's drain overlaps the flush */
-	shared.chan[r].done.store(1, std::memory_order_release);
+	shared.chan[r].done.store_release(1);
 	dict.flush();
 }
 

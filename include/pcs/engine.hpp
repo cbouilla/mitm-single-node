@@ -213,7 +213,7 @@ static void epilogue(const Params &params, Shared &shared, Control &control, con
 	double delta = wtime() - control.round_start;
 	u64 rec[REC_WORDS] = {};
 	node_snapshot(params, shared, stats, rec);
-	if (shared.found.load(std::memory_order_acquire)) {
+	if (shared.found.load_acquire()) {
 		rec[REC_FOUND] = 1;
 		rec[REC_I] = shared.golden[0];
 		rec[REC_X0] = shared.golden[1];
@@ -248,9 +248,9 @@ static void epilogue(const Params &params, Shared &shared, Control &control, con
 	}
 
 	/* the next round is thread 0's to set up: the barrier that follows publishes all of it */
-	shared.round_over.store(0, std::memory_order_relaxed);
+	shared.round_over = 0;
 	for (int r = 0; r < params.R; r++)
-		shared.chan[r].done.store(0, std::memory_order_relaxed);
+		shared.chan[r].done = 0;
 	if (shared.stop)
 		return;
 	shared.header.i = prng.rand() & out_mask;

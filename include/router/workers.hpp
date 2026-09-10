@@ -17,10 +17,10 @@ inline void Router_node::free_push(const u32 *blks, u32 n)
 {
 	u64 t = free_in.fetch_add(n, std::memory_order_relaxed);
 	for (u32 i = 0; i < n; i++) {
-		std::atomic<u64> &cell = free_cell[(t + i) & free_mask];
-		while ((u32) (cell.load(std::memory_order_acquire) >> 32) != (u32) (t + i))
+		Atomic<u64> &cell = free_cell[(t + i) & free_mask];
+		while ((u32) (cell.load_acquire() >> 32) != (u32) (t + i))
 			cpu_relax();
-		cell.store(((u64) (u32) (t + i + 1) << 32) | blks[i], std::memory_order_release);
+		cell.store_release(((u64) (u32) (t + i + 1) << 32) | blks[i]);
 	}
 }
 
@@ -37,26 +37,26 @@ inline void Router_node::free_push(const u32 *blks, u32 n)
  */
 inline u32 Router_node::free_pop_many(u32 k, u32 *out, u32 floor)
 {
-	u64 pos = free_out.load(std::memory_order_relaxed);
+	u64 pos = free_out;
 	u32 n = 0;
 	while (n == 0) {
-		u64 avail = free_in.load(std::memory_order_relaxed) - pos;
+		u64 avail = free_in - pos;
 		if (avail <= (u64) floor)
 			return 0;
 		if ((u64) k > avail - floor)
 			k = (u32) (avail - floor);
-		u64 c = free_cell[pos & free_mask].load(std::memory_order_acquire);
+		u64 c = free_cell[pos & free_mask].load_acquire();
 		int32_t dif = (int32_t) ((u32) (c >> 32) - (u32) (pos + 1));
 		if (dif < 0)
 			return 0;                     /* element pos is not there yet */
 		if (dif > 0) {                    /* claimed already: my view of free_out is stale */
-			pos = free_out.load(std::memory_order_relaxed);
+			pos = free_out;
 			continue;
 		}
 		out[0] = (u32) c;
 		n = 1;
 		while (n < k) {                   /* the ready prefix behind it */
-			c = free_cell[(pos + n) & free_mask].load(std::memory_order_acquire);
+			c = free_cell[(pos + n) & free_mask].load_acquire();
 			if ((u32) (c >> 32) != (u32) (pos + n + 1))
 				break;
 			out[n] = (u32) c;
@@ -66,8 +66,7 @@ inline u32 Router_node::free_pop_many(u32 k, u32 *out, u32 floor)
 			n = 0;                        /* lost the race; pos now holds the value that won */
 	}
 	for (u32 i = 0; i < n; i++)           /* the cells, free for their next round */
-		free_cell[(pos + i) & free_mask].store(((u64) (u32) (pos + i + free_mask + 1) << 32) | ROUTER_NONE,
-		                                      std::memory_order_release);
+		free_cell[(pos + i) & free_mask].store_release(((u64) (u32) (pos + i + free_mask + 1) << 32) | ROUTER_NONE);
 	return n;
 }
 
@@ -98,16 +97,16 @@ inline void Router_node::refill(Router_thread &s)
 inline void Router_node::zero_valid(u32 blk)
 {
 	for (u32 k = 0; k < L; k++)
-		n_valid[(size_t) nv_stride * blk + k].store(0, std::memory_order_relaxed);
+		n_valid[(size_t) nv_stride * blk + k] = 0;
 }
 
 /* Put a sealed block onto the sealed stack, its destination in the link's high word. */
 inline void Router_node::seal(int d, u32 blk)
 {
 	u64 hi = (u64) d << 32;
-	u32 top = sealed_top.load(std::memory_order_relaxed);
+	u32 top = sealed_top;
 	for (;;) {
-		blk_link[blk].store(hi | top, std::memory_order_relaxed);
+		blk_link[blk] = hi | top;
 		if (sealed_top.compare_exchange_weak(top, blk, std::memory_order_release, std::memory_order_relaxed))
 			return;
 	}
@@ -122,7 +121,7 @@ inline void Router_node::seal(int d, u32 blk)
  */
 inline void Router_node::stage_line(Router_thread &s, int d, const Point *line)
 {
-	std::atomic<u64> &next = dest[ROUTER_DEST_WORDS * d];
+	Atomic<u64> &next = dest[ROUTER_DEST_WORDS * d];
 	int n = (int) swc_linesize;
 	for (;;) {
 		u64 v = next.fetch_add(1ull << 32, std::memory_order_acq_rel);
@@ -133,19 +132,19 @@ inline void Router_node::stage_line(Router_thread &s, int d, const Point *line)
 		if (k < L) {
 			Point *pts = (Point *) (pool + (size_t) blk * block_bytes + ROUTER_HDR_BYTES);
 			router_stream_copy(pts + (size_t) k * swc_linesize, line, (size_t) n * sizeof(Point));
-			n_valid[(size_t) nv_stride * blk + k].store(1, std::memory_order_release);
+			n_valid[(size_t) nv_stride * blk + k].store_release(1);
 			return;
 		}
 		if (k == L) {                     /* the sealer; refill waits, so its cache is never empty here */
 			u32 fresh = s.cache[--s.cache_n];
-			next.store((u64) fresh, std::memory_order_release);
+			next.store_release((u64) fresh);
 			seal(d, blk);
 			if (s.cache_n == 0)
 				refill(s);
 			continue;
 		}
 		for (;;) {                        /* k > L: at exactly L nobody is installing, and I may become the sealer */
-			u64 w = next.load(std::memory_order_acquire);
+			u64 w = next.load_acquire();
 			if ((u32) (w >> 32) <= L)
 				break;
 			cpu_relax();
@@ -188,7 +187,7 @@ inline void Router_Close(Router_thread &rt)
 		memcpy(rn.partial + (size_t) d * rn.partial_cap + off, line, (size_t) count * sizeof(Point));
 		count = 0;
 	}
-	rt.closed.store(1, std::memory_order_release);
+	rt.closed.store_release(1);
 }
 
 
@@ -251,7 +250,7 @@ inline bool Router_Pop(u64 *a, u64 *b, Router_thread &rt)
  * emptiness, so that a block pushed between the two reads is still popped. */
 inline bool Router_Test_drained(Router_thread &rt)
 {
-	if (rt.node.input_closed.load(std::memory_order_acquire) == 0)
+	if (rt.node.input_closed.load_acquire() == 0)
 		return false;
 	return rt.cur_blk == ROUTER_NONE && rt.inbox.empty();
 }

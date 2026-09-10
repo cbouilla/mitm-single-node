@@ -19,9 +19,9 @@ namespace mitm {
 class RouterRing {
 public:
 	/* public: Router_Dump reads head and tail from outside */
-	alignas(64) std::atomic<size_t> head;      /* written by the consumer only */
+	alignas(64) Atomic<size_t> head;            /* written by the consumer only */
 	size_t cached_tail;                        /* consumer-private copy of tail */
-	alignas(64) std::atomic<size_t> tail;      /* written by the producer only */
+	alignas(64) Atomic<size_t> tail;            /* written by the producer only */
 	size_t cached_head;                        /* producer-private copy of head */
 
 private:
@@ -46,37 +46,37 @@ public:
 	/* producer side.  Returns false if the ring is full: the caller retries later, nothing is dropped. */
 	bool push(const Point &x)
 	{
-		size_t t = tail.load(std::memory_order_relaxed);
+		size_t t = tail;
 		if (t - cached_head == capacity) {
-			cached_head = head.load(std::memory_order_acquire);
+			cached_head = head.load_acquire();
 			if (t - cached_head == capacity)
 				return false;                 /* really full */
 		}
 		buf[t & mask] = x;
-		tail.store(t + 1, std::memory_order_release);
+		tail.store_release(t + 1);
 		return true;
 	}
 
 	/* consumer side */
 	bool pop(Point &x)
 	{
-		size_t h = head.load(std::memory_order_relaxed);
+		size_t h = head;
 		if (h == cached_tail) {
-			cached_tail = tail.load(std::memory_order_acquire);
+			cached_tail = tail.load_acquire();
 			if (h == cached_tail)
 				return false;                 /* really empty */
 		}
 		x = buf[h & mask];
-		head.store(h + 1, std::memory_order_release);
+		head.store_release(h + 1);
 		return true;
 	}
 
 	/* consumer side */
 	bool empty()
 	{
-		size_t h = head.load(std::memory_order_relaxed);
+		size_t h = head;
 		if (h == cached_tail)
-			cached_tail = tail.load(std::memory_order_acquire);
+			cached_tail = tail.load_acquire();
 		return (h == cached_tail);
 	}
 };

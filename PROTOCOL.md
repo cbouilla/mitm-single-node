@@ -4,7 +4,7 @@
 Router (`include/router/`, its interface specified in `router.3`), both run one MPI rank per
 node and one OpenMP team per rank, and neither shares a line of transport with the other.
 
-- **§1, the direct engine** (`include/direct.hpp`): the exhaustive meet-in-the-middle.  Its
+- **§1, the direct engine** (`include/direct/`): the exhaustive meet-in-the-middle.  Its
   round is deterministic, so it needs no control channel at all.
 - **§2, PCS** (`include/pcs/`): van Oorschot-Wiener parallel collision search over a
   dictionary of trail endpoints.  Its round ends on a *global* count, which no node can tell
@@ -15,7 +15,7 @@ owns.  Names in code font are the ones used in the code.
 
 ## 1. The direct engine, on the Router
 
-`mitm::direct` (`direct.hpp`): the exhaustive meet-in-the-middle, the baseline PCS will be
+`mitm::direct` (`include/direct/`): the exhaustive meet-in-the-middle, the baseline PCS will be
 measured against.  `w' = fill * w` entries per round (`--fill`, default 0.5),
 `R = ceil(2^n / w')` rounds; `--nrounds` caps `R`, and the search is then not exhaustive -- the
 banner and the last line say so.  Nothing here is shared with §2.
