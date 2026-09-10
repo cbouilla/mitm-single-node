@@ -333,9 +333,6 @@ optional<tuple<u64,u64,u64>> run(const Wrapper &wrapper, u64 nbytes_memory, cons
 				trail.resize(params.dp_max_it + 1);
 		}
 		if (role == ROUTER_SERVICE) {
-			if (Router_num_recv(rt) != params.n_dicts)
-				errx(1, "pcs: the Router has %d receivers, the dictionary %d shards",
-				     Router_num_recv(rt), params.n_dicts);
 			records.assign((size_t) params.n_nodes * REC_WORDS, 0);
 			stats.assign(ROUTER_STATS_SIZE, 0);
 		}
@@ -351,8 +348,7 @@ optional<tuple<u64,u64,u64>> run(const Wrapper &wrapper, u64 nbytes_memory, cons
 		if (role != ROUTER_RECEIVER) {
 			recv_of.assign(params.S, -1);
 			n_walkers.assign(params.R, 0);
-			assign_receivers(params, Router_num_groups(rt), shared.group.data(), recv_of.data(),
-			                 n_walkers.data());
+			assign_receivers(params, Router_num_groups(rt), shared.group.data(), recv_of.data(), n_walkers.data());
 		}
 		if (role == ROUTER_SENDER)
 			my_recv = recv_of[tid - 1 - params.R];

@@ -24,15 +24,15 @@ template <class Wrapper>
 void producer_round(Router_thread &rt, const Wrapper &wrapper, const Params &params, u64 *ctr, u64 round, int phase)
 {
 	constexpr int vlen = Wrapper::vlen;
-	const u64 n_recv = Router_num_recv(rt);
+	const u64 n_recv = (u64) params.n_dicts;
 	u64 lo = 0;
 	u64 hi = params.domain;
 	if (phase == FILL) {
 		lo = round * params.per_round;
 		hi = std::min(lo + params.per_round, params.domain);
 	}
-	u64 p = Router_rank(rt);
-	u64 n_pieces = Router_num_send(rt);
+	u64 p = (u64) (params.rank * params.S + rt.index);      /* this sender's rank among all producers */
+	u64 n_pieces = (u64) params.n_producers;
 	u64 span = hi - lo;
 	u64 piece = span / n_pieces;
 	u64 extra = span % n_pieces;

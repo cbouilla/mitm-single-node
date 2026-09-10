@@ -72,8 +72,9 @@ One phase, on each thread:
 
 A point is the two words the Router carries: `key` is `murmur64(image)`, `val` the preimage.
 
-**Routing.**  `dest = ((key & 0xffffffff) * Router_num_recv) >> 32`, a multiply-shift on the low
-word, and `Router_num_recv` is `n_nodes * I`, asserted equal to the number of shards.  The hash
+**Routing.**  `dest = ((key & 0xffffffff) * n_dicts) >> 32`, a multiply-shift on the low word,
+where `n_dicts` is `n_nodes * I` -- not a Router query, the same shard count every node derives
+from its own `Options`, and therefore equal to the number of shards by construction.  The hash
 buys the producer a fan-out with no 64-bit division on the hot path; `murmur64` is a bijection, so
 distinct images stay distinct and a match is verified against `key` itself.
 
@@ -177,7 +178,9 @@ handle.
 | `I+1..I+W` | sender | the walker: walks `vlen` trails, pushes every distinguished point, and resolves the hits its dict thread found |
 
 **The Router owns placement**, exactly as in §1: PCS pins nothing and never touches hwloc.  It
-only *reads* the plan, through `Router_group`, `Router_num_groups` and `Router_local_rank`.
+only *reads* the plan, through `Router_group` and `Router_num_groups`; a thread's own rank, local
+or global, is arithmetic over the shape it was given (`rank * S + Router_thread::index`), not a
+query.
 
 **Every per-thread object is built by its owner right after `Router_Init`**, i.e. once pinned,
 so the zero-fill is the first touch of every page: a dict thread's shard and its collision
@@ -188,10 +191,10 @@ round, because the groups and the queues have to be published to the team.
 **Which dict thread a walker resolves for.**  A hit is handed over, not resolved on the spot
 (§2.4), so every walker is paired with exactly one dict thread and every dict thread needs at
 least one walker.  The Router's groups do not give that for free: a group is senders and
-receivers in one cache domain, so it may hold several receivers, or none, and
-`Router_group_num_receivers` only ever describes the *caller's* group.  So each worker
-publishes its group into the `Shared`, and after the startup barrier every thread runs the
-same deterministic pass over those groups:
+receivers in one cache domain, so it may hold several receivers, or none, and the Router exposes
+no query for "the receivers of a group" -- only `Router_group`, one thread's own, and
+`Router_num_groups`.  So each worker publishes its group into the `Shared`, and after the startup
+barrier every thread runs the same deterministic pass over those groups:
 
 1. **the groups that hold a receiver**, in group order: each of that group's senders, in
    order, goes to the **poorest receiver of that group** -- fewest walkers so far, ties to the
@@ -276,10 +279,10 @@ value means "at least this long, exact length unknown".  A chain index is all a 
 needs, since chain `j` starts at `root_seed + j * multiplier`: nothing about a trail's start
 travels, and any walker on any node can reconstruct it from the header.
 
-**Routing.**  `dest = key % Router_num_recv`, and `Router_num_recv` is `nodes * I`, asserted
-equal to the number of shards.  The shard then keys on `key / n_dicts`, which is exactly the
-information the modulo left it, so no hash is needed anywhere: a trail endpoint is already a
-function value.
+**Routing.**  `dest = key % n_dicts`, where `n_dicts` is `nodes * I` -- not a Router query, the
+same shard count every node derives from its own `Options`.  The shard then keys on
+`key / n_dicts`, which is exactly the information the modulo left it, so no hash is needed
+anywhere: a trail endpoint is already a function value.
 
 **The shard.**  `PcsDict` is one slot per endpoint, direct-mapped, no probing: `key / n_slots`
 above the length, the length in 8 bits above the chain index.  A hit is only ever a hint --

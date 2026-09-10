@@ -57,7 +57,7 @@ inline bool Router_node::place(int d, u32 blk, u32 count)
 	int node = d / per_node;
 	int local = (d % per_node) % R;
 	if (node == rank) {
-		Point e = {blk, count};
+		RouterBlockMsg e = {blk, count};
 		if (not receivers[local]->inbox.push(e))
 			return false;
 		inbox_pushed[local] += 1;

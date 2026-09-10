@@ -202,14 +202,14 @@ inline size_t Router_Grab(const u64 **pts, Router_thread &rt)
 {
 	if (rt.cur_blk != ROUTER_NONE)
 		errx(1, "Router_Grab: a block is out already");
-	Point e;
+	RouterBlockMsg e;
 	if (not rt.inbox.pop(e)) {
 		*pts = NULL;
 		return 0;
 	}
 	Router_node &rn = rt.node;
-	rt.cur_blk = (u32) e.key;
-	rt.cur_count = (u32) e.val;
+	rt.cur_blk = e.blk;
+	rt.cur_count = e.count;
 	rt.cur_pts = (const u64 *) (rn.pool + (size_t) rt.cur_blk * rn.block_bytes + ROUTER_HDR_BYTES);
 	rt.cur_off = 0;
 	rt.ctr[ROUTER_POPPED] += rt.cur_count;

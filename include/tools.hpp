@@ -59,6 +59,15 @@ u64 make_mask(int n)
     return (n >= 64) ? 0xffffffffffffffffull : (1ull << n) - 1;
 }
 
+/* the smallest power of two >= x (1 for x == 0) */
+size_t round_up_pow2(size_t x)
+{
+    size_t n = 1;
+    while (n < x)
+        n *= 2;
+    return n;
+}
+
 /*
  * The two-word unit the Router carries from a producer to a dictionary shard.  What the words mean is
  * the scheme's business: the direct scheme ships (hashed image, preimage).

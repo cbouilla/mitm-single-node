@@ -24,7 +24,7 @@
  */
 using namespace mitm;
 
-static const u64 seed = 1337;       /* the senders' PRNG streams: this key, Router_rank as the sequence */
+static const u64 seed = 1337;       /* the senders' PRNG streams: this key, the sender's global index as the sequence */
 std::vector<double> ns_per_point;   /* per sender: a point's cost, the PRNG call and the destination pick included */
 u64 xor_hash = 0;                   /* the node's receivers' hashes, folded; the raw run's outputs */
 double raw_rate = 0;                /* points/s the node's senders generate without pushing, summed */
@@ -55,7 +55,7 @@ struct Fanout {
 static void bench_raw(Router_thread &rt, const RouterArgs &a)
 {
 	Fanout fan(rt, a);
-	PRNG prng(seed, (u64) Router_rank(rt));
+	PRNG prng(seed, (u64) (rt.node.rank * rt.node.S + rt.index));
 	u64 acc = 0;
 	u64 n = 0;
 	double t0 = wtime();
@@ -85,7 +85,7 @@ static void raw_report(const Router_thread &rt)
 	MPI_Reduce(&xor_hash, &folded, 1, MPI_UINT64_T, MPI_BXOR, 0, MPI_COMM_WORLD);
 	if (rt.node.rank != 0)
 		return;
-	int nsend = Router_num_send(rt);
+	int nsend = rt.node.S * rt.node.n_nodes;
 	fmt::print("raw: {} senders generate {} pts/s without pushing ({:.1f} ns/point) | xor {:016x}\n",
 	           nsend, human_format((u64) total), 1e9 * nsend / total, folded);
 }
@@ -93,7 +93,7 @@ static void raw_report(const Router_thread &rt)
 static void bench_sender(Router_thread &rt, const RouterArgs &a, double t_end)
 {
 	Fanout fan(rt, a);
-	PRNG prng(seed, (u64) Router_rank(rt));
+	PRNG prng(seed, (u64) (rt.node.rank * rt.node.S + rt.index));
 	u64 n = 0;
 	double t0 = wtime();
 	for (;;) {
@@ -107,7 +107,7 @@ static void bench_sender(Router_thread &rt, const RouterArgs &a, double t_end)
 	}
 	double busy = wtime() - t0;
 	Router_Close(rt);
-	ns_per_point[Router_local_rank(rt)] = 1e9 * busy / (double) n;
+	ns_per_point[rt.index] = 1e9 * busy / (double) n;
 }
 
 static void bench_receiver(Router_thread &rt)

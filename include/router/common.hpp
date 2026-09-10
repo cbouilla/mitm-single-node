@@ -139,12 +139,9 @@ struct alignas(64) Router_thread {
 	u64 ctr[ROUTER_STATS_SIZE] = {};     /* a sender's PUSHED, a receiver's POPPED and BLOCKS; plain */
 	/* identity */
 	const int role;                      /* ROUTER_SERVICE, ROUTER_SENDER or ROUTER_RECEIVER */
-	const int index;                     /* among the threads of its role */
-	const int global_id;                 /* a sender: rank * S + index; a receiver: rank * R + index, its `dest` */
+	const int index;                     /* among the threads of its role: a sender's or receiver's local rank */
 	const int group;                     /* a sender's or receiver's group; -1 for the service */
-	const int domain;                    /* the cache domain it was pinned in; -1 when not pinned */
 	const int cpu;                       /* the CPU the kernel reports after pinning; momentary when not pinned */
-	const int numa_node;                 /* the NUMA node the kernel reports after pinning */
 	Router_node &node;                   /* the node it belongs to */
 	/* a sender's cache of free blocks, zeroed already: what it installs at a seal, refilled off the free ring */
 	u32 cache[ROUTER_BATCH];             /* the blocks, cache_n of them, the next to install last */
@@ -158,7 +155,7 @@ struct alignas(64) Router_thread {
 	u32 cur_count = 0;                   /* how many */
 	u32 cur_off = 0;                     /* Router_Pop's cursor into it */
 
-	Router_thread(int role, int index, int group, int domain, int cpu, int numa_node, Router_node &rn);
+	Router_thread(int role, int index, int group, int cpu, Router_node &rn);
 	~Router_thread();
 	Router_thread(const Router_thread &) = delete;
 	Router_thread &operator=(const Router_thread &) = delete;

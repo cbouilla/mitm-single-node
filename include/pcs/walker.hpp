@@ -91,8 +91,8 @@ void walker_round(Router_thread &rt, const ProblemWrapper &wrapper, const Params
 	const u64 root_seed = shared.header.root_seed;
 	const int jbits = params.jbits;
 	const u64 jmask = make_mask(jbits);
-	const u64 jinc = Router_num_send(rt);
-	const u64 n_recv = Router_num_recv(rt);
+	const u64 jinc = (u64) params.n_producers;
+	const u64 n_recv = (u64) params.n_dicts;
 
 	/* state of the vlen chains being walked */
 	u64 x[vlen] __attribute__ ((aligned(sizeof(u64) * vlen)));
@@ -100,7 +100,7 @@ void walker_round(Router_thread &rt, const ProblemWrapper &wrapper, const Params
 	u64 len[vlen];                  /* steps walked so far */
 	u64 seed[vlen];                 /* the chain index j of each */
 
-	u64 j = Router_rank(rt);
+	u64 j = (u64) (params.rank * params.S + rt.index);       /* this walker's rank among all walkers */
 	for (int k = 0; k < vlen; k++)
 		start_chain(params, wrapper.out_mask, root_seed, j, x, len, seed, jinc, k);
 	assert((j & jmask) == j);

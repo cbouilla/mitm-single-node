@@ -11,13 +11,10 @@ namespace mitm {
  * Router_Init's last stage, and the constructor runs nowhere else.  Past the barrier the service may read every
  * object, and thread 0 prints the measured layout.
  */
-inline Router_thread::Router_thread(int role_, int index_, int group_, int domain_, int cpu_, int numa_,
-                                    Router_node &rn)
+inline Router_thread::Router_thread(int role_, int index_, int group_, int cpu_, Router_node &rn)
 	: swc(role_ == ROUTER_SENDER ? (Point *) router_alloc((size_t) rn.F * rn.swc_linesize * sizeof(Point)) : NULL),
 	  swc_linesize(rn.swc_linesize), role(role_), index(index_),
-	  global_id(role_ == ROUTER_SENDER ? rn.rank * rn.S + index_
-	            : role_ == ROUTER_RECEIVER ? rn.rank * rn.R + index_ : -1),
-	  group(group_), domain(domain_), cpu(cpu_), numa_node(numa_), node(rn), closed(0),
+	  group(group_), cpu(cpu_), node(rn), closed(0),
 	  inbox(role_ == ROUTER_RECEIVER ? (size_t) rn.opt.inbox_blocks : 0)
 {
 	if (role == ROUTER_SENDER) {
@@ -279,7 +276,7 @@ inline void Router_node::banner() const
 {
 	double blocks = (double) n_blocks * block_bytes;
 	double lines = (double) S * F * swc_linesize * sizeof(Point);
-	double inboxes = (double) R * opt.inbox_blocks * sizeof(Point);
+	double inboxes = (double) R * opt.inbox_blocks * sizeof(RouterBlockMsg);
 	double closing = (double) F * partial_cap * sizeof(Point);
 	printf("Router: %d node%s, %d sender%s and %d receiver%s per node, %d destinations (%d per node)\n",
 	       n_nodes, n_nodes > 1 ? "s" : "", S, S > 1 ? "s" : "", R, R > 1 ? "s" : "", F, per_node);
@@ -329,8 +326,7 @@ inline void Router_node::banner() const
 		rn->misplaced += 1;
 	}
 	unsigned cpu = 0;
-	unsigned numa = 0;
-	if (syscall(SYS_getcpu, &cpu, &numa, NULL) != 0)
+	if (syscall(SYS_getcpu, &cpu, NULL, NULL) != 0)
 		err(1, "Router_Init: getcpu");
 	if (want >= 0 && (int) cpu != want) {
 		warnx("Router: rank %d: thread %d asked for CPU %d, runs on CPU %u", rn->rank, tid, want, cpu);
@@ -347,46 +343,8 @@ inline void Router_node::banner() const
 	for (int t = 0; t < tid; t++)
 		if (rn->roles[t] == mine)
 			index += 1;
-	return Router_thread(mine, index, rn->plan.thread_group[tid], rn->plan.thread_domain[tid],
-	                     (int) cpu, (int) numa, *rn);   /* registers itself, then holds the team's last barrier */
-}
-
-/* Any thread.  What the team looks like, once connected: the senders and receivers of this node and of all. */
-inline int Router_local_num_send(const Router_thread &rt)
-{
-	return rt.node.S;
-}
-
-inline int Router_local_num_recv(const Router_thread &rt)
-{
-	return rt.node.R;
-}
-
-inline int Router_num_send(const Router_thread &rt)
-{
-	return rt.node.S * rt.node.n_nodes;
-}
-
-inline int Router_num_recv(const Router_thread &rt)
-{
-	return rt.node.R * rt.node.n_nodes;
-}
-
-/* Sender or receiver.  The caller's rank among the threads of its role on this node, from 0. */
-inline int Router_local_rank(const Router_thread &rt)
-{
-	if (rt.role != ROUTER_SENDER && rt.role != ROUTER_RECEIVER)
-		errx(1, "Router_local_rank: not a sender or receiver thread");
-	return rt.index;
-}
-
-/* Sender or receiver.  The caller's rank among the threads of its role on all nodes, from 0: the nodes' in
- * order, each node's by local rank.  A receiver's is the `dest` that reaches it. */
-inline int Router_rank(const Router_thread &rt)
-{
-	if (rt.role != ROUTER_SENDER && rt.role != ROUTER_RECEIVER)
-		errx(1, "Router_rank: not a sender or receiver thread");
-	return rt.global_id;
+	return Router_thread(mine, index, rn->plan.thread_group[tid], (int) cpu,
+	                     *rn);   /* registers itself, then holds the team's last barrier */
 }
 
 /* Sender or receiver.  Its group, 0..Router_num_groups(rt)-1; -1 for the service thread. */
@@ -399,45 +357,6 @@ inline int Router_group(const Router_thread &rt)
 inline int Router_num_groups(const Router_thread &rt)
 {
 	return rt.node.plan.n_groups;
-}
-
-/* Sender or receiver.  The receivers in the caller's group: a producer pairs with one of them. */
-inline int Router_group_num_receivers(const Router_thread &rt)
-{
-	if (rt.group < 0)
-		errx(1, "Router_group_num_receivers: not a sender or receiver thread");
-	return (int) rt.node.plan.group_receivers[rt.group].size();
-}
-
-/* Sender or receiver.  The local index (0..R-1) of the i-th receiver in the caller's group. */
-inline int Router_group_receiver(int i, const Router_thread &rt)
-{
-	if (rt.group < 0)
-		errx(1, "Router_group_receiver: not a sender or receiver thread");
-	return rt.node.plan.group_receivers[rt.group].at(i);
-}
-
-/* Any thread.  The cache domain it was pinned in; -1 when the Router did not pin. */
-inline int Router_domain(const Router_thread &rt)
-{
-	return rt.domain;
-}
-
-/* Any thread.  This node's cache domains holding a CPU of the mask; 0 when not pinned. */
-inline int Router_num_domains(const Router_thread &rt)
-{
-	return rt.node.plan.n_domains;
-}
-
-/* Any thread.  The CPU and NUMA node the kernel reports for it (momentary when not pinned). */
-inline int Router_cpu(const Router_thread &rt)
-{
-	return rt.cpu;
-}
-
-inline int Router_numa_node(const Router_thread &rt)
-{
-	return rt.numa_node;
 }
 
 }

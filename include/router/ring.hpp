@@ -10,11 +10,17 @@ namespace mitm {
 
 /******************************** the ring ********************************/
 
+/* what a receiver's inbox carries: a block id and how many points are valid in it. */
+struct RouterBlockMsg {
+	u32 blk;                            /* block id, or ROUTER_NONE */
+	u32 count;                          /* points valid in it */
+};
+
 /*
- * Lamport's single-producer / single-consumer ring of points: no
+ * Lamport's single-producer / single-consumer ring of block messages: no
  * mutex, no CAS, each side owns one index and caches the other's.  Capacity rounds up to a
  * power of two.  Three cache lines: the consumer's, the producer's, and a read-only one for the geometry.
- * A receiver's inbox is one: block ids travel as points, `(block, count)`.
+ * A receiver's inbox is one.
  */
 class RouterRing {
 public:
@@ -27,15 +33,7 @@ public:
 private:
 	alignas(64) const size_t capacity;         /* a power of two */
 	const size_t mask;                         /* capacity - 1 */
-	std::vector<Point> buf;                    /* the slots */
-
-	static size_t round_up_pow2(size_t x)
-	{
-		size_t n = 1;
-		while (n < x)
-			n *= 2;
-		return n;
-	}
+	std::vector<RouterBlockMsg> buf;           /* the slots */
 
 public:
 	/* built by its owner: the zero-fill of `buf` is the first touch */
@@ -44,7 +42,7 @@ public:
 	{}
 
 	/* producer side.  Returns false if the ring is full: the caller retries later, nothing is dropped. */
-	bool push(const Point &x)
+	bool push(const RouterBlockMsg &x)
 	{
 		size_t t = tail;
 		if (t - cached_head == capacity) {
@@ -58,7 +56,7 @@ public:
 	}
 
 	/* consumer side */
-	bool pop(Point &x)
+	bool pop(RouterBlockMsg &x)
 	{
 		size_t h = head;
 		if (h == cached_tail) {

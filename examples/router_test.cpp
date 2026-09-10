@@ -1,5 +1,6 @@
 #include <mpi.h>
 #include <omp.h>
+#include <sched.h>
 #include <atomic>
 #include <vector>
 #include <cstdio>
@@ -44,9 +45,7 @@ struct Shared {
 	std::vector<u64> seen;           /* per local receiver: a bitmap over (node, s, i) */
 	u64 max_points = 0;
 	std::vector<int> t_group;        /* per thread: its Router_group, gathered after Init */
-	std::vector<int> t_cpu;          /* per thread: its Router_cpu */
-	std::vector<int> t_domain;       /* per thread: its Router_domain */
-	std::vector<int> t_grcv;         /* per sender thread: its group's first receiver, or -1 */
+	std::vector<int> t_cpu;          /* per thread: sched_getcpu() after Init, to check pinning gave it one of its own */
 };
 
 static u64 points_of(const RouterArgs &a, int s)
@@ -58,7 +57,7 @@ static u64 points_of(const RouterArgs &a, int s)
 
 static void sender_round(Router_thread &rt, const RouterArgs &a, Shared &sh, int s, int round)
 {
-	int F = Router_num_recv(rt);
+	int F = a.receivers * g_nodes;
 	u64 *sent_to = sh.sent_to.data() + (size_t) s * F;
 	u64 i = 0;
 	if (a.partial) {
@@ -99,7 +98,7 @@ static void check_point(u64 x, u64 y, int me, int S, Shared &sh, u64 *seen, int 
 
 static void receiver_round(Router_thread &rt, const RouterArgs &a, Shared &sh, int r, int round)
 {
-	int me = Router_rank(rt);
+	int me = g_rank * a.receivers + r;      /* this receiver's global id: the `dest` that reaches it */
 	int S = a.senders;
 	u64 *seen = sh.seen.data() + (size_t) r * ((g_nodes * S * sh.max_points + 63) / 64);
 	u64 got = 0;
@@ -136,7 +135,7 @@ static void receiver_round(Router_thread &rt, const RouterArgs &a, Shared &sh, i
 /* rank 0's verdict on the round: every point pushed was popped, and what was sent was received */
 static void check_round(const Router_thread &rt, const RouterArgs &a, Shared &sh, int round)
 {
-	int F = Router_num_recv(rt);
+	int F = a.receivers * g_nodes;
 	int S = a.senders;
 	int R = a.receivers;
 	u64 st[ROUTER_STATS_SIZE];
@@ -179,15 +178,17 @@ static void check_round(const Router_thread &rt, const RouterArgs &a, Shared &sh
 		       tot[ROUTER_MSGS_SENT], tot[ROUTER_BLOCKS], tot[ROUTER_TURNS], tot[ROUTER_IDLE_TURNS]);
 }
 
-/* rank-local, on thread 0 after Init: the plan the Router built for this node -- the group ids, the pinning,
- * and that each producer's group holds the receiver it will pair with. */
+/* rank-local, on thread 0 after Init: the plan the Router built for this node -- the group ids and the
+ * pinning.  Which receiver a sender's group holds is PCS's own business (it derives it from Router_group
+ * across the team, include/pcs/shared.hpp's assign_receivers), not something this test can see through the
+ * Router's API, so it only checks the invariant that pairing actually depends on: enough of each role in
+ * every group. */
 static void check_placement(const Router_thread &rt, const RouterArgs &a, Shared &sh, bool use_colors)
 {
 	int S = a.senders;
 	int R = a.receivers;
 	int nt = 1 + S + R;
 	int G = Router_num_groups(rt);
-	int D = Router_num_domains(rt);
 	CHECK(G >= 1);
 	CHECK(sh.t_group[0] == -1);                 /* the service has no group */
 	std::vector<int> gs(G, 0);
@@ -201,28 +202,16 @@ static void check_placement(const Router_thread &rt, const RouterArgs &a, Shared
 		else
 			gs[sh.t_group[t]] += 1;
 	}
-	if (a.opts.pin) {
-		for (int t = 0; t < nt; t++) {
-			CHECK(sh.t_domain[t] >= 0 && sh.t_domain[t] < D);
+	if (a.opts.pin)
+		for (int t = 0; t < nt; t++)
 			for (int u = t + 1; u < nt; u++)
 				CHECK(sh.t_cpu[t] != sh.t_cpu[u]);   /* every thread on a CPU of its own */
-		}
-	} else {
-		CHECK(D == 0);
-		for (int t = 0; t < nt; t++)
-			CHECK(sh.t_domain[t] == -1);
-	}
 	if (use_colors) {
 		CHECK(G == ((S >= 2 && R >= 2) ? 2 : 1));
 	} else if (S >= G && R >= G) {
 		for (int g = 0; g < G; g++) {               /* enough of each role for one of each per group */
 			CHECK(gs[g] >= 1);
 			CHECK(gr[g] >= 1);
-		}
-		for (int t = R + 1; t < nt; t++) {          /* a sender's group's first receiver is in its group */
-			int rcv = sh.t_grcv[t];
-			if (rcv >= 0)
-				CHECK(sh.t_group[1 + rcv] == sh.t_group[t]);
 		}
 	}
 }
@@ -243,8 +232,6 @@ static void run_config(const RouterArgs &a, const char *name, bool use_colors = 
 	sh.seen.assign((size_t) R * ((g_nodes * S * sh.max_points + 63) / 64), 0);
 	sh.t_group.assign(nt, 0);
 	sh.t_cpu.assign(nt, 0);
-	sh.t_domain.assign(nt, 0);
-	sh.t_grcv.assign(nt, -1);
 
 	#pragma omp parallel num_threads(nt)
 	{
@@ -256,10 +243,7 @@ static void run_config(const RouterArgs &a, const char *name, bool use_colors = 
 			group = (S >= 2 && R >= 2) ? (li % 2) : 0;
 		Router_thread rt = Router_Init(role, group, MPI_COMM_WORLD, 42, &a.opts);
 		sh.t_group[tid] = Router_group(rt);
-		sh.t_cpu[tid] = Router_cpu(rt);
-		sh.t_domain[tid] = Router_domain(rt);
-		if (role == ROUTER_SENDER && Router_group_num_receivers(rt) > 0)
-			sh.t_grcv[tid] = Router_group_receiver(0, rt);
+		sh.t_cpu[tid] = sched_getcpu();
 		#pragma omp barrier
 		if (tid == 0)
 			check_placement(rt, a, sh, use_colors);

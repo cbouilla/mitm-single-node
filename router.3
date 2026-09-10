@@ -35,16 +35,13 @@ threads across MPI ranks
 .BI "void   Router_Reset(Router_thread &" rt );
 .fi
 .SS Queries
-Any thread; every one returns
+Any thread; both return
 .B int
-and takes
+and take
 .BI "const Router_thread &" rt .
 .PP
 .nf
-Router_rank, Router_local_rank, Router_num_send, Router_num_recv,
-Router_local_num_send, Router_local_num_recv, Router_group,
-Router_num_groups, Router_group_num_receivers, Router_group_receiver(int \fIi\fP, \fIrt\fP),
-Router_domain, Router_num_domains, Router_cpu, Router_numa_node
+Router_group, Router_num_groups
 .fi
 .SH DESCRIPTION
 The Router carries
@@ -86,8 +83,19 @@ to the Router for delivery to receiver
 .IR dest ,
 0 <=
 .I dest
-< Router_num_recv(\fIrt\fP): the receiver's
-.BR Router_rank ().
+< the number of receivers over all nodes.
+That count is not a query: it is
+.I R
+times the number of nodes, the same shape the caller gave every
+.BR Router_Init ()
+of the team, so the caller already has it.
+Receivers are numbered in rank order, each node's by local index among its
+receivers, 0-based; that number is
+.IR dest 's
+meaning to the receiver it reaches, but the Router does not hand it back
+either -- a receiver that needs its own index keeps it from the loop that
+built its role (see
+.BR EXAMPLE ).
 Delivery is batched: a pushed point may reach its receiver much later, and
 possibly not before the sender closes.
 The call may block until the Router has room, and the point is delivered
@@ -193,60 +201,32 @@ The service thread must be quiescent and a receiver must hold no block (see
 Any thread, once
 .BR Router_Init ()
 has returned.
-A query marked (worker) aborts on the service thread.
-.TP
-.BI Router_local_rank( rt )
-(worker) The caller's index among the threads of its role on this node, from 0.
-.TP
-.BI Router_rank( rt )
-(worker) Its index among its role on all nodes: the nodes in rank order, each
-node's threads by local rank.
-A receiver's is the
-.I dest
-that reaches it.
-.TP
-.BI Router_local_num_send( rt )
-Senders on this node.
-.TP
-.BI Router_local_num_recv( rt )
-Receivers on this node.
-.TP
-.BI Router_num_send( rt )
-Senders over all nodes.
-.TP
-.BI Router_num_recv( rt )
-Receivers over all nodes.
+These are the only two: everything else a caller might want to know about its
+own identity (its local or global rank, the count of senders or receivers) is
+arithmetic over the shape it gave every
+.BR Router_Init ()
+of the team, not something the Router computes for it (see
+.BR EXAMPLE ).
+Placement beyond the group -- which CPU, which cache domain -- is likewise not
+exposed; it is printed, not queried (see
+.BR PLACEMENT ).
 .TP
 .BI Router_group( rt )
 The caller's group, 0..G\-1; \-1 for the service thread.
 .TP
 .BI Router_num_groups( rt )
 G, the groups of this node.
-.TP
-.BI Router_group_num_receivers( rt )
-(worker) The receivers in the caller's group.
-.TP
-.BI Router_group_receiver( i ", " rt )
-(worker) The local rank of the
-.IR i -th
-receiver of the caller's group.
-.TP
-.BI Router_domain( rt )
-The cache domain the caller was pinned in; \-1 when not pinned.
-.TP
-.BI Router_num_domains( rt )
-The node's cache domains; 0 when not pinned.
-.TP
-.BI Router_cpu( rt )
-The CPU the kernel reported for the caller after pinning; momentary when not
-pinned.
-.TP
-.BI Router_numa_node( rt )
-Its NUMA node, likewise.
 .SH PLACEMENT
 By default the Router decides where every thread of the team runs and which
 threads work together.
-The caller sees the outcome through the queries above.
+The caller sees the group assignment through
+.BR Router_group ()
+and
+.BR Router_num_groups ();
+the rest of the plan is not exposed to it, only printed (see
+.I verbose
+under
+.BR OPTIONS ).
 .SS The CPU set
 The node's CPU set is the union of the affinity masks the threads inherit from
 the launcher and the OpenMP runtime.
@@ -288,18 +268,20 @@ aborts the run
 .RB ( MPI_Abort )
 before any handle is built.
 .PP
-Afterwards
-.BR Router_cpu (),
-.BR Router_numa_node ()
-and
-.BR Router_domain ()
-report the measured placement of the calling thread.
+Afterwards the measured placement of every thread -- its CPU, its cache
+domain, its NUMA node -- appears in the verbose banner; the caller does not
+read it back through any call.
 .SS Groups
 A
 .I group
 is a set of senders and receivers that work together: a consumer pairs each
-sender with a receiver of its group,
-.BR Router_group_receiver ().
+sender with a receiver of its group by reading
+.BR Router_group ()
+across the whole team and matching on the value, as
+.I assign_receivers
+in
+.I include/pcs/shared.hpp
+does.
 There are G groups per node, numbered 0..G\-1; every worker belongs to one, the
 service thread to none.
 .PP
@@ -323,10 +305,6 @@ With
 .I opts->pin
 = false the threads stay where the caller left them and the CPU set is not
 checked.
-.BR Router_domain ()
-returns \-1,
-.BR Router_num_domains ()
-0.
 Automatic groups fall out of the worker index: G = max(ceil(S / group_size),
 ceil(R / group_size), 1), the receivers and the senders each dealt over them
 round-robin.
@@ -475,13 +453,16 @@ Every thread calls
 The next round may begin.
 .SH EXAMPLE
 .EX
+int n_nodes;
+MPI_Comm_size(MPI_COMM_WORLD, &n_nodes);
+int n_recv = R * n_nodes;   /* the shape this call gives every Router_Init below: no query needed */
+
 #pragma omp parallel
 {
     int tid  = omp_get_thread_num();
     int role = (tid <= R) ? ROUTER_RECEIVER : ROUTER_SENDER;   /* thread 0's is ignored */
     Router_thread rt = Router_Init(role, ROUTER_GROUP_AUTO, MPI_COMM_WORLD, 42,
                                    ROUTER_DEFAULT_OPTS);
-    int n_recv = Router_num_recv(rt);
     for (int round = 0; round < N; round++) {
         if (tid == 0) {
             while (!Router_Test_quiescent(rt))

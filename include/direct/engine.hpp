@@ -238,9 +238,6 @@ optional<pair<u64, u64>> run(const Wrapper &wrapper, u64 nbytes_memory, const Op
 		std::vector<u64> total;                /* thread 0: the all-time sums */
 		std::vector<u64> stats;                /* thread 0: the node's Router tallies for the phase */
 		if (role == ROUTER_SERVICE) {
-			if (Router_num_recv(rt) != params.n_dicts)
-				errx(1, "direct: the Router has %d receivers, the dictionary %d shards",
-				     Router_num_recv(rt), params.n_dicts);
 			records.assign((size_t) params.n_nodes * REC_WORDS, 0);
 			total.assign(REC_WORDS, 0);
 			stats.assign(ROUTER_STATS_SIZE, 0);
