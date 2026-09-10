@@ -9,20 +9,25 @@
 #include "tools.hpp"
 #include "parameters.hpp"
 #include "problem.hpp"
+#include "router/router.hpp"
+#include "direct/wrappers.hpp"
 
 /*
- * How fast do a problem's functions iterate, aggregated over a node's threads and over the ranks?
- * What every driver's --benchmark runs; needs no RAM budget, only the Options.  Not part of the
+ * How fast do a problem's functions iterate, aggregated over a node's threads and over the ranks, and per
+ * producer?  What every driver's --benchmark runs; needs no RAM budget, only the Options.  Not part of the
  * library: nothing in ../include depends on it (see driver.hpp).  The dictionary and staging
  * benchmarks that used to live here were built on PCS's parameters and come back when PCS does;
- * router_bench measures the communication path on its own.
+ * router_bench measures the communication path on its own.  The routed pass below reuses direct/producer.hpp's
+ * veval + hash + push body and router_bench's pure receive fold, to show what the Router itself costs a real
+ * producer over the isolated rate above.
  */
 
 namespace mitm {
 
-/* the rate of N * vlen evaluations since `start`: min, max, mean and std over the ranks, printed by
-   rank 0.  Collective */
-static void display_stats(u64 N, double start, int vlen, MPI_Comm comm, int rank, int n_nodes)
+/* the rate of N * vlen evaluations since `start`: min, max, mean and std over the ranks, and the per-producer
+   share of the mean (what one of the n_threads producer threads contributes, contention included), printed
+   by rank 0.  Collective */
+static void display_stats(u64 N, double start, int vlen, int n_threads, MPI_Comm comm, int rank, int n_nodes)
 {
 	double rate = vlen * N / (wtime() - start);
 	double rate_min = rate;
@@ -37,8 +42,133 @@ static void display_stats(u64 N, double start, int vlen, MPI_Comm comm, int rank
 	rate_std /= n_nodes;
 	rate_std = std::sqrt(rate_std);
 	if (rank == 0)
-		fmt::print("Benchmark. f/s: min {} max {} avg {} std {}\n", human_format(rate_min),
-		           human_format(rate_max), human_format(rate_avg), human_format(rate_std));
+		fmt::print("Benchmark. f/s: min {} max {} avg {} std {} | per-producer {}/s ({} threads)\n",
+		           human_format(rate_min), human_format(rate_max), human_format(rate_avg),
+		           human_format(rate_std), human_format(rate_avg / n_threads), n_threads);
+}
+
+/*
+ * The routed pass, in two pushers: `vectorized` false runs the scalar one -- one evaluation, one
+ * murmur64, one push per iteration, always pb.f (FILL's function for either wrapper) -- and true runs
+ * direct/producer.hpp's own body verbatim, vlen inputs through wrapper.veval and vlen pushes at a time.
+ * Either way, receivers fold what they pop the way router_bench's pure benchmark does, an add and a XOR, no
+ * murmur128 and no dictionary.  So the gap between one of these rates and the matching isolated rate above
+ * (scalar vs scalar, vector vs vector) is the Router's cost and nothing else.  Builds its own team for one
+ * second -- 1 service + dicts_per_node receivers + producers_per_node producers per node, the same knobs the
+ * direct engine sizes its team with -- then tears it down; needs no RAM budget, since nothing here is a
+ * dictionary.  Collective
+ */
+template <bool vectorized, class Wrapper>
+static void routed_benchmark(const Wrapper &wrapper, const Options &opts, int rank, int n_nodes)
+{
+	constexpr int vlen = Wrapper::vlen;
+	constexpr int TAG = 99;
+	constexpr double SECONDS = 1.0;
+
+	int n_cpu = omp_get_num_procs();
+	if (opts.dicts_per_node < 1)
+		errx(1, "benchmark: --dicts-per-node must be at least 1");
+	int R = opts.dicts_per_node;
+	int S = opts.producers_per_node > 0 ? opts.producers_per_node : n_cpu - 1 - R;
+	if (S < 1)
+		errx(1, "benchmark: no CPU left for a producer (%d available, 1 service thread, %d receivers)", n_cpu, R);
+	int n_threads = 1 + R + S;
+	u64 n_recv = (u64) R * (u64) n_nodes;
+	u64 mask = make_mask(wrapper.n);
+
+	if (rank == 0)
+		printf("Benchmarking routed %s implementation (%d processes x (1 service + %d receiver + %d producer))\n",
+		       vectorized ? "vector" : "scalar", n_nodes, R, S);
+	MPI_Barrier(opts.mpi_comm);
+
+	u64 xor_hash = 0;
+	double t0 = 0;
+	#pragma omp parallel num_threads(n_threads) reduction(^:xor_hash)
+	{
+		int tid = omp_get_thread_num();
+		int role = (tid == 0) ? ROUTER_SERVICE : (tid <= R ? ROUTER_RECEIVER : ROUTER_SENDER);
+		Router_thread rt = Router_Init(role, ROUTER_GROUP_AUTO, opts.mpi_comm, TAG, &opts.router);
+
+		if (tid == 0)
+			t0 = wtime();
+		#pragma omp barrier
+
+		if (role == ROUTER_SERVICE) {
+			while (not Router_Test_quiescent(rt))
+				Router_Progress(rt);
+		} else if (role == ROUTER_RECEIVER) {
+			u64 x = 0;
+			for (;;) {
+				u64 a, b;
+				if (not Router_Pop(&a, &b, rt)) {
+					if (Router_Test_drained(rt))
+						break;
+					cpu_relax();
+					continue;
+				}
+				x ^= a + b;
+			}
+			xor_hash ^= x;
+		} else if constexpr (vectorized) {
+			u64 x[vlen] __attribute__ ((aligned(sizeof(u64) * vlen)));
+			u64 y[vlen] __attribute__ ((aligned(sizeof(u64) * vlen)));
+			u64 base = (u64) rt.index << 40;      /* keeps producers from all walking the same inputs */
+			u64 n = 0;
+			double t_end = t0 + SECONDS;
+			for (;;) {
+				for (int j = 0; j < 256; j++) {
+					for (int k = 0; k < vlen; k++)
+						x[k] = (base + n + (u64) k) & mask;
+					wrapper.veval(direct::FILL, x, y);
+					for (int k = 0; k < vlen; k++) {
+						u64 h = murmur64(y[k]);
+						int dest = (int) (((h & 0xffffffffull) * n_recv) >> 32);
+						Router_Push(h, x[k], dest, rt);
+					}
+					n += (u64) vlen;
+				}
+				if (wtime() >= t_end)
+					break;
+			}
+			Router_Close(rt);
+		} else {
+			u64 base = (u64) rt.index << 40;      /* keeps producers from all walking the same inputs */
+			u64 n = 0;
+			double t_end = t0 + SECONDS;
+			for (;;) {
+				for (int j = 0; j < 256; j++) {
+					u64 x = (base + n) & mask;
+					u64 y = wrapper.pb.f(x);
+					u64 h = murmur64(y);
+					int dest = (int) (((h & 0xffffffffull) * n_recv) >> 32);
+					Router_Push(h, x, dest, rt);
+					n += 1;
+				}
+				if (wtime() >= t_end)
+					break;
+			}
+			Router_Close(rt);
+		}
+
+		#pragma omp barrier
+		if (tid == 0) {
+			double elapsed = wtime() - t0;
+			u64 st[ROUTER_STATS_SIZE];
+			Router_Stats(st, rt);
+			u64 tot[ROUTER_STATS_SIZE];
+			u64 folded;
+			MPI_Reduce(st, tot, ROUTER_STATS_SIZE, MPI_UINT64_T, MPI_SUM, 0, opts.mpi_comm);
+			MPI_Reduce(&xor_hash, &folded, 1, MPI_UINT64_T, MPI_BXOR, 0, opts.mpi_comm);
+			if (rank == 0) {
+				u64 nsend = (u64) S * (u64) n_nodes;
+				fmt::print("Routed ({}): {} pts/s | {} f/s per producer | node-->{}B/s | xor {:016x}\n",
+				           vectorized ? "vector" : "scalar", human_format((u64) (tot[ROUTER_POPPED] / elapsed)),
+				           human_format((u64) (tot[ROUTER_PUSHED] / elapsed / nsend)),
+				           human_format((u64) (tot[ROUTER_BYTES_SENT] / elapsed / n_nodes)), folded);
+			}
+		}
+		Router_Reset(rt);
+	}
 }
 
 /*
@@ -82,7 +212,7 @@ void benchmark(const Problem& pb, const Options &opts)
 		}
 		checksum ^= x1;
 	}
-	display_stats(N * n_threads, start, 1, opts.mpi_comm, rank, n_nodes);
+	display_stats(N * n_threads, start, 1, n_threads, opts.mpi_comm, rank, n_nodes);
 	if (rank == 0)
 		printf("  checksum %016" PRIx64 "\n", checksum);
 
@@ -118,9 +248,22 @@ void benchmark(const Problem& pb, const Options &opts)
 			for (int j = 0; j < vlen; j++)
 				vchecksum ^= x[j];
 		}
-		display_stats(N2 * n_threads, start2, vlen, opts.mpi_comm, rank, n_nodes);
+		display_stats(N2 * n_threads, start2, vlen, n_threads, opts.mpi_comm, rank, n_nodes);
 		if (rank == 0)
 			printf("  checksum %016" PRIx64 "\n", vchecksum);
+	}
+
+	MPI_Barrier(opts.mpi_comm);
+	if constexpr (claw) {
+		direct::ClawWrapper<Problem> wrapper(pb);
+		routed_benchmark<false>(wrapper, opts, rank, n_nodes);
+		if constexpr (vlen > 1)
+			routed_benchmark<true>(wrapper, opts, rank, n_nodes);
+	} else {
+		direct::CollisionWrapper<Problem> wrapper(pb);
+		routed_benchmark<false>(wrapper, opts, rank, n_nodes);
+		if constexpr (vlen > 1)
+			routed_benchmark<true>(wrapper, opts, rank, n_nodes);
 	}
 }
 }

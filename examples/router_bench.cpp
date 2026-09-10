@@ -10,29 +10,34 @@
 #include "router_driver.hpp"
 
 /*
- * The Router's throughput benchmark: senders push as fast as they can, one PRNG call per point (a producer
- * computes, it does not idle, and an idling core is clocked down), to uniform, skewed or node-local
- * destinations; receivers pop the points one at a time and hash each (murmur128), folding the hashes by XOR; the
- * service thread
- * runs until quiescent.  Prints, per round, the aggregate rate of points routed (delivered to a receiver), then
- * per node the push and pop rates, the network traffic, the service thread's duty cycle, the cost of a point
- * on a sender (the PRNG call and the destination pick included) and the XOR of every hash folded over the
- * receivers and the nodes: it keeps the hashes from being optimised away, and it depends on the points alone,
- * not on their order or their route.  Before the rounds, the raw benchmark: the senders
+ * The Router's pure throughput benchmark: senders push as fast as they can, one counter increment per point (a
+ * producer computes, it does not idle, and an idling core is clocked down), to uniform, skewed or node-local
+ * destinations picked by a multiply-high fan-out (no PRNG, no modulo: nothing but the router's own cost sits on
+ * the sender's critical path); receivers pop the points one at a time and fold each with an add and a XOR; the
+ * service thread runs until quiescent.  Prints, per round, the aggregate rate of points routed (delivered to a
+ * receiver), then per node the push and pop rates, the network traffic, the service thread's duty cycle, the
+ * cost of a point on a sender (the destination pick included) and the XOR of every fold over the receivers and
+ * the nodes: it keeps the computation from being optimised away, and it depends on the points alone, not on
+ * their order or their route.  Before the rounds, the raw benchmark: the senders
  * run that same loop for a second with Router_Push taken out of it, so the difference between the raw rate and
  * the routed rate is the router and nothing else.
  */
 using namespace mitm;
 
-static const u64 seed = 1337;       /* the senders' PRNG streams: this key, the sender's global index as the sequence */
-std::vector<double> ns_per_point;   /* per sender: a point's cost, the PRNG call and the destination pick included */
-u64 xor_hash = 0;                   /* the node's receivers' hashes, folded; the raw run's outputs */
+std::vector<double> ns_per_point;   /* per sender: a point's cost, the destination pick included */
+u64 xor_hash = 0;                   /* the node's receivers' folds, folded; the raw run's outputs */
 double raw_rate = 0;                /* points/s the node's senders generate without pushing, summed */
 
-/* Where a point goes: the sender's fan-out, and the raw run's, so that the two cannot drift apart.  The modulo
- * is deliberately 32-bit: a 64-bit divq is microcoded on Skylake (36-95 cycles against 26 for divl) and costs
- * more than the push it feeds, which throttles the senders below the router's own rate and hides it.  F and per
- * are tiny, so folding x to 32 bits first biases nothing that matters here. */
+/* Knuth's odd 64-bit approximation of 2^64/phi: one multiply spreads a monotonic counter over the full word
+ * (Fibonacci/Weyl hashing).  Its *high* bits are what mix -- a multiplication's low bits only ever see the
+ * low bits of the multiplicand, so a raw counter's low 32 bits would stay sequential and every point would
+ * land on destination 0 for as long as the counter takes to cross 2^32/F, which a benchmark round never does. */
+static constexpr u64 FIB_MULT = 0x9e3779b97f4a7c15ull;
+
+/* Where a point goes: the sender's fan-out, and the raw run's, so that the two cannot drift apart.  No modulo,
+ * no PRNG: the counter is spread by FIB_MULT, its high 32 bits times the destination count, taken >> 32, map
+ * [0, 2^32) onto [0, F) the way a 64-bit divq would but for one multiply and a shift (cf. Lemire's range
+ * reduction) -- the same trick direct/producer.hpp uses on a hash's low word to pick a dict thread. */
 struct Fanout {
 	int F;                      /* destinations: the receivers, or --dests' virtual fan-out */
 	int per;                    /* local-only: destinations on this node, [base, base + per) */
@@ -46,7 +51,8 @@ struct Fanout {
 
 	int operator()(u64 x) const
 	{
-		return local_only ? base + (int) ((u32) x % (u32) per) : (int) ((u32) x % (u32) F);
+		u32 key = (u32) ((x * FIB_MULT) >> 32);
+		return local_only ? base + (int) (((u64) per * key) >> 32) : (int) (((u64) F * key) >> 32);
 	}
 };
 
@@ -55,14 +61,13 @@ struct Fanout {
 static void bench_raw(Router_thread &rt, const RouterArgs &a)
 {
 	Fanout fan(rt, a);
-	PRNG prng(seed, (u64) (rt.node.rank * rt.node.S + rt.index));
 	u64 acc = 0;
 	u64 n = 0;
 	double t0 = wtime();
 	double t;
 	for (;;) {
 		for (int j = 0; j < 1024; j++) {
-			u64 x = prng.rand();
+			u64 x = n + (u64) j;       /* the simple counter: no PRNG on the sender's critical path */
 			acc ^= x ^ (u64) fan(x);   /* consumed, or the destination pick is optimised away */
 		}
 		n += 1024;
@@ -93,13 +98,11 @@ static void raw_report(const Router_thread &rt)
 static void bench_sender(Router_thread &rt, const RouterArgs &a, double t_end)
 {
 	Fanout fan(rt, a);
-	PRNG prng(seed, (u64) (rt.node.rank * rt.node.S + rt.index));
 	u64 n = 0;
 	double t0 = wtime();
 	for (;;) {
 		for (int j = 0; j < 1024; j++) {
-			u64 x = prng.rand();
-			Router_Push(x, n, fan(x), rt);
+			Router_Push(n, n, fan(n), rt);   /* the counter is both the routing key and the payload */
 			n += 1;
 		}
 		if (wtime() >= t_end)
@@ -121,7 +124,7 @@ static void bench_receiver(Router_thread &rt)
 			cpu_relax();
 			continue;
 		}
-		x ^= murmur128(a, b);
+		x ^= a + b;   /* no murmur128: an add and a XOR, so the fold is not the bottleneck either */
 	}
 	#pragma omp atomic
 	xor_hash ^= x;
