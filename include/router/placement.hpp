@@ -166,12 +166,14 @@ struct RouterPlacement {
 	}
 
 	/*
-	 * The pinned placement: the service on domain 0, then the receivers and the senders round-robined over the
-	 * domains on ONE cursor that starts after the service's domain, so that the two passes' remainders do not
-	 * stack up on the low domains (they did, and the team then doubled up cores at one end of the machine
+	 * The pinned placement: the service on the first domain, then the receivers and the senders round-robined
+	 * over the domains on ONE cursor that starts after the service's domain, so that the two passes' remainders
+	 * do not stack up on the low domains (they did, and the team then doubled up cores at one end of the machine
 	 * while leaving cores idle at the other), each onto its domain's emptiest core (a full domain borrows
-	 * the globally emptiest core) and, in AUTO, into its domain's least-filled group.  Reached from the
-	 * constructor when pin is true.
+	 * the globally emptiest core) and, in AUTO, into its domain's least-filled group.  The cursor runs over the
+	 * domains with the NUMA nodes interleaved, because a pass's remainder is a contiguous run of it: in domain
+	 * order that run is one node's, which gave a node the whole remainder of a role while the other got none.
+	 * Reached from the constructor when pin is true.
 	 */
 	void place_pinned(const cpu_set_t &mask, bool auto_groups, int cache_level_opt, int group_size, int rank)
 	{
@@ -227,15 +229,39 @@ struct RouterPlacement {
 			group_receivers.assign(n_groups, std::vector<int>());
 		}
 
+		std::vector<std::vector<int>> numa_domains(n_numa_nodes);   /* the domains of each NUMA node, ascending */
+		for (int d = 0; d < n_domains; d++) {
+			int cpu = core_cpus[cache_cores[d][0]][0];
+			int j = std::find(numa_ids.begin(), numa_ids.end(), numa_of_cpu[cpu]) - numa_ids.begin();
+			numa_domains[j].push_back(d);
+		}
+		std::vector<int> taken(n_numa_nodes, 0);    /* domains of each NUMA node already in the order */
+		std::vector<int> domain_order;              /* the cursor's order: the NUMA nodes interleaved, in proportion
+		                                             * to their domains, so that any run of the cursor is shared out
+		                                             * between the nodes as their sizes are */
+		for (int k = 0; k < n_domains; k++) {
+			int best = -1;                          /* the node least far into its domains: the smallest taken/size */
+			for (int j = 0; j < n_numa_nodes; j++) {
+				if (taken[j] == (int) numa_domains[j].size())
+					continue;
+				if (best < 0 || (long long) taken[j] * (long long) numa_domains[best].size()
+				              < (long long) taken[best] * (long long) numa_domains[j].size())
+					best = j;
+			}
+			domain_order.push_back(numa_domains[best][taken[best]++]);
+		}
+
 		std::vector<int> grp_recv(n_groups, 0);     /* receivers placed in each group so far, for least_filled */
 		std::vector<size_t> next_cpu(core_cpus.size(), 0);   /* each core's next free CPU */
 
-		int sk = emptiest_core(cache_cores[0], core_cpus, next_cpu);   /* the service: domain 0, a core of its own */
+		int d0 = domain_order[0];                   /* the service: the first domain of the order, a core of its own */
+		int sk = emptiest_core(cache_cores[d0], core_cpus, next_cpu);
 		thread_cpu[0] = core_cpus[sk][next_cpu[sk]++];
-		thread_domain[0] = 0;
+		thread_domain[0] = d0;
 		thread_numa[0] = numa_of_cpu[thread_cpu[0]];
 
-		int dc = n_domains > 1 ? 1 : 0;             /* the domain cursor: the service already took a core of domain 0 */
+		int dc = n_domains > 1 ? 1 : 0;             /* the cursor, a position in domain_order: the service took the
+		                                             * core it starts on */
 		int r_local = 0;
 		for (int pass = 0; pass < 2; pass++) {      /* the receivers, then the senders, on one cursor over the whole
 		                                             * team, so the two passes' remainders do not stack up on the
@@ -245,7 +271,7 @@ struct RouterPlacement {
 			for (int t = 0; t < n_threads; t++) {
 				if (thread_role[t] != want)
 					continue;
-				int d = dc;
+				int d = domain_order[dc];
 				dc = (dc + 1) % n_domains;
 				int k = emptiest_core(cache_cores[d], core_cpus, next_cpu);
 				if (k < 0) {                /* domain d is full: take the globally emptiest core */

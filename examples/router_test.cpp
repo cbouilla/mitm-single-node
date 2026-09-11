@@ -3,7 +3,10 @@
 #include <sched.h>
 #include <atomic>
 #include <vector>
+#include <string>
+#include <algorithm>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <inttypes.h>
 
@@ -278,6 +281,265 @@ static void run_config(const RouterArgs &a, const char *name, bool use_colors = 
 	}
 }
 
+/*
+ * The placer on fabricated machines.  RouterPlacement is pure computation over an affinity mask and the
+ * topology hwloc reports -- it pins nothing, connect() does -- so a synthetic machine and a mask of its CPUs
+ * exercise shapes no test host has: two sockets, four, 32 cache domains, a team that fills every CPU.
+ */
+struct PlacementCase {
+	const char *machine;             /* the machine, as HWLOC_SYNTHETIC spells it */
+	int n_numa;                      /* its NUMA nodes */
+	int n_dom;                       /* its cache domains */
+	int n_core;                      /* its cores */
+	int n_cpu;                       /* its PUs, which are the mask the placer is given */
+	int senders;                     /* the team, besides the one service thread */
+	int receivers;
+	int group_size;                  /* cores per group at most */
+};
+
+static const PlacementCase PLACEMENT_CASES[] = {
+	{"node:2 l3:16 core:8 pu:2", 2, 32, 256, 512,  71, 184, 16},   /* the EPYC whose roles the placer skewed */
+	{"node:2 l3:2 core:4 pu:1",  2,  4,  16,  16,   6,   9, 16},
+	{"node:2 l3:2 core:4 pu:2",  2,  4,  16,  32,  20,  11,  2},   /* a team on every CPU, groups within a domain */
+	{"node:4 l3:2 core:4 pu:2",  4,  8,  32,  64,  13,  21, 16},   /* four NUMA nodes, more threads than cores */
+	{"node:1 l3:4 core:4 pu:2",  1,  4,  16,  32,  17,   7,  4},   /* one NUMA node: the order stays the domains' */
+};
+
+/* the plan's threads of `role` per NUMA node, or of every role when role < 0.  The synthetic machines number
+ * their NUMA nodes 0..n-1, which is what thread_numa holds. */
+static void count_by_numa(const RouterPlacement &p, int role, std::vector<int> &cnt)
+{
+	cnt.assign(p.n_numa_nodes, 0);
+	for (int t = 0; t < p.n_threads; t++) {
+		CHECK(p.thread_numa[t] >= 0 && p.thread_numa[t] < p.n_numa_nodes);
+		if (role < 0 || p.thread_role[t] == role)
+			cnt[p.thread_numa[t]] += 1;
+	}
+}
+
+/* max - min over `cnt`: what a round-robin deal bounds by one, be it over the domains or the NUMA nodes */
+static int spread(const std::vector<int> &cnt)
+{
+	int lo = cnt[0];
+	int hi = cnt[0];
+	for (size_t k = 1; k < cnt.size(); k++) {
+		lo = std::min(lo, cnt[k]);
+		hi = std::max(hi, cnt[k]);
+	}
+	return hi - lo;
+}
+
+/*
+ * The pinned plan: a CPU of its own for every thread and a core of its own while cores last, the whole team
+ * spread over the domains, and -- what the domain order is for -- every role spread over the NUMA nodes, not
+ * just the team as a whole.  The machines are regular, so every one of those is a round-robin deal: +- 1.
+ */
+static void check_plan(const RouterPlacement &p, const PlacementCase &c)
+{
+	int nt = 1 + c.senders + c.receivers;
+	CHECK(p.n_threads == nt);
+	CHECK(p.n_numa_nodes == c.n_numa);
+	CHECK(p.n_domains == c.n_dom);
+	if (p.n_numa_nodes != c.n_numa || p.n_domains != c.n_dom)
+		return;
+
+	int pu_per_core = c.n_cpu / c.n_core;       /* a synthetic machine numbers its PUs core by core */
+	std::vector<int> per_cpu(c.n_cpu, 0);
+	std::vector<int> per_core(c.n_core, 0);
+	for (int t = 0; t < nt; t++) {
+		CHECK(p.thread_cpu[t] >= 0 && p.thread_cpu[t] < c.n_cpu);
+		if (p.thread_cpu[t] < 0 || p.thread_cpu[t] >= c.n_cpu)
+			return;
+		per_cpu[p.thread_cpu[t]] += 1;
+		per_core[p.thread_cpu[t] / pu_per_core] += 1;
+	}
+	for (int cpu = 0; cpu < c.n_cpu; cpu++)
+		CHECK(per_cpu[cpu] <= 1);
+	if (nt <= c.n_core)                         /* SMT siblings fill up only once every core is taken */
+		for (int k = 0; k < c.n_core; k++)
+			CHECK(per_core[k] <= 1);
+
+	std::vector<int> per_dom(c.n_dom, 0);
+	for (int t = 0; t < nt; t++) {
+		CHECK(p.thread_domain[t] >= 0 && p.thread_domain[t] < c.n_dom);
+		if (p.thread_domain[t] < 0 || p.thread_domain[t] >= c.n_dom)
+			return;
+		per_dom[p.thread_domain[t]] += 1;
+	}
+	CHECK(spread(per_dom) <= 1);
+
+	std::vector<int> cnt;                       /* the team, then each role on its own, over the NUMA nodes */
+	count_by_numa(p, -1, cnt);
+	CHECK(spread(cnt) <= 1);
+	count_by_numa(p, ROUTER_RECEIVER, cnt);
+	CHECK(spread(cnt) <= 1);
+	count_by_numa(p, ROUTER_SENDER, cnt);
+	CHECK(spread(cnt) <= 1);
+}
+
+/*
+ * The groups of a pinned AUTO plan: one cache domain each, every worker in one and the service thread in none,
+ * both roles spread over a domain's groups, and every receiver in exactly one group by its local index.
+ */
+static void check_groups(const RouterPlacement &p, const PlacementCase &c)
+{
+	int nt = 1 + c.senders + c.receivers;
+	CHECK(p.n_groups > 0);
+	std::vector<int> gs(p.n_groups, 0);
+	std::vector<int> gr(p.n_groups, 0);
+	for (int t = 0; t < nt; t++) {
+		if (p.thread_role[t] == ROUTER_SERVICE) {
+			CHECK(p.thread_group[t] == -1);
+			continue;
+		}
+		int g = p.thread_group[t];
+		CHECK(g >= 0 && g < p.n_groups);
+		if (g < 0 || g >= p.n_groups)
+			return;
+		CHECK(p.group_domain[g] == p.thread_domain[t]);
+		if (p.thread_role[t] == ROUTER_SENDER)
+			gs[g] += 1;
+		else
+			gr[g] += 1;
+	}
+	for (int g = 0; g < p.n_groups; g++) {
+		CHECK(gs[g] == p.group_nsend[g]);
+		CHECK(gr[g] == (int) p.group_receivers[g].size());
+	}
+
+	for (int d = 0; d < c.n_dom; d++) {         /* a domain's groups hold the same of each role, +- 1 */
+		std::vector<int> ds;
+		std::vector<int> dr;
+		for (int g = 0; g < p.n_groups; g++) {
+			if (p.group_domain[g] != d)
+				continue;
+			ds.push_back(gs[g]);
+			dr.push_back(gr[g]);
+		}
+		CHECK(not ds.empty());
+		if (ds.empty())
+			return;
+		CHECK(spread(ds) <= 1);
+		CHECK(spread(dr) <= 1);
+	}
+
+	std::vector<int> seen(c.receivers, 0);      /* the local receiver indices are a partition of 0..R-1 */
+	for (int g = 0; g < p.n_groups; g++)
+		for (size_t k = 0; k < p.group_receivers[g].size(); k++) {
+			int r = p.group_receivers[g][k];
+			CHECK(r >= 0 && r < c.receivers);
+			if (r >= 0 && r < c.receivers)
+				seen[r] += 1;
+		}
+	for (int r = 0; r < c.receivers; r++)
+		CHECK(seen[r] == 1);
+}
+
+/* the unpinned plan: no CPU and no topology at all, the groups cut out of the worker index, both roles +- 1 */
+static void check_plan_unpinned(const RouterPlacement &p, const PlacementCase &c)
+{
+	int nt = 1 + c.senders + c.receivers;
+	int gs = (c.senders + c.group_size - 1) / c.group_size;
+	int gr = (c.receivers + c.group_size - 1) / c.group_size;
+	CHECK(p.n_groups == std::max(std::max(gs, gr), 1));
+	CHECK(p.n_domains == 0);
+	for (int t = 0; t < nt; t++) {
+		CHECK(p.thread_cpu[t] == -1);
+		CHECK(p.thread_numa[t] == -1);
+		CHECK(p.thread_domain[t] == -1);
+		if (p.thread_role[t] == ROUTER_SERVICE)
+			CHECK(p.thread_group[t] == -1);
+	}
+	std::vector<int> ns(p.n_groups, 0);
+	std::vector<int> nr(p.n_groups, 0);
+	for (int t = 0; t < nt; t++) {
+		if (p.thread_role[t] == ROUTER_SERVICE)
+			continue;
+		CHECK(p.thread_group[t] >= 0 && p.thread_group[t] < p.n_groups);
+		if (p.thread_group[t] < 0 || p.thread_group[t] >= p.n_groups)
+			return;
+		if (p.thread_role[t] == ROUTER_SENDER)
+			ns[p.thread_group[t]] += 1;
+		else
+			nr[p.thread_group[t]] += 1;
+	}
+	CHECK(spread(ns) <= 1);
+	CHECK(spread(nr) <= 1);
+}
+
+/* the caller's groups: the color is the group, whatever the domain the thread was pinned in */
+static void check_plan_colors(const RouterPlacement &p, const PlacementCase &c, const std::vector<int> &colors)
+{
+	int nt = 1 + c.senders + c.receivers;
+	int G = 0;
+	for (int t = 1; t < nt; t++)
+		G = std::max(G, colors[t] + 1);
+	CHECK(p.n_groups == G);
+	for (int t = 1; t < nt; t++) {
+		CHECK(p.thread_group[t] == colors[t]);
+		CHECK(p.group_domain[colors[t]] == -1);
+	}
+}
+
+/* the pinned plan in one line: what every NUMA node got of each role, which is what the domain order decides */
+static void report_plan(const RouterPlacement &p, const PlacementCase &c)
+{
+	std::vector<int> ns;
+	std::vector<int> nr;
+	count_by_numa(p, ROUTER_SENDER, ns);
+	count_by_numa(p, ROUTER_RECEIVER, nr);
+	printf("== placement (%s, %d senders, %d receivers, %d group(s)):", c.machine, c.senders, c.receivers,
+	       p.n_groups);
+	for (int j = 0; j < p.n_numa_nodes; j++)
+		printf("  NUMA %d: %ds %dr", j, ns[j], nr[j]);
+	printf("\n");
+}
+
+/*
+ * Every case on its machine: the pinned AUTO plan and its groups, the same team unpinned, then the same team
+ * pinned with the caller's colors.  HWLOC_SYNTHETIC is set per case and restored, so the configurations that
+ * follow see the real machine again; every RouterPlacement loads the topology itself, so it takes effect.
+ */
+static void test_placement(bool verbose)
+{
+	const char *saved = getenv("HWLOC_SYNTHETIC");
+	std::string old = (saved != NULL) ? saved : "";
+	for (size_t k = 0; k < sizeof(PLACEMENT_CASES) / sizeof(PLACEMENT_CASES[0]); k++) {
+		const PlacementCase &c = PLACEMENT_CASES[k];
+		setenv("HWLOC_SYNTHETIC", c.machine, 1);
+		cpu_set_t mask;
+		CPU_ZERO(&mask);
+		for (int cpu = 0; cpu < c.n_cpu; cpu++)
+			CPU_SET(cpu, &mask);
+		int nt = 1 + c.senders + c.receivers;
+		std::vector<int> roles(nt, ROUTER_SENDER);
+		roles[0] = ROUTER_SERVICE;
+		for (int t = 1; t <= c.receivers; t++)
+			roles[t] = ROUTER_RECEIVER;
+		std::vector<int> autos(nt, ROUTER_GROUP_AUTO);
+
+		RouterPlacement pinned(mask, roles, autos, true, 0, c.group_size, 0);
+		check_plan(pinned, c);
+		check_groups(pinned, c);
+		if (verbose)
+			report_plan(pinned, c);
+
+		RouterPlacement loose(mask, roles, autos, false, 0, c.group_size, 0);
+		check_plan_unpinned(loose, c);
+
+		std::vector<int> colors(nt, ROUTER_GROUP_AUTO);   /* two groups, as PCS would split a team by hand */
+		for (int t = 1; t < nt; t++)
+			colors[t] = (t - 1) % 2;
+		RouterPlacement split(mask, roles, colors, true, 0, c.group_size, 0);
+		check_plan(split, c);
+		check_plan_colors(split, c, colors);
+	}
+	if (saved != NULL)
+		setenv("HWLOC_SYNTHETIC", old.c_str(), 1);
+	else
+		unsetenv("HWLOC_SYNTHETIC");
+}
+
 int main(int argc, char **argv)
 {
 	int provided;
@@ -293,6 +555,10 @@ int main(int argc, char **argv)
 	a.opts.verbose = a.opts.verbose && g_rank == 0;
 	bool all = a.test == "all";
 
+	if (all || a.test == "placement") {
+		if (g_rank == 0)                /* the placer is pure computation: one rank runs it, no team at all */
+			test_placement(a.opts.verbose);
+	}
 	if (all || a.test == "connect_only") {
 		RouterArgs c = a;
 		c.rounds = 0;

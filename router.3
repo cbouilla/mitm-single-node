@@ -251,10 +251,14 @@ names.
 If the CPUs share no such cache, the whole set is one domain.
 Then:
 .IP 1. 4
-The service thread takes a core of domain 0, alone.
+The service thread takes a core of the first domain, alone.
 .IP 2. 4
 The receivers, then the senders, are dealt round-robin over the domains, one
 cursor for the whole team starting after the service thread's domain.
+The cursor runs over the domains with the NUMA nodes interleaved, in proportion
+to the domains each holds, because a pass's remainder is a contiguous run of the
+cursor: in domain order that run falls inside one node, which hands that node
+the whole remainder of a role while the other gets none of it.
 Each takes the emptiest core of its domain, the one with the fewest threads
 placed so far; when every core of the domain is taken, the emptiest core of the
 whole set.
