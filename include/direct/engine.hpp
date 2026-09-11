@@ -96,7 +96,8 @@ static void shard_report(const Params &params, const Shared &shared)
 	fflush(stdout);
 }
 
-/* the live one-line refresh: rank 0's own node, read from its tallies without synchronisation */
+/* the live one-line refresh: rank 0's own node, read from its tallies without synchronisation, scaled to
+   every node -- the points its dict threads retired are the points the Router delivered to them */
 static void display(const Params &params, const Shared &shared, const u64 *stats, double delta, u64 round,
                     int phase)
 {
@@ -110,12 +111,10 @@ static void display(const Params &params, const Shared &shared, const u64 *stats
 	if (phase == FILL)
 		span = std::min(params.per_round, params.domain - round * params.per_round);
 	double completion = (double) eval * params.n_nodes / (double) span;
-	print("\rRound {}/{} {}:  {:.1f}s ({:.1f}%, ETA {:.1f}s).  {} #f/s per producer.  "
-	      "{} points/s per dict thread.  node-->{}B/s   ", round, params.n_rounds,
-	      (phase == FILL) ? "FILL" : "PROBE", delta, 100. * completion,
+	print("\rRound {}/{} {}:  {:.1f}s ({:.1f}%, ETA {:.1f}s).  {} points routed/s.  node-->{}B/s   ",
+	      round, params.n_rounds, (phase == FILL) ? "FILL" : "PROBE", delta, 100. * completion,
 	      (completion > 0) ? delta * (1 - completion) / completion : 0.,
-	      human_format((double) eval / params.S / delta),
-	      human_format((double) retired / params.R / delta),
+	      human_format((double) retired * params.n_nodes / delta),
 	      human_format((double) stats[ROUTER_BYTES_SENT] / delta));
 	fflush(stdout);
 }
@@ -125,13 +124,12 @@ static void round_report(const Params &params, const u64 r[], const u64 total[],
                          int phase)
 {
 	print("\n");
-	print("Round {} {}.  {:.1f}s.  2^{:.2f} evaluations (total 2^{:.2f}).  {} #f/s per producer.  "
-	      "node-->{}B/s.  {} points/s per dict thread\n", round, (phase == FILL) ? "FILL" : "PROBE", delta,
+	print("Round {} {}.  {:.1f}s.  2^{:.2f} evaluations (total 2^{:.2f}).  {} points routed/s.  "
+	      "node-->{}B/s\n", round, (phase == FILL) ? "FILL" : "PROBE", delta,
 	      std::log2((double) (r[N_EVAL] ? r[N_EVAL] : 1)),
 	      std::log2((double) (total[N_EVAL] ? total[N_EVAL] : 1)),
-	      human_format((double) r[N_EVAL] / params.n_producers / delta),
-	      human_format((double) r[REC_ROUTER + ROUTER_BYTES_SENT] / params.n_nodes / delta),
-	      human_format((double) (r[N_INSERT] + r[N_PROBE]) / params.n_dicts / delta));
+	      human_format((double) (r[N_INSERT] + r[N_PROBE]) / delta),
+	      human_format((double) r[REC_ROUTER + ROUTER_BYTES_SENT] / params.n_nodes / delta));
 	if (r[N_INSERT] > 0)
 		print("            {} inserted, load {:.2f}/slot, {:.2f} slots visited per insert\n",
 		      r[N_INSERT], (double) r[N_INSERT] / params.w, (double) r[N_STEPS] / r[N_INSERT]);
