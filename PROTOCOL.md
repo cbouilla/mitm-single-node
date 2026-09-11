@@ -38,7 +38,10 @@ plan and the measured layout itself.  The engine passes `ROUTER_GROUP_AUTO`, nev
 never queries hwloc; `--no-bind` is `opts.router.pin = false`, needed when two ranks share a host.
 The engine ignores the groups: a match is resolved where it is found, so no producer needs to be
 paired with a dict thread.  A dict thread builds its shard right after `Router_Init`, i.e. once
-pinned, so the zero-fill is the first touch of every page.
+pinned, so the zero-fill is the first touch of every page.  That shard is one `mmap`, asked for on
+2 MB pages (`MAP_HUGETLB`) and taken on ordinary ones when the kernel has no huge page reserved; the
+length is rounded up to a whole huge page, so a run holds up to 2 MB per shard more than `--ram`
+allows, and what the kernel really granted is read back from `/proc/self/smaps` and reported.
 
 ### 1.2 One direct round is two Router rounds
 

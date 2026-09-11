@@ -5,6 +5,7 @@
 #include <omp.h>
 #include <cmath>
 #include <cassert>
+#include <cstring>
 #include <vector>
 
 #include "tools.hpp"
@@ -52,6 +53,46 @@ static void banner(const Wrapper &wrapper, const Params &params, u64 seed)
 	if (params.capped)
 		print("NOTICE: --nrounds caps the search at {} round(s): it is NOT exhaustive\n",
 		      params.n_rounds);
+	fflush(stdout);
+}
+
+/*
+ * How to get the 2 MB pages the kernel refused: the pool is the administrator's to reserve and cannot be grown
+ * from here, so this is advice for the next run.
+ */
+static void hugetlb_advice(u64 nbytes, int n_shards)
+{
+	u64 pages = (u64) n_shards * nbytes / HUGE_PAGE;
+	print("            to get them: as root, `sysctl vm.nr_hugepages={}` (or `echo {} > /proc/sys/vm/"
+	      "nr_hugepages`),\n", pages, pages);
+	print("            then run again.  {} pages cover this rank's {} shard(s); ask for more -- the pool is "
+	      "the host's,\n", pages, n_shards);
+	print("            shared by every rank on it and spread over its NUMA nodes.  `vm.nr_hugepages = {}` "
+	      "in /etc/sysctl.conf,\n", pages);
+	print("            or `hugepages={}` on the kernel command line, reserves it at every boot, out of "
+	      "unfragmented memory.\n", pages);
+}
+
+/*
+ * What this node's dict threads got for their shards' pages, printed by thread 0 once every one of them has
+ * reported -- before the live line starts, which is why the service thread holds that line until then.
+ */
+static void shard_report(const Params &params, const Shared &shared)
+{
+	int refused = 0;
+	for (int i = 0; i < params.R; i++) {
+		const ShardPages &p = shared.pages[i];
+		if (p.hugetlb_errno == 0) {
+			print("Dictionary: shard {} of {}B on MAP_HUGETLB, {}B measured on 2 MB pages\n", i,
+			      human_format(p.nbytes), human_format(p.huge));
+			continue;
+		}
+		print("Dictionary: shard {} of {}B: no MAP_HUGETLB ({}), {}B measured on transparent 2 MB pages\n",
+		      i, human_format(p.nbytes), strerror(p.hugetlb_errno), human_format(p.huge));
+		refused += 1;
+	}
+	if (refused > 0)
+		hugetlb_advice(shared.pages[0].nbytes, params.R);
 	fflush(stdout);
 }
 
@@ -136,9 +177,16 @@ static void service_round(Router_thread &rt, const Params &params, const Shared 
 {
 	double last = t0;
 	u64 turns = 0;
+	bool pending = params.verbose && round == 0 && phase == FILL;   /* the shard report is still to come */
 	while (not Router_Test_quiescent(rt)) {
 		Router_Progress(rt);
 		turns += 1;
+		if (pending) {
+			if (shared.pages_ready.load_acquire() < (u32) params.R)
+				continue;              /* no live line over a shard still being mapped and touched */
+			shard_report(params, shared);
+			pending = false;
+		}
 		if (not params.verbose || (turns & 0xff) != 0)
 			continue;
 		double now = wtime();
@@ -217,7 +265,7 @@ optional<pair<u64, u64>> run(const Wrapper &wrapper, u64 nbytes_memory, const Op
 	if (params.verbose)
 		banner(wrapper, params, prng.seed);
 
-	Shared shared(params.n_threads);
+	Shared shared(params.n_threads, params.R);
 	double t_start = wtime();
 
 	#pragma omp parallel num_threads(params.n_threads)
@@ -231,8 +279,10 @@ optional<pair<u64, u64>> run(const Wrapper &wrapper, u64 nbytes_memory, const Op
 		Router_thread rt = Router_Init(role, ROUTER_GROUP_AUTO, params.mpi_comm, ROUTER_TAG, &params.router);
 		u64 *ctr = shared.tally[tid].ctr;
 
-		/* a dict thread's shard, zero-filled here: its own first touch.  Empty on the other roles */
+		/* a dict thread's shard, mapped and zero-filled here: its own first touch.  Empty on the other roles */
 		DirectDict dict(role == ROUTER_RECEIVER ? params.w_shard : 0, params.n);
+		if (role == ROUTER_RECEIVER)
+			shared.publish_pages(tid - 1, dict.nbytes, dict.huge, dict.hugetlb_errno);
 
 		std::vector<u64> records;              /* thread 0: the nodes' records, from the Allgather */
 		std::vector<u64> total;                /* thread 0: the all-time sums */

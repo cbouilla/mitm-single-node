@@ -2342,3 +2342,240 @@ mpirun -np 1 --bind-to none build-a/examples/router_bench --senders 20 --receive
 mpirun -np 1 --bind-to none build-a/examples/router_bench --senders 150 --receivers 105 \
     --dests 1024 --swc 128 --seconds 3 --rounds 2 --quiet
 ```
+
+# Session 12 -- VT-d halves Omni-Path: debian11 turns the IOMMU on and nobody said so
+
+2026-09-11, **grvingt-6** and **grvingt-7** (2 x Xeon Gold 6130, 32 cores / 64 PU, 2 NUMA nodes),
+`oarsub -t deploy -p grvingt -l host=2`, kadeploy'ed **debian11**, kernel `5.10.0-38-amd64`
+(Debian 5.10.249-1, 2026-02-10), Open MPI 4.1.0, libpsm2 11.2.185, Omni-Path 100 Gb/s.
+Not the Router: plain `flood.c`, a 2-rank `MPI_Send`/`MPI_Recv` ping-pong of one 400 MB buffer,
+`mpiexec -n 2 --map-by ppr:1:node`.
+
+## The question
+
+`flood.c` carries a 2019 reference line, `grvingt-12 ... débit : 12101.5 Mo/s`, which is 97% of the
+100 Gb/s wire.  The same command on grvingt-6/7 now gives **6371 Mo/s**.  Nothing in the program
+changed.  What did?
+
+## It is not the fabric, and it is not the transport
+
+| checked | reading |
+| --- | --- |
+| OPA link | `Active`, `LinkSpeed 25Gb`, `LinkWidth 4`, **Link Quality 5 (Excellent)**, both ends |
+| OPA error counters | every one **zero** on both ends; only the data/packet counters move |
+| PCIe of `hfi1` `0000:5e:00.0` | `LnkCap 8GT/s x16`, `LnkSta 8GT/s (ok) x16 (ok)` -- gen3 x16, no downgrade |
+| HFI NUMA node | 0, on both nodes |
+| governor | `performance`, `intel_pstate` active, `no_turbo=0` |
+| THP | `[always]` |
+| transport | `--mca pml cm --mca mtl psm2` gives **6345**, i.e. the same as the default: PSM2 *is* carrying it |
+| the TCP fallback, for scale | `--mca pml ob1 --mca btl tcp,self,vader` -> **1149** Mo/s.  Never the case here. |
+| binding | default already lands on the HFI's socket: `numactl --cpunodebind=0` 7800, `=1` 5600 Mo/s |
+
+The default run prints `UCX ERROR ibv_create_cq(cqe=4096) failed: Operation not supported` twice.
+That is cosmetic -- `hfi1` has no full verbs CQ, UCX bails, OMPI falls back to psm2 and gets the
+identical number.  `--mca pml ^ucx` silences it.  `--mca pml ob1 --mca btl ofi` crashes in `libucs`.
+
+## Two ranks are not the measurement
+
+`flood.c` does exactly one round trip, so it prices the cold pinning of the buffer along with the
+transfer.  An iterated version (`flood2`, same ping-pong N times on the same buffer) separates them:
+
+| iteration | Mo/s |
+| --- | --- |
+| 0 (cold) | 6324 |
+| 1..9 (steady) | ~7900 |
+
+So there are two losses, not one: ~20% of cold setup on top of a steady state that is itself only
+64% of the wire.  `/usr/bin/time` over 20 iterations: `3.81 real 1.16 user 1.42 sys` -- 1.4 s of
+kernel time for 2.1 s of transfer.
+
+## The cause
+
+Debian's bullseye kernel is built
+
+```
+CONFIG_INTEL_IOMMU=y
+CONFIG_INTEL_IOMMU_DEFAULT_ON_INTGPU_OFF=y
+# CONFIG_IOMMU_DEFAULT_PASSTHROUGH is not set
+```
+
+so **VT-d DMA remapping is on by default with no `intel_iommu=` anywhere on the command line**.
+`/proc/cmdline` is just `root=UUID=... console=... modprobe.blacklist=nouveau`, and yet
+`DMAR: Intel(R) Virtualization Technology for Directed I/O`, four DMAR units on queued
+invalidation, and the HFI in `/sys/kernel/iommu_groups/77` with `type = DMA` -- a translated
+domain, not identity.  Every `hfi1` SDMA descriptor and every TID receive therefore walks IOMMU
+page tables and pays IOTLB invalidations.  Intel's own tuning guide asks for this to be off:
+"Intel(R) Omni-Path Fabric Performance Tuning User Guide", Doc. No. H93143 Rev. 19.0 (April 2020),
+section 3.3 "Do Not Enable intel_iommu" ("Setting intel_iommu=on in the kernel command line can
+hurt verbs and MPI performance"), and Table 3's "Intel(R) VT for Directed I/O (VT-d): Disabled",
+which section 2.2 extends to Xeon Scalable.  Two caveats on that citation: section 3.3 was *added*
+in Rev. 7.0 (April 2017), not present from the start, and Table 5 recommends VT-d **enabled** on
+Xeon Phi x200, where X2APIC needs it -- so it is not a blanket rule.  And the guide only
+anticipates an operator adding `intel_iommu=on` and says to remove it from grub; it does not
+cover a kernel that turns it on by default with nothing on the command line.
+
+The 2019 reference was taken as an ordinary user on the standard environment of the day
+(Debian 9/10), whose kernel defaulted it off.  The fabric never changed; the environment did.
+
+## Proof
+
+`kexec` into the *same* kernel and initrd with `intel_iommu=off` appended, both nodes, nothing
+else touched:
+
+| | cold (`flood`) | steady (`flood2`) |
+| --- | --- | --- |
+| as deployed, VT-d translated | 6371 | ~7900 |
+| `intel_iommu=off` | **11636** | **12343** |
+| 2019 reference | 12101 | -- |
+
+12343 Mo/s is 99% of the payload rate of a 100 Gb/s link.  Both losses go away together: the cold
+penalty was the IOMMU mapping of the buffer, the steady one the per-descriptor translation.
+So **1.83x on the number `flood.c` prints**, 1.56x in steady state.
+
+The other suspect was the mitigation stack -- this kernel reports `retbleed: Mitigation: IBRS`
+(expensive on Skylake), `meltdown: PTI`, and `Clear CPU buffers` for mds / tsx_async_abort /
+mmio_stale_data, none of which existed in 2019.  The IOMMU alone accounts for the whole gap, so
+they cost little here and `mitigations=off` was not needed.
+
+## What to do
+
+Boot the compute nodes with `intel_iommu=off`.  After kadeploy, **once** per node:
+
+```bash
+kexec -l /boot/vmlinuz-$(uname -r) --initrd=/boot/initrd.img-$(uname -r) \
+      --append="$(cat /proc/cmdline) intel_iommu=off" && systemctl kexec
+```
+
+~35 s per node, it skips the Dell POST and the deployed filesystem is untouched.  For something
+that survives, put `intel_iommu=off` in `boot: kernel_params:` of a custom environment
+(`kaenv3 -p debian11-min > env.yaml`, edit, `kaenv3 -a env.yaml`) and deploy that.
+
+`iommu=pt` boots and does the right thing on this kernel -- grvingt-6 came up with
+`iommu: Default domain type: Passthrough (set via kernel command line)` and group 77 reading
+`identity` -- but its **bandwidth is unmeasured**, because grvingt-7 did not come back from that
+second kexec and the walltime ran out.  Do not chain kexecs: the second one, from an already
+kexec'ed kernel with `hfi1` loaded, is what hung the node; a hard `kareboot3` clears it.
+
+This is not a `flood.c` curiosity.  It is the transport under every multi-node Router run on
+grvingt, and sessions 10 and 11 were measured on nodes that were paying it.  **This needs root,
+i.e. a deploy job.**  On a standard-environment node, check `dmesg | grep 'Default domain type'`;
+if it says `Translated` the only routes are a deploy job with a custom `kaenv3` environment, or
+asking the Nancy admins to add the flag to the standard kernel parameters.
+
+## Reproducing
+
+```bash
+oarsub -t deploy -p grvingt -l host=2,walltime=2 sleep infinity
+kadeploy3 -f $OAR_NODEFILE -e debian11-min -k
+mpicc -O2 -o flood flood.c   # on both nodes, same path
+
+mpiexec -n 2 --hostfile $OAR_NODEFILE --map-by ppr:1:node --allow-run-as-root ./flood 400000000
+# 6371 Mo/s
+
+# both nodes, then wait ~35 s
+kexec -l /boot/vmlinuz-$(uname -r) --initrd=/boot/initrd.img-$(uname -r) \
+      --append="$(cat /proc/cmdline) intel_iommu=off" && systemctl kexec
+
+mpiexec -n 2 --hostfile $OAR_NODEFILE --map-by ppr:1:node --allow-run-as-root ./flood 400000000
+# 11636 Mo/s
+```
+
+# Session 13 -- debian13 on grvingt: the IOMMU default got cheaper, and PSM2 stopped working under it
+
+2026-09-11, **grvingt-4** and **grvingt-5** (2 x Xeon Gold 6130), `oarsub -t deploy -p grvingt
+-l host=2`, `kadeploy3 -e debian13-big`, kernel **6.12.107+deb13-amd64**.  MPI is not in the
+image: `module load openmpi` gives a Guix-built Open MPI **4.1.6** under `/gnu/store`, linked
+against psm2 12.0 (the system `libpsm2` is 11.2.185).  Same `flood` / `flood2` 400 MB ping-pong
+as session 12, `mpiexec -n 2 --map-by ppr:1:node`.  Four boots, `kexec` into the same kernel with
+one flag changed each time.
+
+## Two things have to be fixed before anything runs
+
+**1. The OPA device is not called `hfi1_0` any more.**  debian13's rdma-core gives it a
+persistent name, `opap94s0`.  `libpsm2` finds its units by scanning
+`/sys/class/infiniband/hfi1_<N>` (`hfi_get_num_units()`), so it counts zero, and
+`--mca pml cm --mca mtl psm2` fails with `PML cm cannot be selected`; Open MPI silently falls
+back to the openib BTL at a third of the wire.  Fix, after every boot, on **every** node:
+
+```bash
+ip link set ib0 down; rdma dev set opap94s0 name hfi1_0; ip link set ib0 up
+```
+
+**2. Rename before the first MPI run, not after.**  Renaming a device that the openib BTL has
+already opened leaves it wedged: psm2 *and* openib then hang until the node is rebooted.  That
+cost an hour here.
+
+## The four variants
+
+Same procedure each time: fresh `kexec`, rename, wait for `PortState: Active` on both ends, run.
+`psm2` is `--mca pml cm --mca mtl psm2`, `openib` is `--mca pml ob1 --mca btl openib,self,vader`,
+`ucx` is `--mca pml ucx`.  The openib and ucx columns were taken in a separate pass with the
+device left at its `opap94s0` name, so psm2 was out of the picture there.
+
+| flag | domain type | group | psm2 cold | psm2 steady | openib cold | openib steady | ucx cold |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| *(none -- the default)* | Translated | `DMA-FQ` | **hangs** | -- | 4506 4533 4536 | ~4630 | 2567 2651 |
+| `iommu.strict=1` | Translated | `DMA` | **hangs** | -- | 1609 1618 1629 | ~1605 | 1018 1032 |
+| `intel_iommu=off` | -- (DMAR 0) | -- | 11729 11705 11714 | ~10500 | 4986 5045 5066 | ~5390 | 4459 4563 |
+| `iommu.passthrough=1` | Passthrough | `identity` | 11513 11666 11739 | ~10800 | 5045 5064 5144 | ~5375 | 4056 4556 |
+
+## Three results
+
+**The kernel default moved from strict to lazy, and that is worth 2.9x.**  debian13 still builds
+`CONFIG_INTEL_IOMMU_DEFAULT_ON_INTGPU_OFF=y`, so VT-d is still on with nothing on the command
+line -- but 6.12 also has `CONFIG_IOMMU_DEFAULT_DMA_LAZY=y`, and the HFI's group now reads
+`DMA-FQ` (deferred invalidation behind a flush queue) where debian11's 5.10 read `DMA` (an
+invalidation per unmap).  Forcing `iommu.strict=1` reproduces the old behaviour exactly, and it
+costs 2.9x on openib (4630 -> 1605) and 4.5x on ucx.  **That, not VT-d as such, is what made
+session 12's debian11 numbers so bad.**
+
+**But PSM2 does not work at all while the IOMMU translates.**  Under both `DMA-FQ` and `DMA` the
+psm2 MTL hangs: the link is `Active` with LIDs assigned at both ends, `psm2_ep_num_devunits()` now
+finds the unit, and the transfer simply never completes -- killed at 60 s, and given 90 s x3 plus
+150 s in an earlier pass, for a transfer that takes 0.07 s when it works.  Three independent boots,
+same result.  With `intel_iommu=off` or `iommu.passthrough=1` it works first try.  On debian11 /
+5.10 psm2 ran fine under translated-strict, just slowly (session 12), so this is new with 6.12.
+The practical consequence is blunt: **on debian13, Omni-Path either runs with the IOMMU out of the
+way or it does not run.**
+
+**`iommu.passthrough=1` is as fast as `intel_iommu=off`,** to within the noise, on every transport
+(psm2 11513-11739 vs 11705-11729 cold, openib ~5375 vs ~5390 steady).  It keeps interrupt
+remapping, so it is the better of the two and closes the item left open in session 12.
+
+## What to do
+
+Boot the grvingt nodes `iommu.passthrough=1`, and rename the OPA device before the first MPI run.
+After kadeploy, once per node:
+
+```bash
+kexec -l /boot/vmlinuz-$(uname -r) --initrd=/boot/initrd.img-$(uname -r) \
+      --append="$(cat /proc/cmdline) iommu.passthrough=1" && systemctl kexec   # ~50 s
+# then, on every node, before any MPI:
+ip link set ib0 down; rdma dev set opap94s0 name hfi1_0; ip link set ib0 up
+```
+
+Durable version: `iommu.passthrough=1` in `boot: kernel_params` of a custom `kaenv3` environment.
+
+## One open item
+
+psm2 steady state is ~10500-10800 here against 12343 on debian11 in session 12, while the cold
+single round trip is the same (11.7 G against 11.6 G).  Different Open MPI (Guix 4.1.6 + psm2 12.0
+against Debian 4.1.0 + psm2 11.2.185) is the obvious suspect, but it was not chased.  Not chased
+either: whether the psm2 hang is hfi1's DMA mapping or its TID cache, and whether a newer
+`libpsm2` or `hfi1` fixes it.
+
+## Reproducing
+
+```bash
+oarsub -t deploy -p grvingt -l host=2,walltime=2 sleep infinity
+kadeploy3 -f $OAR_NODEFILE -e debian13-big -k
+module load openmpi          # Guix Open MPI 4.1.6, absolute path under /gnu/store
+mpicc -O2 -o flood flood.c   # on both nodes, same path
+
+# on both nodes, per boot, BEFORE any MPI run
+ip link set ib0 down; rdma dev set opap94s0 name hfi1_0; ip link set ib0 up
+
+mpiexec -n 2 --hostfile $OAR_NODEFILE --map-by ppr:1:node --allow-run-as-root \
+        --mca pml cm --mca mtl psm2 ./flood 400000000     # hangs on the default boot
+# kexec with iommu.passthrough=1, redo the rename, run again -> 11.5-11.7 G
+```
