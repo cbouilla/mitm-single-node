@@ -2580,7 +2580,7 @@ mpiexec -n 2 --hostfile $OAR_NODEFILE --map-by ppr:1:node --allow-run-as-root \
 # kexec with iommu.passthrough=1, redo the rename, run again -> 11.5-11.7 G
 ```
 
-# Session 14 -- grdix on HDR200: the default block costs 38 %, and the fabric is 17x narrower than memory
+# Session 14 -- grdix on HDR200: the default block costs 38 %, and one thread is the reason
 
 2026-09-12, **grdix-8** and **grdix-9** (2 x EPYC 9754, Zen 4c, 256 cores / 512 PU, 2 NUMA nodes,
 32 L3 of 16 MB, 1 TB), `oarsub -I -p grdix --project cryptanalyse --resource host=2,walltime=2`
@@ -2595,9 +2595,15 @@ ucx` with `UCX_NET_DEVICES=ibp66s0:1`.
 router benchmark: the sender's PRNG is gone (a counter spread by a Fibonacci multiply picks the
 destination, no modulo) and the receiver's `murmur128` is gone (an add and a XOR).  The ~12 ns of
 PRNG that used to sit on every push is what those sessions' 2-3 G points/s were mostly measuring.
-`xor` is now `0000000000000000` in every round and that is not a bug: every sender pushes the same
-counter sequence, so an even sender count cancels the fold exactly.  The accounting check
-(`pushed != popped`) stayed silent throughout: nothing was lost in any run below.
+The accounting check (`pushed != popped`) stayed silent throughout: nothing was lost in any run
+below.
+
+**`xor` is `0000000000000000` in every round, and it is a dead check in this bench.**  Not a bug
+and not sender-count parity: a sender pushes `(n, n)` for `n = 0, 1, 2, ...` and stops on a
+multiple of 1024, a receiver folds `a + b = 2n`, and the XOR of `2n` over any 1024-aligned run of
+`n` is exactly zero -- the low ten bits cancel pairwise and every higher bit appears 1024 times.
+So every sender contributes 0 whatever it does, and the fold cannot catch a lost or duplicated
+block.  Only the `pushed != popped` line can.
 
 ## Summary
 
@@ -2605,7 +2611,8 @@ counter sequence, so an even sender count cancels the fold exactly.  The account
 | --- | --- | --- |
 | default block (4096 points) | 8.1 G points/s | 1.5 G points/s per node |
 | block 16384 | **13.0 G points/s** | **2.5 G points/s per node** |
-| what limits it there | memory: 416 of ~442-560 GB/s | fabric: 19.96 of 23.54 GB/s each way |
+| what limits it there | memory: 416 of ~442-561 GB/s | fabric: 19.96 of 23.54 GB/s each way |
+| what limits the default | **the service thread: 2.0 M blocks/s** | the same, then the fabric |
 
 ## 1. The default block size costs 38 % on one node
 
@@ -2622,26 +2629,54 @@ number of blocks** (16808 for this team), so `block_points` scales its memory li
 
 The knee is between 4096 and 8192 and the curve is flat from 8192 up.  Nothing else was changed.
 
-## 2. It is the block install rate, not the buffer depth
+## 2. The ceiling is the service thread, at ~2.0 M blocks/s
 
-The obvious confound is that a bigger block is also more buffering: 16808 blocks of 16384 points
-hold 275 M points against 68.8 M at 4096.  `--inbox` raises the block *count* without touching the
-message size (`n_blocks = F + 2*BATCH + 2*n_recv + R*(inbox+1) + S*(BATCH+1) + slack`), so it
-separates the two.  At `--block 4096`, 150 + 105:
+The number that does not move is **blocks per second**.  Across every team size from 128 workers
+up, every sender/receiver split, every `--sweep` and every `--inbox`, the default block sits at
+**2.0 M blocks/s** and the point rate is just that times `block_points`:
 
-| `--inbox` | pool | points buffered | routed |
-| --- | --- | --- | --- |
-| 64 (default) | 16808 blocks, 1.10 GB | 68.8 M | 8.1 G |
-| 256 | 36968 blocks, 2.43 GB | 151 M | 8.6 G |
-| 768 | 90728 blocks, 5.95 GB | 372 M | 8.9 G |
+| config (block 4096, 150 + 105 unless stated) | routed | blocks/s |
+| --- | --- | --- |
+| default (`--sweep 256 --inbox 64`) | 8.1 G | 2.0 M |
+| `--sweep 1024` | 8.3 G | 2.0 M |
+| `--sweep 4096` (916 turns/s, 2183 blocks a turn) | 8.2 G | 2.0 M |
+| `--inbox 256` (36968 blocks, 2.43 GB) | 8.6 G | 2.1 M |
+| `--inbox 768` (90728 blocks, 5.95 GB) | 8.9 G | 2.2 M |
+| 128 + 127 / 192 + 63 / 224 + 31 | 8.0 / 8.3 / 9.6 G | 1.95 / 2.03 / 2.3 M |
 
-5.4x the pool -- **more** point capacity than `--block 16384` has -- buys 10 %, where the block
-size buys 60 %.  So what the big block removes is the per-block work, whose rate is
-`points/s / block_points` and nothing else: a free-ring pop and the CAS that installs the new
-block on the destination word.  Line reservations are untouched (they go *up* with the rate:
-15.8 M/s at 8.1 G, 25 M/s at 13.0 G), which rules the `dest` word's `fetch_add` out.
+So it is neither the sweep cap (raising it 16x moves nothing, and at `--sweep 4096` the service
+handles 2183 blocks a turn without going faster) nor the buffer depth (`--inbox 768` gives 5.4x
+the pool -- **more** points in flight than `--block 16384` has -- for 10 %).  It is a fixed cost
+per block on something serialized, and **the service thread is the only single-threaded thing in
+the path**: every sealed block, local ones included, passes through it.
 
-## 3. At 13 G points/s the node is at its memory system
+`perf record -C 0` (the placer pins the service to CPU 0) during a block-4096 round, 12 s,
+`--sort srcline`:
+
+| share of the service's cycles | source |
+| --- | --- |
+| 24.7 % + 21.0 % | `service.hpp:43-44` -- the `n_valid` scan inside `Router_node::complete()` |
+| 16.0 % | `atomic_base.h:501` -- the `load_acquire` that scan is made of |
+| 6.5 % | `service.hpp:249` |
+| 6.5 % | `ring.hpp:48` |
+
+`complete()` asks "are all L lines of this sealed block written?" by reading L `n_valid` bytes --
+one cache line, since `nv_stride` rounds L up to 64 -- and that line is being written by the
+senders at that very moment, so each read is a coherence miss, and an incomplete block is scanned
+again on the next turn.  The core is **not idle**: perf counted 26.26 G cycles in 12 s on CPU 0,
+i.e. 2.19 GHz on a 2.25 GHz part, and ~46 % of them are in that scan -- about 500 cycles a block
+on the scan alone.  (The round line's `service 0 % busy` is
+`(TURNS - IDLE_TURNS)/TURNS`, which counts MPI work only.  At np 1 there is none, so it reads 0 %
+while the thread is saturated.  That metric is misleading and should be renamed or fixed.)
+
+The same profile at `--block 16384` is the control: `complete()` is **gone from the top of the
+profile** (nothing above 5.3 %, and the list is `PMPI_Testsome` and
+`ompi_request_default_test_some` -- the service polling an empty network), because there are 4x
+fewer blocks to scan.  **That is the whole mechanism.**  A bigger block does not make the router
+cheaper per point anywhere else; it divides the service thread's work by `block_points`, and
+below 8192 that work is the ceiling.
+
+## 3. Above the knee, the node is at its memory system
 
 A point is 16 bytes, written into a block with non-temporal stores (so it lands in DRAM, never in
 the writer's cache) and read back by a receiver.  13.0 G points/s is therefore **208 GB/s written
@@ -2655,19 +2690,21 @@ read    :  561 GB/s
 ```
 
 416 GB/s of a half-read/half-write mix against 442 pure-write and 561 pure-read is the wall, not
-a coincidence.  **The single-node plateau is the memory system, and the router is at it.**
-Corollary: the flat 8.0-8.3 G across every sender/receiver split at the default block was *not*
-the memory wall -- it was the install rate, and it hid the split's effect entirely.  At block
-16384 the split matters again (2 rounds of 6 s):
+a coincidence.  So the router has **two** ceilings on one node and the block size chooses which
+one it meets: the service thread below 8192 points, the memory system above.
+
+That also explains why the sender/receiver split looked irrelevant at the default block and is not
+(np 1; the block-4096 row is 3 s rounds, the block-16384 row 6 s):
 
 | split | 128 + 127 | 150 + 105 | 192 + 63 | 224 + 31 |
 | --- | --- | --- | --- | --- |
 | block 4096 | 8.0 G | 8.1 G | 8.1-8.3 G | -- |
 | block 16384 | 12.2 G | **12.9 G** | 10.0 G | 9.6 G |
 
-Receivers earn their cores once the senders can actually run: `192 + 63` loses 22 % against
-`150 + 105`, where at the default block the two were indistinguishable.  Worker scaling at the
-default block, for the record: 8+7 1.7 G, 16+15 2.0 G, 32+31 3.2 G, 64+63 5.9 G, 96+95 7.2 G.
+At the default block every split is pinned to the same 2.0 M blocks/s, so the split cannot show.
+Once the service is out of the way, receivers earn their cores: `192 + 63` loses 22 % against
+`150 + 105`.  Worker scaling at the default block, for the record: 8+7 1.7 G, 16+15 2.0 G,
+32+31 3.2 G, 64+63 5.9 G, 96+95 7.2 G -- the last two are already within 12 % of the 2.0 M cap.
 
 ## 4. Two nodes: the router reaches 85 % of the wire, in both directions at once
 
@@ -2675,7 +2712,7 @@ default block, for the record: 8+7 1.7 G, 16+15 2.0 G, 32+31 3.2 G, 64+63 5.9 G,
 1.4-3.5 s).  Destinations are uniform, so half of every node's points cross the link.  `net` is
 bytes **sent** per node, one direction.
 
-| `--block` | routed/node | net per node | msgs/s | service busy |
+| `--block` | routed/node | net per node | msgs/s | service "busy" |
 | --- | --- | --- | --- | --- |
 | 4096 (default) | 1.5 G | 11.7-12.3 GB/s | 178 K | 39 % |
 | 8192 | 2.2 G | 17.44 GB/s | 133 K | 18 % |
@@ -2690,35 +2727,47 @@ the link is honestly full duplex and the HCA's PCIe is not in the way.  The rout
 and receives 19.96 simultaneously: **85 % of the raw rate, both ways at once.**
 
 The control is `--local-only` at np 2 (every point stays on its node): 12.8 G/node, i.e. exactly
-the single-node rate of §1.  So nothing about running two ranks costs anything; the 2.5 G is the
-remote half meeting a narrow pipe.
+the single-node rate of §1.  So running two ranks costs nothing in itself; the 2.5 G is the remote
+half meeting a narrow pipe.
 
 ## 5. What this means
 
-**Local memory is 416 GB/s; the fabric is 23.5 GB/s each way -- a factor of 17.**  A second node
-does not add throughput per node, it divides it: 13.0 G alone, 2.5 G each in a pair, because half
-of every node's points now take the narrow path.  In aggregate that is **13.0 G points/s on one
-node against 5.0 G on two** -- for a fan-out this uniform, the second node makes the whole thing
-2.6x slower.  That is a property of the placement, not of the router: the router is at 85 % of the
-wire, and the wire is what it is.  What would change it is
-routing that keeps points local -- which is what `--local-only` measures, and what a
-group-affine or node-affine dictionary sharding would buy the engines.
+Compared consistently -- bytes one way against bytes one way -- a node writes **208 GB/s** into
+blocks locally and can send **23.5 GB/s** to its peer: the fabric is about **9x narrower than
+memory** (equivalently 13.0 G points/s local against 1.25 G points/s remote per node, ~10x).  So
+a second node does not add per-node throughput, it divides it: 13.0 G alone, 2.5 G each in a
+pair, because half of every node's points now take the narrow path.  In aggregate that is
+**13.0 G points/s on one node against 5.0 G on two** -- at a uniform fan-out the second node makes
+the whole thing 2.6x slower.  That is a property of the placement, not of the router: the router
+is at 85 % of the wire, and the wire is what it is.
+
+For the engines this is the number that matters: **a second node buys 2x the dictionary at about
+1/5 the per-node rate.**  Nothing in the router can change that, and neither can smarter sharding
+-- a point's shard is its hash, so the fan-out is uniform by construction.  What the measurement
+does say is that the trade is worth making only when the dictionary has to be that big.
 
 ## What to change
 
-1. **Raise `Router_Opts::block_points` from 4096 to 16384.**  It is worth 60 % on one node and
-   67 % on two, and it is one number.  The cost is the pool: 1.10 -> 4.41 GB for a 255-worker
-   team, which the engines must subtract from what they hand the dictionary.  If that is too
-   much, **8192 is the frugal setting**: 98 % of the single-node gain (12.7 of 13.0 G) at half
-   the memory, but only 88 % of the two-node one (2.2 of 2.5 G) -- across the network the message
-   size itself still matters, so 16384 is the right default where the RAM is there.
-2. The pool's *block count* is fixed by the team's shape, so `block_points` is the only lever on
-   its footprint.  If 4.41 GB is unacceptable, the fix is to make `n_blocks` shrink as
-   `block_points` grows (the slack term `32 * S` and `R * (inbox + 1)` are both counted in
-   blocks, and both are really "points in flight" budgets).  Unmeasured.
-3. Not chased: whether the install cost is the free-ring pop or the destination-word CAS.  A
-   per-group free ring (FINDINGS point 2/3) would tell, and is the obvious next thing on this
-   node.
+1. **Make the completeness check cheap, instead of paying for it per block.**  §2 prices it at
+   ~500 cycles a block on a thread that has no spare capacity, and that is what the default block
+   size is really buying its way around.  The scan re-reads a line the senders are still writing;
+   a per-block `fetch_add` counter that the *last* writer of a line bumps would let the service
+   read one word -- better, let the last writer itself hand the block over, so the service never
+   polls an incomplete block at all.  Zero memory cost, and it would lift the 2.0 M blocks/s
+   ceiling rather than dodging it.  **Unmeasured: this is the next experiment on this node.**
+2. **Until then, raise `Router_Opts::block_points` from 4096 to 16384.**  It is worth 60 % on one
+   node and 67 % on two, and it is one number.  The cost is the pool: 1.10 -> 4.41 GB for a
+   255-worker team, which the engines must subtract from what they hand the dictionary.  If that
+   is too much, **8192 is the frugal setting**: 98 % of the single-node gain (12.7 of 13.0 G) at
+   half the memory, but only 88 % of the two-node one (2.2 of 2.5 G) -- across the network the
+   message size still matters on its own, so 16384 is the right default where the RAM is there.
+3. **`service N % busy` counts only MPI work** and printed 0 % for a thread running at 2.19 GHz
+   with 46 % of its cycles in one function.  It should count turns that did anything, or be
+   dropped: as it stands it actively hid this bottleneck across sessions 4, 6 and 11.
+4. The pool's *block count* is fixed by the team's shape, so `block_points` is the only lever on
+   its footprint.  If 4.41 GB is unacceptable, make `n_blocks` shrink as `block_points` grows
+   (the slack term `32 * S` and `R * (inbox + 1)` are both counted in blocks and are really
+   "points in flight" budgets).  Unmeasured.
 
 ## Reproducing
 
@@ -2739,6 +2788,11 @@ mpirun -np 2 --npernode 1 -H grdix-8,grdix-9 --bind-to none -x LD_LIBRARY_PATH -
 
 # the fabric's own rate (server on grdix-9: ucx_perftest)
 UCX_NET_DEVICES=ibp66s0:1 ucx_perftest grdix-9 -t tag_bw -s 262144 -n 20000 -w 1000
+
+# the service thread (it is pinned to CPU 0), while a round is running
+sudo-g5k sysctl -w kernel.perf_event_paranoid=-1 kernel.kptr_restrict=0
+perf record -C 0 -F 999 -g -o svc.data -- sleep 12
+perf report -i svc.data --stdio --no-children -g none --sort srcline
 ```
 
 `--mca btl ^openib` only silences an "error initializing an OpenFabrics device" warning; the ucx
