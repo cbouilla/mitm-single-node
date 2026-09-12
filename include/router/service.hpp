@@ -38,6 +38,25 @@ inline void Router_node::spill(size_t n)
  * line being its own release/acquire pair.  A written line is full: a block in flight has no hole.
  * Reached from Router_Progress, for every sealed block the take or the pending list yields.
  */
+/* Is any group's sealed stack non-empty?  Reached from Router_Progress (quiescence) and Router_Reset. */
+inline bool Router_node::any_sealed()
+{
+	for (int g = 0; g < n_seal; g++)
+		if (sealed_top[(size_t) g * ROUTER_SEAL_STRIDE].load_acquire() != ROUTER_NONE)
+			return true;
+	return false;
+}
+
+/* How many of the groups' sealed stacks hold anything.  Reached from Router_Dump alone. */
+inline int Router_node::n_sealed()
+{
+	int n = 0;
+	for (int g = 0; g < n_seal; g++)
+		if (sealed_top[(size_t) g * ROUTER_SEAL_STRIDE].load() != ROUTER_NONE)
+			n += 1;
+	return n;
+}
+
 inline bool Router_node::complete(u32 blk)
 {
 	for (u32 k = 0; k < L; k++)
@@ -236,8 +255,11 @@ inline void Router_node::sweep()
 		for (size_t i = 0; i < again.size(); i++)
 			handle_block((int) (again[i] >> 32), (u32) again[i]);
 	}
-	if (todo == ROUTER_NONE)
-		todo = sealed_top.exchange(ROUTER_NONE, std::memory_order_acquire);
+	for (int i = 0; i < n_seal && todo == ROUTER_NONE; i++) {   /* one non-empty stack a turn, round robin */
+		todo = sealed_top[(size_t) seal_turn * ROUTER_SEAL_STRIDE].exchange(ROUTER_NONE,
+		                                                                   std::memory_order_acquire);
+		seal_turn = seal_turn + 1 < n_seal ? seal_turn + 1 : 0;
+	}
 	for (int b = 0; b < opt.sweep_blocks && todo != ROUTER_NONE; b++) {
 		u32 blk = todo;
 		u64 link = blk_link[blk];   /* careful: park or a later seal rewrites it */
@@ -390,7 +412,7 @@ inline void Router_node::closure()
 		phase = ROUTER_COLLECTING;
 		return;
 	case ROUTER_COLLECTING:
-		if (not pending.empty() || todo != ROUTER_NONE || sealed_top.load_acquire() != ROUTER_NONE)
+		if (not pending.empty() || todo != ROUTER_NONE || any_sealed())
 			return;
 		phase = ROUTER_FSCAN;
 		flush_d = 0;
@@ -442,9 +464,9 @@ inline void Router_Dump(FILE *f, const Router_thread &rt)
 	u64 in = rn.free_in.load();
 	u64 out = rn.free_out.load();
 	fprintf(f, "rank %d round %u phase %d input_closed %u quiescent %d flush_d %d run %u/%u pending %zu"
-	        " sealed top %u todo %u stash %zu ring %" PRIu64 " (in %" PRIu64 " out %" PRIu64 ")"
+	        " sealed stacks %d non-empty todo %u stash %zu ring %" PRIu64 " (in %" PRIu64 " out %" PRIu64 ")"
 	        " send slots free %zu\n", rn.rank, rn.round, rn.phase, rn.input_closed.load(), (int) rn.quiescent,
-	        rn.flush_d, rn.flush_off, rn.flush_len, rn.pending.size(), rn.sealed_top.load(),
+	        rn.flush_d, rn.flush_off, rn.flush_len, rn.pending.size(), rn.n_sealed(),
 	        rn.todo, rn.free_list.size(), in - out, in, out, rn.out_free.size());
 	for (int s = 0; s < rn.S; s++) {
 		Router_thread &sd = *rn.senders[s];
@@ -537,7 +559,7 @@ inline void Router_node::reset_round()
 			errx(1, "Router_Reset: credit in use");
 	if (not pending.empty())
 		errx(1, "Router_Reset: pending work left");
-	if (todo != ROUTER_NONE || sealed_top.load() != ROUTER_NONE)
+	if (todo != ROUTER_NONE || any_sealed())
 		errx(1, "Router_Reset: sealed blocks left");
 	for (int d = 0; d < F; d++)
 		if (dest[ROUTER_DEST_WORDS * d + 1] != 0)

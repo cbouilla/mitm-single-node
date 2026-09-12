@@ -57,6 +57,7 @@ static constexpr const Router_Opts *ROUTER_DEFAULT_OPTS = NULL;
 
 static constexpr u32 ROUTER_NONE = 0xffffffffu;   /* "no block": an empty list, an idle slot, no block out */
 static constexpr size_t ROUTER_HDR_BYTES = 64;    /* a block's header slot: the message header, one cache line */
+static constexpr u32 ROUTER_SEAL_STRIDE = 16;     /* u32 per sealed stack: one to a cache line of its own */
 static constexpr size_t ROUTER_DEST_WORDS = 8;    /* u64 words per destination: its two words fill one cache line */
 static constexpr u32 ROUTER_MAX_L = 4096;         /* lines per block at most */
 static constexpr u32 ROUTER_BATCH = 32;           /* blocks off the free ring at a time: a sender's cache, the stash */
@@ -212,7 +213,10 @@ public:
 	alignas(64) Atomic<u64> free_out{0};  /* elements claimed */
 
 	/* the sealed stack, its word alone on a cache line: the sealers push, the service takes it whole */
-	alignas(64) Atomic<u32> sealed_top{ROUTER_NONE};
+	Atomic<u32> *sealed_top = NULL;      /* one sealed stack per group, ROUTER_SEAL_STRIDE apart: a seal's CAS
+	                                      * contends with its own group's senders only */
+	int n_seal = 1;                      /* stacks in sealed_top: the groups, or 1 */
+	int seal_turn = 0;                   /* the stack the service takes next, round robin */
 	u32 sealed_pad[15] = {};             /* the rest of that line */
 
 	/* the service thread's own */
@@ -274,11 +278,13 @@ public:
 	void stage_line(Router_thread &s, int d, const Point *line);
 	void refill(Router_thread &s);
 	void zero_valid(u32 blk);
-	void seal(int d, u32 blk);
+	void seal(int d, u32 blk, int group);
 
 	/* the service loop: Router_Progress; Router_Init and Router_Reset for the stash and the receive slots */
 	u32 stash_pop();
 	void spill(size_t n);
+	bool any_sealed();
+	int n_sealed();
 	bool complete(u32 blk);
 	bool place(int d, u32 blk, u32 count);
 	void dispatch(int d, u32 blk, u32 count);

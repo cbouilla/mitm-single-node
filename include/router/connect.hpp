@@ -215,6 +215,10 @@ inline void Router_node::connect()
 	if (nb > ((size_t) 1 << 30))          /* the ring's sequence arithmetic is 32-bit */
 		errx(1, "Router: too many blocks (%zu)", nb);
 	n_blocks = (u32) nb;
+	n_seal = plan.n_groups > 0 ? plan.n_groups : 1;
+	sealed_top = (Atomic<u32> *) router_alloc((size_t) n_seal * ROUTER_SEAL_STRIDE * sizeof(u32));
+	for (int g = 0; g < n_seal; g++)
+		sealed_top[(size_t) g * ROUTER_SEAL_STRIDE] = ROUTER_NONE;
 	dest = (Atomic<u64> *) router_alloc((size_t) F * ROUTER_DEST_WORDS * sizeof(u64));
 	pool = (char *) aligned_alloc(64, (size_t) n_blocks * block_bytes);   /* untouched: every thread writes a slice */
 	if (pool == NULL)

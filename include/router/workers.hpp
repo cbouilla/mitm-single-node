@@ -101,13 +101,14 @@ inline void Router_node::zero_valid(u32 blk)
 }
 
 /* Put a sealed block onto the sealed stack, its destination in the link's high word. */
-inline void Router_node::seal(int d, u32 blk)
+inline void Router_node::seal(int d, u32 blk, int group)
 {
+	Atomic<u32> &top_of = sealed_top[(size_t) (group % n_seal) * ROUTER_SEAL_STRIDE];
 	u64 hi = (u64) d << 32;
-	u32 top = sealed_top;
+	u32 top = top_of;
 	for (;;) {
 		blk_link[blk] = hi | top;
-		if (sealed_top.compare_exchange_weak(top, blk, std::memory_order_release, std::memory_order_relaxed))
+		if (top_of.compare_exchange_weak(top, blk, std::memory_order_release, std::memory_order_relaxed))
 			return;
 	}
 }
@@ -140,7 +141,7 @@ inline void Router_node::stage_line(Router_thread &s, int d, const Point *line)
 			next.store_release((u64) fresh);
 			while (not complete(blk))     /* the other writers are mid-copy: a sealed block is a whole one */
 				cpu_relax();
-			seal(d, blk);
+			seal(d, blk, s.group);
 			if (s.cache_n == 0)
 				refill(s);
 			continue;
