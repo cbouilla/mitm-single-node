@@ -2612,7 +2612,7 @@ block.  Only the `pushed != popped` line can.
 | default block (4096 points) | 8.1 G points/s | 1.5 G points/s per node |
 | block 16384 | **13.0 G points/s** | **2.5 G points/s per node** |
 | what limits it there | memory: 416 of ~442-561 GB/s | fabric: 19.96 of 23.54 GB/s each way |
-| what limits the default | **the service thread: 2.0 M blocks/s** | the same, then the fabric |
+| what limits the default | a per-block cost, ~2.0 M blocks/s (section 6) | the same, then the fabric |
 
 ## 1. The default block size costs 38 % on one node
 
@@ -2629,7 +2629,7 @@ number of blocks** (16808 for this team), so `block_points` scales its memory li
 
 The knee is between 4096 and 8192 and the curve is flat from 8192 up.  Nothing else was changed.
 
-## 2. The ceiling is the service thread, at ~2.0 M blocks/s
+## 2. The ceiling is a per-block cost, at ~2.0 M blocks/s
 
 The number that does not move is **blocks per second**.  Across every team size from 128 workers
 up, every sender/receiver split, every `--sweep` and every `--inbox`, the default block sits at
@@ -2677,9 +2677,14 @@ while the thread is saturated.  That metric is misleading and should be renamed 
 The same profile at `--block 16384` is the control: `complete()` is **gone from the top of the
 profile** (nothing above 5.3 %, and the list is `PMPI_Testsome` and
 `ompi_request_default_test_some` -- the service polling an empty network), because there are 4x
-fewer blocks to scan.  **That is the whole mechanism.**  A bigger block does not make the router
-cheaper per point anywhere else; it divides the service thread's work by `block_points`, and
-below 8192 that work is the ceiling.
+fewer blocks to scan.
+
+**That profile does not prove the service is the limiter, and section 6 shows it is not.**  The
+service thread spins, so it burns 100 % of its cycles whatever happens; the share of them spent
+in `complete()` says where its time goes, not that it is on the critical path.  Taking the scan
+off it entirely buys 2.5 %.  What survives from this section is the *measurement*, which is solid
+and is the thing to explain: a fixed cost per block, ~2.0 M blocks/s, immovable by `--sweep`,
+`--inbox` and the split alike, so that the point rate is that rate times `block_points`.
 
 ## 3. Above the knee, the node is at its memory system
 
@@ -2751,16 +2756,42 @@ For the engines this is the number that matters: **a second node buys 2x the dic
 -- a point's shard is its hash, so the fan-out is uniform by construction.  What the measurement
 does say is that the trade is worth making only when the dictionary has to be that big.
 
+## 6. The experiment: the service thread is not the ceiling
+
+Commit `762c660` moves the wait off the service and onto the sealer, in six lines: the sealer has
+just installed the fresh block and blocks nobody, so it can spin on `complete()` itself and seal
+only a whole block.  `handle_block` then dispatches unconditionally and the `pending` list is
+dead.  The scan still happens -- but on as many sender cores as there are destinations being
+sealed, in parallel, instead of on one thread in series.  If the service's scan were the ceiling
+this had to lift it.
+
+| `--block 4096`, 150 + 105, interleaved | routed | ns/point | blocks/s |
+| --- | --- | --- | --- |
+| baseline `63be9c4` (rep 1 / rep 2) | 8.1 / 8.1 G | 18.6 / 18.6 | 2.0 M |
+| sealer waits `762c660` (rep 1 / rep 2) | 8.3 / 8.3 G | 18.0 / 18.1 | 2.0 M |
+
+**+2.5 %, and blocks/s does not move at all.**  `router_test --test all` passes at np 1 and np 2
+on the node.  So the service thread was never the constraint, and the 46 % of its cycles in
+`complete()` was a spinning thread's idle time wearing a costume.
+
+A whole-machine profile on the experiment build says the same thing from the other side.  At
+`--block 4096` the cycles are spread over real work -- `Router_Push`'s body (workers.hpp:160-165,
+~17 %), the non-temporal copy (common.hpp:90, 7.2 %), `Router_Pop` (workers.hpp:243-245, ~12 %) --
+with no hotspot and, notably, **no receiver idling**.  At `--block 16384` the top line is
+`workers.hpp:238` at **22 %**: that is `Router_Pop` finding no block, i.e. receivers starved
+because the senders cannot feed them any faster.  So the two block sizes are limited at different
+ends -- senders at 4096, the memory system at 16384 -- and what the big block relieves is
+something on the *sender's* side of a block transition, not the service's.
+
 ## What to change
 
-1. **Make the completeness check cheap, instead of paying for it per block.**  §2 prices it at
-   ~500 cycles a block on a thread that has no spare capacity, and that is what the default block
-   size is really buying its way around.  Since it is the *miss* that costs and not the scan's
-   length, reading one word instead of L would buy nothing on its own -- the fix has to remove the
-   polling.  Give the block a `fetch_add` counter that each line's writer bumps, and let the
-   writer that takes it to L hand the block over itself: the service then never touches a block
-   that is still being written, and never looks at one twice.  Zero memory cost, and it lifts the
-   2.0 M blocks/s ceiling rather than dodging it.  **Unmeasured: this is the next experiment on this node.**
+1. **Find the per-block cost.**  §2 measures it and §6 rules out the service thread, which was the
+   obvious suspect and is not the answer.  What is left to price, per block rather than per point:
+   the single-word contention on `sealed_top` (one CAS per block from any of 150 senders) and on
+   the free ring's `free_in`/`free_out`, and the sender's stall in `refill()` when the pool runs
+   dry.  All three are node-wide singletons, which is what FINDINGS' standing "per-group free
+   list" item was always about.  The next measurement is the sender's own per-point cost broken
+   down, not another guess.  **Unmeasured: this is the next experiment on this node.**
 2. **Until then, raise `Router_Opts::block_points` from 4096 to 16384.**  It is worth 60 % on one
    node and 67 % on two, and it is one number.  The cost is the pool: 1.10 -> 4.41 GB for a
    255-worker team, which the engines must subtract from what they hand the dictionary.  If that
