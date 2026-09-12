@@ -2835,6 +2835,42 @@ rule that out (raising `inbox_blocks` grows the pool and the receivers' commitme
 `R * (inbox + 1)`, leaving the freely circulating count near 5200 either way).  Adding a slack knob
 is a two-line change and the right next experiment.
 
+### Pool depth is real and small
+
+`eb8946e` multiplies the `slack` term by 16, the only term that adds blocks nobody has a claim on:
+16808 -> 88808 blocks, 1.10 -> 5.83 GB, and 315 M points in flight at `--block 4096` against the
+275 M that `--block 16384` has.  Interleaved against `63be9c4`, twice each:
+
+| `--block 4096`, 150 + 105 | pool | routed | ns/point |
+| --- | --- | --- | --- |
+| baseline | 16808 blocks, 1.10 GB | 8.2 / 8.2 G | 18.3 / 18.3 |
+| `slack * 16` | 88808 blocks, 5.83 GB | **9.0 / 9.0 G** | 16.6 / 16.7 |
+
+**+10 %, reproducible, and it costs 4.7 GB.**  So depth in points is a real effect and a bad trade,
+and it is not the mechanism: it closes a sixth of the 8.2 -> 13.0 G gap.  The branch stays unmerged.
+
+### The hypothesis that fits the arithmetic
+
+What survives is the receiver's side, and it fits quantitatively.  Every block a receiver takes is a
+**fresh sequential stream**: a new 65600-byte region, written by a sender with non-temporal stores so
+it is in DRAM and in nobody's cache, on pages the receiver has not walked.  A stream costs a roughly
+fixed number of misses to establish -- prefetcher warm-up plus the page walk -- and then runs.  That
+fixed cost is amortised over `block_points` points, so a 4x bigger block pays it 4x less often per
+point.  The measured extra is **0.019 cache misses per point** at 4096 over 16384, i.e. **104 per
+block transition** -- and 104 lines is 6.6 KB, the right order for a prefetcher to lock onto a new
+stream and for the TLB to fault in a block spanning several pages.  It also explains why the cores
+and the memory system are idle *together* at 262 GB/s: a latency-bound stream restart limits
+memory-level parallelism without consuming bandwidth.
+
+**This is a hypothesis and is labelled as one.**  The test that would confirm or kill it is a miss
+census by role: `perf stat -e cache-misses,dTLB-load-misses -C <receiver cpus>` against
+`-C <sender cpus>` (the placer pins, and prints the layout, so the two sets are known), which says
+directly whether the extra misses are on the side that reads blocks.  If they are, the levers are
+the block's page footprint (huge pages for the pool, already partly there since `b803bc1`) and a
+receiver-side prefetch of the next block's head while it drains the current one -- which is the
+`receiver prefetch` idea measured at ~5 % and dropped on the laptop, and which this says should be
+retried here, on a machine where the effect exists.
+
 ## What to change
 
 1. **Find the per-block cost.**  §2 measures it and §6 rules out the service thread, which was the
