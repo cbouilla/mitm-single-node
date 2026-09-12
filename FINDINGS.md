@@ -2663,7 +2663,12 @@ the path**: every sealed block, local ones included, passes through it.
 `complete()` asks "are all L lines of this sealed block written?" by reading L `n_valid` bytes --
 one cache line, since `nv_stride` rounds L up to 64 -- and that line is being written by the
 senders at that very moment, so each read is a coherence miss, and an incomplete block is scanned
-again on the next turn.  The core is **not idle**: perf counted 26.26 G cycles in 12 s on CPU 0,
+again on the next turn.  **The cost is the miss, not the length**: `--swc 1024` halves L to 4 and
+changes nothing at all (8.0 G, the same 2.0 M blocks/s).  (`--swc 4096`, i.e. L = 1, is not the
+other end of that line -- it drops to 4.1 G and 1.0 M blocks/s, because a sender must then fill a
+64 KB private line before publishing anything.  Different effect, not a scan that got cheaper.)
+
+The core is **not idle**: perf counted 26.26 G cycles in 12 s on CPU 0,
 i.e. 2.19 GHz on a 2.25 GHz part, and ~46 % of them are in that scan -- about 500 cycles a block
 on the scan alone.  (The round line's `service 0 % busy` is
 `(TURNS - IDLE_TURNS)/TURNS`, which counts MPI work only.  At np 1 there is none, so it reads 0 %
@@ -2750,11 +2755,12 @@ does say is that the trade is worth making only when the dictionary has to be th
 
 1. **Make the completeness check cheap, instead of paying for it per block.**  §2 prices it at
    ~500 cycles a block on a thread that has no spare capacity, and that is what the default block
-   size is really buying its way around.  The scan re-reads a line the senders are still writing;
-   a per-block `fetch_add` counter that the *last* writer of a line bumps would let the service
-   read one word -- better, let the last writer itself hand the block over, so the service never
-   polls an incomplete block at all.  Zero memory cost, and it would lift the 2.0 M blocks/s
-   ceiling rather than dodging it.  **Unmeasured: this is the next experiment on this node.**
+   size is really buying its way around.  Since it is the *miss* that costs and not the scan's
+   length, reading one word instead of L would buy nothing on its own -- the fix has to remove the
+   polling.  Give the block a `fetch_add` counter that each line's writer bumps, and let the
+   writer that takes it to L hand the block over itself: the service then never touches a block
+   that is still being written, and never looks at one twice.  Zero memory cost, and it lifts the
+   2.0 M blocks/s ceiling rather than dodging it.  **Unmeasured: this is the next experiment on this node.**
 2. **Until then, raise `Router_Opts::block_points` from 4096 to 16384.**  It is worth 60 % on one
    node and 67 % on two, and it is one number.  The cost is the pool: 1.10 -> 4.41 GB for a
    255-worker team, which the engines must subtract from what they hand the dictionary.  If that
