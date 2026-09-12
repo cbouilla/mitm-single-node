@@ -2871,6 +2871,46 @@ receiver-side prefetch of the next block's head while it drains the current one 
 `receiver prefetch` idea measured at ~5 % and dropped on the laptop, and which this says should be
 retried here, on a machine where the effect exists.
 
+### Where the extra misses are: the recycling path, and they are misses, not contention
+
+The receiver-stream hypothesis above is **wrong**, and a miss census kills it:
+`perf record -a -e cache-misses -c 5000`, `--sort srcline`, at both block sizes, 8 s of a steady
+round.  The misses are overwhelmingly on the *sender* side, and the two biggest sources cost
+**exactly the same per point** at both block sizes -- they are the router's baseline, not the effect:
+
+| source | share at 4096 | per point | share at 16384 | per point |
+| --- | --- | --- | --- | --- |
+| `common.hpp:90` the NT store's source loads | 34.0 % | 0.0238 | 40.9 % | 0.0234 |
+| `workers.hpp:161` the private write-combining line | 22.0 % | 0.0154 | 28.3 % | 0.0160 |
+| `workers.hpp:164` | 12.0 % | 0.0084 | 13.8 % | 0.0079 |
+| `workers.hpp:128` the destination word | 4.2 % | 0.0029 | 4.1 % | 0.0023 |
+
+The whole difference is in the tail, and the tail is the **per-block recycling path**:
+
+| source | 4096 | 16384 |
+| --- | --- | --- |
+| `workers.hpp:44/49/54/60` -- `free_pop_many`'s walk of the free ring's cells | 4.92 % | under 0.25 % |
+| `atomic_base.h:536` -- the ring's read-modify-write | 3.49 % | 0.37 % |
+| `workers.hpp:242` -- `Router_Grab` | 3.49 % | 1.56 % |
+| `workers.hpp:109` -- `seal`'s write of `blk_link` | 1.61 % | 0.47 % |
+| `ring.hpp:48` -- a receiver's inbox ring | 1.18 % | 0.27 % |
+
+About 0.009 misses per point, ~36 per block transition, in the free ring, the seal's link and the
+inbox -- every one of them a **cold shared line**, last touched by a core in another L3 domain or
+another socket.  That is the mechanism, and it is a *miss* mechanism, not a *contention* mechanism.
+Which is exactly why the two interventions aimed at contention failed: `762c660` removed the
+service's polling and `c256db5` removed the seal's CAS convoy, but neither changed how many cold
+lines a block costs to recycle.  `eb8946e`'s deeper pool helps by 10 % for the same reason it is
+only 10 %: more blocks means a sender spins less in `free_pop_many`'s retry, but each pop still
+walks the same cold cells.
+
+**So the standing "per-group free list" item is the experiment to run, and my group-seal branch
+sharded the wrong structure.**  Give each group its own free ring, so the block ids a sender pops
+were pushed by a receiver in its own cache domain and the cells it walks are warm.  The seal's
+`blk_link` and the inbox ring are the same argument.  That is the next session's work, and unlike
+everything in sections 2 and 6 it is predicted by a measurement of where the misses are rather than
+by a story about where the time must be going.
+
 ## What to change
 
 1. **Find the per-block cost.**  §2 measures it and §6 rules out the service thread, which was the
