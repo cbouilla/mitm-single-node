@@ -2579,3 +2579,168 @@ mpiexec -n 2 --hostfile $OAR_NODEFILE --map-by ppr:1:node --allow-run-as-root \
         --mca pml cm --mca mtl psm2 ./flood 400000000     # hangs on the default boot
 # kexec with iommu.passthrough=1, redo the rename, run again -> 11.5-11.7 G
 ```
+
+# Session 14 -- grdix on HDR200: the default block costs 38 %, and the fabric is 17x narrower than memory
+
+2026-09-12, **grdix-8** and **grdix-9** (2 x EPYC 9754, Zen 4c, 256 cores / 512 PU, 2 NUMA nodes,
+32 L3 of 16 MB, 1 TB), `oarsub -I -p grdix --project cryptanalyse --resource host=2,walltime=2`
+(job 6922626).  Commit `23e713b` on `bench-grdix`, release build (`-O3 -DNDEBUG -march=native
+-ggdb`).  The image is now **debian13** and carries no MPI: `module load openmpi/4.1.6` gives a
+Guix-built Open MPI **4.1.6** under `/gnu/store`, and hwloc is a module too (no `/usr/include/
+hwloc.h`), so CMake needs `HWLOC_ROOT` pointed at the Guix prefix.  Interconnect: **Infiniband
+HDR200** (`ibp66s0`, 200 Gb/s, ACTIVE) alongside 25 GbE on `br0` and two RoCE ports; `--mca pml
+ucx` with `UCX_NET_DEVICES=ibp66s0:1`.
+
+**These numbers do not compare to sessions 4, 6 or 11.**  `45f59ff` made `router_bench` a *pure*
+router benchmark: the sender's PRNG is gone (a counter spread by a Fibonacci multiply picks the
+destination, no modulo) and the receiver's `murmur128` is gone (an add and a XOR).  The ~12 ns of
+PRNG that used to sit on every push is what those sessions' 2-3 G points/s were mostly measuring.
+`xor` is now `0000000000000000` in every round and that is not a bug: every sender pushes the same
+counter sequence, so an even sender count cancels the fold exactly.  The accounting check
+(`pushed != popped`) stayed silent throughout: nothing was lost in any run below.
+
+## Summary
+
+| | one node (grdix-8) | two nodes (grdix-8 + grdix-9) |
+| --- | --- | --- |
+| default block (4096 points) | 8.1 G points/s | 1.5 G points/s per node |
+| block 16384 | **13.0 G points/s** | **2.5 G points/s per node** |
+| what limits it there | memory: 416 of ~442-560 GB/s | fabric: 19.96 of 23.54 GB/s each way |
+
+## 1. The default block size costs 38 % on one node
+
+`--senders 150 --receivers 105`, 2 rounds of 10 s, round 1 reported.  The pool holds a **fixed
+number of blocks** (16808 for this team), so `block_points` scales its memory linearly.
+
+| `--block` (points) | message | pool | routed | ns/point | blocks/s |
+| --- | --- | --- | --- | --- | --- |
+| **4096 (the default)** | 65600 B | 1.10 GB | 8.1 G | 18.6 | 2.0 M |
+| 8192 | 131136 B | 2.20 GB | 12.7 G | 11.9 | 1.6 M |
+| 16384 | 262208 B | 4.41 GB | **13.0 G** | 11.7 | 791 K |
+| 32768 | 524352 B | 8.81 GB | 12.9 G | 11.6 | 395 K |
+| 65536 | 1048640 B | 17.63 GB | 13.0 G | 11.6 | 198 K |
+
+The knee is between 4096 and 8192 and the curve is flat from 8192 up.  Nothing else was changed.
+
+## 2. It is the block install rate, not the buffer depth
+
+The obvious confound is that a bigger block is also more buffering: 16808 blocks of 16384 points
+hold 275 M points against 68.8 M at 4096.  `--inbox` raises the block *count* without touching the
+message size (`n_blocks = F + 2*BATCH + 2*n_recv + R*(inbox+1) + S*(BATCH+1) + slack`), so it
+separates the two.  At `--block 4096`, 150 + 105:
+
+| `--inbox` | pool | points buffered | routed |
+| --- | --- | --- | --- |
+| 64 (default) | 16808 blocks, 1.10 GB | 68.8 M | 8.1 G |
+| 256 | 36968 blocks, 2.43 GB | 151 M | 8.6 G |
+| 768 | 90728 blocks, 5.95 GB | 372 M | 8.9 G |
+
+5.4x the pool -- **more** point capacity than `--block 16384` has -- buys 10 %, where the block
+size buys 60 %.  So what the big block removes is the per-block work, whose rate is
+`points/s / block_points` and nothing else: a free-ring pop and the CAS that installs the new
+block on the destination word.  Line reservations are untouched (they go *up* with the rate:
+15.8 M/s at 8.1 G, 25 M/s at 13.0 G), which rules the `dest` word's `fetch_add` out.
+
+## 3. At 13 G points/s the node is at its memory system
+
+A point is 16 bytes, written into a block with non-temporal stores (so it lands in DRAM, never in
+the writer's cache) and read back by a receiver.  13.0 G points/s is therefore **208 GB/s written
++ 208 GB/s read = 416 GB/s**.  An OpenMP STREAM on the same node (`~/membw.c`, 256 threads,
+8 GB arrays, parallel first touch):
+
+```
+triad   :  498 GB/s   (counts the read-for-ownership: 4 streams)
+nt-write:  442 GB/s   (_mm512_stream_pd, no RFO)
+read    :  561 GB/s
+```
+
+416 GB/s of a half-read/half-write mix against 442 pure-write and 561 pure-read is the wall, not
+a coincidence.  **The single-node plateau is the memory system, and the router is at it.**
+Corollary: the flat 8.0-8.3 G across every sender/receiver split at the default block was *not*
+the memory wall -- it was the install rate, and it hid the split's effect entirely.  At block
+16384 the split matters again (2 rounds of 6 s):
+
+| split | 128 + 127 | 150 + 105 | 192 + 63 | 224 + 31 |
+| --- | --- | --- | --- | --- |
+| block 4096 | 8.0 G | 8.1 G | 8.1-8.3 G | -- |
+| block 16384 | 12.2 G | **12.9 G** | 10.0 G | 9.6 G |
+
+Receivers earn their cores once the senders can actually run: `192 + 63` loses 22 % against
+`150 + 105`, where at the default block the two were indistinguishable.  Worker scaling at the
+default block, for the record: 8+7 1.7 G, 16+15 2.0 G, 32+31 3.2 G, 64+63 5.9 G, 96+95 7.2 G.
+
+## 4. Two nodes: the router reaches 85 % of the wire, in both directions at once
+
+`-H grdix-8,grdix-9 --npernode 1`, 150 + 105, 10 s rounds (session 9's minimum: the drain adds
+1.4-3.5 s).  Destinations are uniform, so half of every node's points cross the link.  `net` is
+bytes **sent** per node, one direction.
+
+| `--block` | routed/node | net per node | msgs/s | service busy |
+| --- | --- | --- | --- | --- |
+| 4096 (default) | 1.5 G | 11.7-12.3 GB/s | 178 K | 39 % |
+| 8192 | 2.2 G | 17.44 GB/s | 133 K | 18 % |
+| 16384 | **2.5 G** | **19.96 GB/s** | 76 K | 6 % |
+| 32768 | 2.5 G | 19.88 GB/s | 38 K | 2 % |
+| 65536 | 2.5 G | 19.92 GB/s | 19 K | 1 % |
+
+`192 + 63` at block 16384 gives the same 2.5 G and 19.82 GB/s, so the split stops mattering once
+the fabric is the limit.  The reference is `ucx_perftest -t tag_bw -s 262144` between the two
+nodes: **23.54 GB/s** one way, and **23.54 GB/s in each direction with both running at once** --
+the link is honestly full duplex and the HCA's PCIe is not in the way.  The router sends 19.96
+and receives 19.96 simultaneously: **85 % of the raw rate, both ways at once.**
+
+The control is `--local-only` at np 2 (every point stays on its node): 12.8 G/node, i.e. exactly
+the single-node rate of §1.  So nothing about running two ranks costs anything; the 2.5 G is the
+remote half meeting a narrow pipe.
+
+## 5. What this means
+
+**Local memory is 416 GB/s; the fabric is 23.5 GB/s each way -- a factor of 17.**  A second node
+does not add throughput per node, it divides it: 13.0 G alone, 2.5 G each in a pair, because half
+of every node's points now take the narrow path.  In aggregate that is **13.0 G points/s on one
+node against 5.0 G on two** -- for a fan-out this uniform, the second node makes the whole thing
+2.6x slower.  That is a property of the placement, not of the router: the router is at 85 % of the
+wire, and the wire is what it is.  What would change it is
+routing that keeps points local -- which is what `--local-only` measures, and what a
+group-affine or node-affine dictionary sharding would buy the engines.
+
+## What to change
+
+1. **Raise `Router_Opts::block_points` from 4096 to 16384.**  It is worth 60 % on one node and
+   67 % on two, and it is one number.  The cost is the pool: 1.10 -> 4.41 GB for a 255-worker
+   team, which the engines must subtract from what they hand the dictionary.  If that is too
+   much, **8192 is the frugal setting**: 98 % of the single-node gain (12.7 of 13.0 G) at half
+   the memory, but only 88 % of the two-node one (2.2 of 2.5 G) -- across the network the message
+   size itself still matters, so 16384 is the right default where the RAM is there.
+2. The pool's *block count* is fixed by the team's shape, so `block_points` is the only lever on
+   its footprint.  If 4.41 GB is unacceptable, the fix is to make `n_blocks` shrink as
+   `block_points` grows (the slack term `32 * S` and `R * (inbox + 1)` are both counted in
+   blocks, and both are really "points in flight" budgets).  Unmeasured.
+3. Not chased: whether the install cost is the free-ring pop or the destination-word CAS.  A
+   per-group free ring (FINDINGS point 2/3) would tell, and is the obvious next thing on this
+   node.
+
+## Reproducing
+
+```bash
+oarsub -I -p grdix --project cryptanalyse --resource host=2,walltime=2
+module load openmpi/4.1.6 hwloc/2.13.0 ucx/1.20.0
+export HWLOC_ROOT=/gnu/store/hl3isj962ghsvvxig6ls84mw54nfc917-hwloc-2.13.0-lib
+cmake -S . -B build -DCMAKE_BUILD_TYPE=release && make -C build -j64 router_bench
+
+# one node
+mpirun -np 1 --bind-to none build/examples/router_bench \
+    --senders 150 --receivers 105 --rounds 2 --seconds 10 --block 16384
+
+# two nodes, over HDR200
+mpirun -np 2 --npernode 1 -H grdix-8,grdix-9 --bind-to none -x LD_LIBRARY_PATH -x PATH \
+    --mca pml ucx -x UCX_NET_DEVICES=ibp66s0:1 --mca btl ^openib --mca oob_tcp_if_include br0 \
+    build/examples/router_bench --senders 150 --receivers 105 --rounds 2 --seconds 10 --block 16384
+
+# the fabric's own rate (server on grdix-9: ucx_perftest)
+UCX_NET_DEVICES=ibp66s0:1 ucx_perftest grdix-9 -t tag_bw -s 262144 -n 20000 -w 1000
+```
+
+`--mca btl ^openib` only silences an "error initializing an OpenFabrics device" warning; the ucx
+PML does not use that BTL.  Without `-x LD_LIBRARY_PATH -x PATH` the remote `orted` cannot find
+the Guix Open MPI.
