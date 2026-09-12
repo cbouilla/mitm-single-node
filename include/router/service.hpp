@@ -138,14 +138,10 @@ inline void Router_node::retry_parked(int target)
 	}
 }
 
-/* a sealed block: dispatch it, or pend it until its last line is written.  Reached from Router_Progress, for
- * every block of the take and every block pended the turn before. */
+/* a sealed block, and a sealed block is complete: its sealer waited for the last line.  Reached from
+ * Router_Progress, for every block of the take. */
 inline void Router_node::handle_block(int d, u32 blk)
 {
-	if (not complete(blk)) {
-		pending.push_back(((u64) d << 32) | blk);
-		return;
-	}
 	dispatch(d, blk, (u32) opt.block_points);
 }
 

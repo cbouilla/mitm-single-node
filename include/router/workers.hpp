@@ -138,6 +138,8 @@ inline void Router_node::stage_line(Router_thread &s, int d, const Point *line)
 		if (k == L) {                     /* the sealer; refill waits, so its cache is never empty here */
 			u32 fresh = s.cache[--s.cache_n];
 			next.store_release((u64) fresh);
+			while (not complete(blk))     /* the other writers are mid-copy: a sealed block is a whole one */
+				cpu_relax();
 			seal(d, blk);
 			if (s.cache_n == 0)
 				refill(s);
