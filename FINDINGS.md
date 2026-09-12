@@ -2783,6 +2783,58 @@ because the senders cannot feed them any faster.  So the two block sizes are lim
 ends -- senders at 4096, the memory system at 16384 -- and what the big block relieves is
 something on the *sender's* side of a block transition, not the service's.
 
+## 7. It is not work, it is stall: three more mechanisms ruled out, and the counter that settles it
+
+Sections 2 and 6 left "a fixed cost per block" unlocated.  Three interventions, each built on a branch
+and A/B'd interleaved against `63be9c4` on the same node, at `--block 4096`, 150 + 105:
+
+| intervention | what it removes | routed | blocks/s |
+| --- | --- | --- | --- |
+| baseline `63be9c4` | -- | 8.1-8.2 G | 2.0 M |
+| `762c660` the sealer waits | the service's `complete()` scan | 8.3 G | 2.0 M |
+| `c256db5` one sealed stack per group | the node-wide `sealed_top` CAS | 8.2-8.3 G | 2.0 M |
+| `--dests 210` / `420` | destination-word transitions, 2x and 4x rarer | 7.9 / 8.0 G | 1.9 / 2.0 M |
+
+and two more from the flags: with the senders held at 150, blocks/s *rises* with more receivers
+(24 -> 1.8 M, 48 -> 1.9 M, 105 -> 2.0 M), which is the opposite of contention on the free ring's
+ticket word; and `--swc` 128 / 256 / 512 gives 7.8 / 8.0 / 8.1 G, so the per-line cost is small and
+additive, not a cliff.  **Every node-wide singleton on the sender's per-block path is now ruled out
+by an intervention rather than by a profile.**
+
+`perf stat -a` over 5 s of a steady round says why they all failed, and it should have been the
+first measurement of the session:
+
+| | `--block 4096` | `--block 16384` |
+| --- | --- | --- |
+| cycles | 4.013e12 | 4.020e12 |
+| instructions | 2.074e12 | 3.238e12 |
+| **instructions per point** | **51.2** | **49.4** |
+| **IPC** | **0.52** | **0.81** |
+| cache misses per point | 0.070 | 0.051 |
+
+The cycles are equal because every thread spins.  The **instructions per point are equal too** --
+within 3.6 % -- so the small block does not make the router execute more code.  It makes the same
+code stall: IPC falls by 36 % and the machine takes 37 % more cache misses per point.  No lock, no
+CAS and no extra branch can produce that signature, which is exactly why removing three of them
+changed nothing.
+
+It is not bandwidth either.  At `--block 4096` the node moves 131 GB/s written + 131 read = 262 GB/s,
+against the 416 GB/s it sustains at 16384 and the 442-561 GB/s of section 3.  So the small block
+leaves both the memory system *and* the cores idle at once: what it costs is **memory-level
+parallelism**.  Converting the gap, the small block costs about 104 extra cache misses per block
+transition, and none of them are in code that a profile attributes to a hot line.
+
+**What to measure next**, and this is a measurement, not another guess: the miss distribution by role
+and address.  `perf record -e cache-misses -C <sender cpus>` against `-C <receiver cpus>` says which
+side stalls, and `perf mem record` / `perf c2c` says whether the misses are cold DRAM reads, the
+non-temporal stores' own write-allocate behaviour, or a dependent chain in the install path.  The
+one structural suspect that survives -- untested because the pool is sized by a formula rather than
+a flag -- is the pool's *depth in points*: `n_blocks` is fixed at 16808 by the team's shape, so the
+small block holds 68.8 M points in flight against 275 M, and section 2's `--inbox` test did **not**
+rule that out (raising `inbox_blocks` grows the pool and the receivers' commitment by the same
+`R * (inbox + 1)`, leaving the freely circulating count near 5200 either way).  Adding a slack knob
+is a two-line change and the right next experiment.
+
 ## What to change
 
 1. **Find the per-block cost.**  §2 measures it and §6 rules out the service thread, which was the
