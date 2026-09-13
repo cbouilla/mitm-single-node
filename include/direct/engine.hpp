@@ -43,7 +43,8 @@ static void banner(const Wrapper &wrapper, const Params &params, u64 seed)
 	double work = (double) params.n_rounds * (params.per_round + params.domain);
 	std::string hper = human_format(params.per_round);
 	print("Dictionary: linear probing, 8-byte slots = {}-bit preimage | {} check bits | occupancy.  "
-	      "Fill {:.2f}: {} entries per round\n", params.n, 63 - params.n, params.fill, hper);
+	      "Fill {:.2f}: {} entries per round.  Prefetch {} points ahead\n", params.n, 63 - params.n, params.fill,
+	      hper, params.prefetch);
 	print("RAM per node == {:.1f} MB of dictionary; {} slots in all (2^{:.2f}), {} per shard\n",
 	      (double) params.w_shard * params.R * sizeof(u64) / 1e6, human_format(params.w),
 	      std::log2((double) params.w), hper);
@@ -303,7 +304,7 @@ optional<pair<u64, u64>> run(const Wrapper &wrapper, u64 nbytes_memory, const Op
 			if (role == ROUTER_SERVICE)
 				service_round(rt, params, shared, stats.data(), round, phase, t0);
 			else if (role == ROUTER_RECEIVER)
-				dict_round(rt, wrapper, shared, dict, ctr, round, phase);
+				dict_round(rt, wrapper, shared, dict, ctr, round, phase, params.prefetch);
 			else
 				producer_round(rt, wrapper, params, ctr, round, phase);
 

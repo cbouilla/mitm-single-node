@@ -16,6 +16,9 @@
 
 namespace mitm::direct {
 
+/* the most points a dict thread may hold between Router_Pop and its shard: its ring is an array of that size */
+static constexpr int MAX_PREFETCH = 64;
+
 /* the two phases of a direct round: f fills the dictionary, then g probes it */
 enum phase {FILL, PROBE};
 
@@ -79,6 +82,8 @@ struct Params : Options {
 			errx(1, "RAM budget too small: %" PRIu64 " bytes/node cannot hold one slot per shard", nbytes_memory);
 		if (not (fill > 0 && fill <= 0.9))
 			errx(1, "--fill %.2f: the dictionary fill ratio must be in (0, 0.9]", fill);
+		if (prefetch < 0 || prefetch > MAX_PREFETCH)
+			errx(1, "--prefetch %d: a dict thread prefetches 0 to %d points ahead", prefetch, MAX_PREFETCH);
 		domain = 1ull << n;
 		per_round = fill * (double) w;
 		if (per_round == 0)

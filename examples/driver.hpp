@@ -40,6 +40,7 @@ static void usage(const char *argv0)
 	printf("  --n BITS         problem size.  Small == easy\n");
 	printf("  --seed S         PRNG seed.  0 == draw a fresh one from /dev/urandom\n");
 	printf("  --fill F         dictionary fill ratio, entries per round == F * slots.  Default: 0.5\n");
+	printf("  --prefetch D     points a dict thread prefetches ahead of the one it probes (0..64).  Default: 8\n");
 	printf("  --nrounds R      give up after R rounds (PCS: R versions of the function)\n");
 	printf("  --benchmark      measure the problem's f/g rate and exit, no search: --ram is then useless\n");
 	printf("\n");
@@ -70,7 +71,7 @@ static void process_command_line_options(int argc, char **argv, Options &opts, D
 {
 	enum {OPT_ENGINE = 998, OPT_FILL = 999, OPT_BLOCK = 1000, OPT_SWC, OPT_NRECV, OPT_INBOX, OPT_SWEEP,
 	      OPT_CREDIT, OPT_GROUP, OPT_CHUNK, OPT_CACHE_LEVEL, OPT_NO_BIND, OPT_DP_LEN_BITS, OPT_BENCHMARK,
-	      OPT_QUIET, OPT_HELP};
+	      OPT_QUIET, OPT_PREFETCH, OPT_HELP};
 
 	struct option longopts[] = {
 		{"ram",                required_argument, NULL, 'r'},
@@ -82,6 +83,7 @@ static void process_command_line_options(int argc, char **argv, Options &opts, D
 		{"beta",               required_argument, NULL, 'b'},
 		{"nrounds",            required_argument, NULL, 'o'},
 		{"fill",               required_argument, NULL, OPT_FILL},
+		{"prefetch",           required_argument, NULL, OPT_PREFETCH},
 		{"dp-len-bits",        required_argument, NULL, OPT_DP_LEN_BITS},
 		{"producers-per-node", required_argument, NULL, 'W'},
 		{"dicts-per-node",     required_argument, NULL, 'I'},
@@ -108,6 +110,7 @@ static void process_command_line_options(int argc, char **argv, Options &opts, D
 		case 'r': drv.ram = human_parse(optarg);                             break;
 		case OPT_ENGINE:         drv.engine = optarg;                        break;
 		case OPT_FILL:           opts.fill = std::stof(optarg);              break;
+		case OPT_PREFETCH:       opts.prefetch = std::stoi(optarg);          break;
 		case 'n': drv.n = std::stoi(optarg);                                 break;
 		case 's': drv.seed = std::stoull(optarg, 0, 0);                      break;
 		case 'd': opts.theta = std::stof(optarg);                            break;
