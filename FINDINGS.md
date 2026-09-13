@@ -2963,3 +2963,295 @@ perf report -i svc.data --stdio --no-children -g none --sort srcline
 `--mca btl ^openib` only silences an "error initializing an OpenFabrics device" warning; the ucx
 PML does not use that BTL.  Without `-x LD_LIBRARY_PATH -x PATH` the remote `orted` cannot find
 the Guix Open MPI.
+
+# Session 15 -- the direct engine at n = 40 on grdix: the dictionary is the wall, the push is 21 cycles
+
+2026-09-13, **grdix-5** then **grdix-13** (2 x EPYC 9754, Zen 4c, 256 cores / 512 PU, 2 NUMA nodes,
+32 L3 of 16 MB, 1003 GB), `oarsub -p grdix --project cryptanalyse -l nodes=1,walltime=2` (jobs
+6924657 and 6924670).  Commit `86d69ca` on `bench-grdix` = `04d1041` of `router-fat-slack` (the
+16x pool slack EXPERIMENT, `block_points` 16384, `is_good_pair` before `f(x)`) plus session 14's
+FINDINGS; release build (`-O3 -DNDEBUG -march=native -ggdb`), debian13, `module load
+openmpi/4.1.6 hwloc/2.13.0 ucx/1.20.0`.
+
+**This session measures the application, not the router alone**: `double_speck64_demo --n 40
+--ram 960G --producers-per-node 63 --dicts-per-node 192`, one rank, killed 30 s into the first
+PROBE phase (a round is 34 s of FILL and about 590 s of PROBE; 19 rounds make the search).  The
+question was where the Router's time goes when the senders run Speck and the receivers probe a
+960 GB dictionary, which is the Router's design goal ("minimum time in Push and Pop with work
+around them"), and `router_bench` cannot pose it.  Three variants of the engine, built from a
+scratch worktree and never committed, separate the costs: **A** receivers pop and discard, **B**
+producers compute, hash and pick a destination but never push, **C** the dict thread reads its
+block in place and prefetches the slot of the point D ahead.
+
+**Two nodes were lost to the method.**  A SIGKILLed 960G demo gives its memory back in about 5 s
+(`MemAvailable` 849 -> 993 GB, the process a zombie meanwhile, logged twice on grdix-2), but once,
+after the D = 16 run on grdix-13, **908 GB were still held two minutes after the kill** -- not
+explained, and the reason a launch guard has to block rather than time out.  On grdix-5 a run
+script's `pgrep -x double_speck64_` caught the previous run's dying process, declared its own run
+dead without killing it, and the next run allocated a second 960G.  On grdix-13 the guarded script
+waited 120 s for `MemAvailable`
+after killing the D = 16 run, saw **85 GB**, and launched the D = 32 run anyway -- the wait fell
+through instead of aborting.  Both nodes went down at once and OAR terminated the jobs (6924657,
+6924670).  `run2.sh` now finds the demo as mpirun's child (`pgrep -P`), kills it with SIGKILL on
+every exit path, logs `MemAvailable` after the kill and refuses to launch until it is back above
+985 GB.  Every number below was reproduced on grdix-13 before it died, the baseline agreeing with
+grdix-5 to the digit; sections 4-5's last measurements ran on **grdix-2** (job 6924675).
+
+## Summary
+
+| | FILL (6.0e10 inserts) | PROBE, steady | producer, cycles/point |
+| --- | --- | --- | --- |
+| **baseline** (`04d1041`) | 34.6 s, **1.8 G/s** | **1.8 G points/s** | 108 (throttled) |
+| A: receivers discard | 21.4 s, 2.8 G/s | **3.5 G/s** | 56 = work + push |
+| B: producers never push | 10.9 s, 5.5 G/s | **5.5 G/s** | 35 = work alone |
+| C: prefetch D = 8 | 34.0 s, 1.8 G/s | **2.4 G/s** | -- |
+| C: prefetch D = 16 | 33.6 s, 1.8 G/s | 2.4 G/s | -- |
+| C: prefetch D = 32 | lost with grdix-13 | -- | -- |
+
+The machine runs at the receivers' pace: 1.8 G points/s is 192 dict threads at one DRAM miss per
+probe, 330 cycles a point at IPC 0.43, and the producers, able to push 3.5 G/s into idle
+receivers, spend the difference throttled by the Router's backpressure.  The Router's own cost on
+a producer is **21 cycles a point** (56 - 35), a third of the producer's time once the receivers
+are out of the way -- not the 12 % the profile attributed to the push, and not nothing.  On a
+receiver it is bounded above by the pure bench's pop cost, ~25 cycles of the 330.
+
+## 1. The run
+
+960 GB of dictionary is 120 G slots of 8 bytes in 192 shards of 5.0 GB, fill 0.5, so a round
+inserts 6.0e10 = 2^35.8 preimages and probes all 2^40; 19 rounds.  The shards came up on
+transparent 2 MB pages (`MAP_HUGETLB` refused: `nr_hugepages` = 0).  The Router built 47135
+blocks of 16384 points (12.4 GB: the 16x slack is 32256 of them), private lines of 256 points
+(0.8 MB per sender, the L2 rule), inboxes of 64 blocks, 32 groups of 1-2 senders and 6 receivers,
+one per L3, 96 receivers and 31-32 senders per NUMA node, the service on CPU 0.
+
+The live line settles at **1.8 G points/s in both phases**.  FILL takes 34.4-34.6 s, and its live
+line shows the first 5 s doing almost nothing (136 M/s cumulative at 5.7 s, 730 M/s at 7.7 s) and
+~2.0 G/s afterwards: the direct engine has no startup barrier, the dict threads are zero-filling
+5 GB each when the round opens, and the producers fill 192 inboxes and drain the pool waiting for
+them.  Round 0 only; 5 s of a 620 s round.
+
+FILL reports **691277 blocks "held back for a full destination"** of the 3.66 M it moves: the
+service could not place one block in five at its first try because the destination's inbox was
+full.  That is the receiver-bound regime: the pool is in the inboxes and the parked lists, and the
+senders wait in `refill()` for a receiver to release something.
+
+## 2. Where the cycles go (perf, 20 s of PROBE, 199 Hz, every CPU)
+
+The placer pins, so `-C` is an exact role filter (`/proc/<pid>/task/*/status` gives each thread's
+CPU; the omp thread order is service, 192 receivers, 63 producers).  Counters over the 20 s:
+
+| role | cycles | IPC | GHz | cycles per point |
+| --- | --- | --- | --- | --- |
+| 192 dict threads | 11.9e12 | 0.43 | 3.10 | **330** (142 instructions) |
+| 63 producers | 3.90e12 | 0.97 | 3.10 | **108** |
+| service | 6.19e10 | 1.10 | 3.10 | -- (110 K blocks/s) |
+
+**Dict thread** (99 % in `dict_round`): `workers.hpp:236`, the first line of `Router_Pop`, 36.7 %;
+`dict.hpp:156`, the tag compare on `A[s]`, 25.6 %; `:169-170` the counters 8.4 %; `:155` the
+load 5.2 %; and **12.7 % in scalar Speck** (`double_speck64_problem.hpp:20-31, 143`): with m = 40
+and 6.0e10 entries, **5.5 % of probes hit a genuine collision**, each one a key schedule and an
+encryption in `is_good_pair`.  The pile on the head of `Router_Pop` is skid: it is the next
+instruction to retire after the probe's stalled load, on L1-resident state that cannot cost 120
+cycles by itself.  One DRAM miss per point, nothing in flight behind it: 330 cycles is the loaded
+latency.  `cache-misses` reads 2.8 per point (whatever Zen 4's generic event counts).
+
+**Producer** (99.5 % in `producer_round`): vector Speck (`double_speck64_problem.hpp:48-65, 137`,
+the intrinsics) 44 %; `murmur64` of the image plus the destination pick and the lane loop
+(`tools.hpp:94-96`, `producer.hpp:47-51`) 17 %; the push proper -- the line write
+(`workers.hpp:158-164`) 7.4 %, `router_stream_copy` 2.5 %, the `fetch_add` on the destination
+word 1.6 % -- **11.5 %**; **waiting for a free block** (`refill`, `workers.hpp:86`, and the
+`pause` in `cpu_relax`) **19.7 %**.  Section 3 shows the 44 % of Speck is inflated: B does all of
+it, the hashing included, in 35 cycles.
+
+**Service** (90 % in `Router_Progress`, no MPI peer): the `retry_parked` loop over 193 targets
+(`service.hpp:426-427, 129, 133`) 38 %; the inbox `push` that fails on a full inbox
+(`ring.hpp:48-53`, which loads the receiver's `head` line) 20 %; `place()` 12 %; `PMPI_Testsome`
+and `ompi_request_default_test_some` 8 % with nobody to talk to.  It hands over 110 K blocks/s
+against session 14's 2.0 M/s ceiling: not a bottleneck, a core spinning on full inboxes and
+touching every receiver's inbox head once per turn.
+
+## 3. Two interventions: the receivers set the pace, the push is 21 cycles
+
+**A -- receivers pop and discard** (`ctr[N_PROBE] += 1` in place of the probe; the FILL inserts
+are discarded too).  PROBE runs at **3.5 G points/s**, FILL in 21.4 s (2.8 G/s; ~3.6 G/s once the
+5 s ramp is past) with 70 K blocks held back instead of 691 K.  This is the producers-plus-Router
+ceiling: 55.5 M points/s per producer, **56 cycles a point**.
+
+**B -- producers never push** (`sink ^= h ^ dest` in place of `Router_Push`, the hash and the
+destination pick kept).  FILL in **10.9 s**, PROBE at **5.5 G/s** (13.8 % of 2^40 at 27.5 s):
+87 M points/s per producer, **35 cycles a point** for the vector Speck, the murmur and the pick.
+(On grdix-5 the same binary took 17.7 s, launched 3 s after A's 960G was killed and while the
+kernel was still giving it back; grdix-13 ran it twice at 10.9 s.  Never overlap two runs.)
+
+So at this operating point **`Router_Push` costs a producer 56 - 35 = 21 cycles a point**, 6.8 ns
+at 3.1 GHz, **37 % of the producer's time when the receivers keep up**.  The profile's 11.5 % was
+wrong by 3x: the push's own instructions are few, and what they cost shows up as stall on
+whatever comes next, which is Speck.  Session 14's pure bench measured 11.7 ns a point on a
+saturated sender; with real work in the loop the marginal cost is 60 % of that, not the 10-20 %
+the "it overlaps with compute" argument hoped for.  **Where the 21 cycles go is not settled** --
+hypothesis, section 5.
+
+And the baseline's producer at 108 cycles is neither: it is a 56-cycle producer throttled to the
+receivers' 1.8 G/s, the other 52 spent in `refill` and in stores that wait.  Which is why the
+question "what could be shaved in the Router" has two very different answers for the two sides.
+
+## 4. The receiver: one miss in flight, and a prefetch buys 33 % in PROBE and nothing in FILL
+
+**C -- `dict_round` reads the block in place** (`Router_Grab` / `Router_Release`), and before
+point i it hashes point i + D and `__builtin_prefetch`es its first slot; inserts get the
+write-intent form (`prefetchw`).  The murmur is computed twice per point, once for the prefetch.
+
+| D | FILL | PROBE |
+| --- | --- | --- |
+| none (baseline) | 34.6 s | 1.8 G/s |
+| 8, read prefetch in both phases | 33.8 s | 2.4 G/s |
+| 8, write-intent in FILL | 34.0 s | 2.4 G/s |
+| 16 | 33.6 s | 2.4 G/s |
+| 32 | (the run that took grdix-13 down) | -- |
+
+PROBE goes from 330 to **248 cycles a point** and stops there: D = 16 and 32 buy nothing over 8,
+so what remains is not misses waiting one behind the other.  FILL does not move at all, with or
+without write intent, although the same prefetch reaches the same shard.  Two readings, neither
+measured yet: (a) the inserts' *writes* are the limit -- 2 G random dirty lines/s is 128 GB/s of
+random write-back on top of 128 GB/s of fills, and random DRAM traffic is far from STREAM's
+442-561 GB/s; (b) the receivers' DRAM traffic and the producers' non-temporal stores share the
+memory controllers, and the whole node sits at a random-access ceiling around 2.0-2.4 G lines/s.
+`randread` (below) puts a number on the read side of that ceiling.
+
+**`randread2`** -- 192 threads pinned one per core, a private 3 GB array each on 2 MB pages, one
+8-byte word read per uniformly random 64-byte line, which is what a probe does.  With *independent*
+addresses the machine delivers **7.6-7.8 G random line fetches/s** whatever the number of streams
+per thread (the core overlaps them on its own), and the demand-fill counter says they are real:
+30.6 G `ls_dmnd_fills_from_sys.dram_io_near` for the run, 7.4 G of them the first touch, **1.00
+DRAM fill per load** over the 23.2 G loads of the timed part.  That is 500 GB/s of line traffic,
+90 % of STREAM's 561 GB/s read, on this pair of 12-channel DDR5 sockets with the TLB out of the
+way.  With *dependent* addresses -- a stream's next address is the word it just loaded, so a
+stream holds exactly one miss in flight:
+
+| misses in flight per thread | G lines/s, 192 threads | per thread | latency seen |
+| --- | --- | --- | --- |
+| **1** | **1.41** | 7.3 M/s | **137 ns** |
+| 2 | 2.55 | 13.3 M/s | 151 ns |
+| 4 | 4.65 | 24.2 M/s | 165 ns |
+| 8 | 7.14 | 37.2 M/s | 215 ns |
+| 16 | 7.63 | 39.8 M/s | 402 ns |
+
+One miss in flight per thread is 1.41 G/s, and **the baseline dictionary at 1.8 G/s (9.4 M probes/s
+a thread, 106 ns a probe) is that regime**, a little better because the core overlaps the tail of
+one probe with the head of the next.  Eight in flight reach the machine.  So the prefetched
+receiver's plateau at 2.4 G/s is **not** the memory system: with D = 8 it could have 7 G/s, and what
+stops it at 248 cycles a point is in the dict thread's own instruction stream (the collision check's
+scalar Speck, the run loop's data-dependent branches, the two murmurs, Grab/Pop).  The perf profile
+of the C variant was not taken and is the next measurement.  For scale, the same loop in L3
+(2 MB a thread) runs 62-79 G/s independent and 12.8 G/s dependent at 15 ns, in L2 (256 KB) 79-116
+and 22.7 G/s at 8 ns.
+
+## 5. The sender: 21 cycles a point, hypothesis and test
+
+A producer's private lines are F = 192 buffers of 256 points, 4 KB each, 768 KB of its 1 MB L2,
+and each `Router_Push` touches two cache lines of them: the 64 B chunk being written (4 points a
+line, a new one every 4 pushes to that destination) and the line's count word, which lives in
+the *last* point of the 4 KB buffer, 4 KB away.  The hot set is 192 x 2 = 384 lines = 24 KB of a
+32 KB L1D, before Speck's stack arrays and round keys.  **Hypothesis:** the 21 cycles are one or
+two L2 hits per push (Zen 4: ~14 cycles each) from L1 thrashing.  If so, `--swc` will not help
+(the count line is one per destination whatever the line size) but moving the counts into a
+compact array (192 x 4 B = 12 lines, always hot) would, and so would a line size that keeps the
+active chunk of every destination in L1.
+
+**Measured** -- variant A (receivers discarding), `perf stat` on the 63 producer CPUs over 10 s of
+PROBE:
+
+| `--swc` | private lines per sender | PROBE | IPC | L1D misses per point | served by L2 |
+| --- | --- | --- | --- | --- | --- |
+| 64 | 192 KB | 2.9 G/s | 1.49 | 1.6 | 98 % |
+| **256** (auto, the L2 rule) | 768 KB | **3.5 G/s** | 1.77 | **1.63** | 98 % |
+| 1024 | 3 MB | 3.3 G/s | 1.69 | 1.7 | 71 % |
+
+1.63 L1D misses a point, 98 % of them L2 hits (~14 cycles each on Zen 4, partly overlapped), is
+the 21 cycles.  The hypothesis survives its first test: the miss count does not move with the line
+size, as it predicts, since the count word is one line per destination whatever the size; 64 loses
+on 4x more `stage_line` calls, 1024 loses on L2 misses (3 MB of lines in a 1 MB L2), and the auto
+rule picked the best of the three.  **Not tested: the counts in a compact array** (192 x 4 bytes,
+12 lines always hot), which the hypothesis says removes about half the misses, and a smaller line
+that keeps every destination's active 64-byte chunk in L1 next to them.
+
+## 6. `--benchmark` is not the producers' ceiling
+
+`double_speck64_demo --n 40 --benchmark --producers-per-node 63` reports **20.3 M f/s per
+producer, 1.3 G/s** -- 4.3x under B's 87 M/s per producer.  `benchmark()` walks one dependent
+chain per lane (x = f(x)), so it measures the *latency* of a vector evaluation; the engine's
+producer enumerates independent inputs and the core overlaps them.  As the denominator of "engine
+rate over f/g rate" it makes the direct engine look 140 % efficient.  Either the benchmark should
+enumerate independent inputs the way `producer_round` does, or the B variant of this session (the
+engine's own loop minus the push) is the honest ceiling.
+
+## 7. The service thread with one node
+
+Nothing to shave on the critical path: 110 K blocks/s is 5 % of what it can do.  But it spins
+through 193 parked lists and fails 192 inbox pushes per turn, each failure an acquire load of a
+line the receiver writes, and polls MPI with no peer, 8 % of its cycles.  Harmless at np 1;
+at np > 1 the same loop runs beside the real MPI work, unmeasured here.
+
+## What to change
+
+1. **The dictionary thread, not the Router, is where the machine's time goes**: 330 cycles a
+   point, one miss, nothing behind it.  The prefetch (C) is 20 lines and is worth 33 % of PROBE
+   on this machine, i.e. 3 hours of the 3.3-hour n = 40 search become about 2.3.  Where it stops
+   (248 cycles, D-independent) is not DRAM: the memory system gives 192 threads 7 G random fetches/s
+at 8 misses in flight each (section 4), so it is the dict thread's own code.  Profile the C variant.
+Do it
+   properly: carry the hash from the prefetch to the probe instead of computing murmur twice,
+   and keep `Router_Pop` for PCS.  The memory note said "retry the prefetch on the cluster"
+   (laptop: ~5 %); on 192 threads it is not 5 %.
+2. **The push costs 21 cycles a point with room to push into**, 37 % of a producer.  Test the L1
+   hypothesis of section 5 (`--swc`, then counts in a compact array); the Router's own knob that
+   moves the lines' footprint is `swc_linesize`, and the L2 rule that sizes it may be the wrong
+   rule -- the L1 is what the push touches per point.
+3. **FILL's inserts do not gain from the prefetch**, PROBE's probes do.  Find out why before
+   building on (1): if it is the write-back traffic, the FILL phase is at the memory wall and
+   only fewer or smaller writes help (a 4-byte slot? a generation bit instead of the flush?).
+4. **A 5 s ramp at round 0**: no startup barrier, the shards' zero-fill overlaps the first
+   pushes.  One `#pragma omp barrier` after the dict threads' constructors, or nothing: 5 s once.
+5. **`--benchmark` underestimates the direct engine's producers by 4x** (section 6).  Change
+   the benchmark or stop quoting it as the ceiling.
+6. **The service thread at np 1**: a harmless spinner, but `retry_parked` could skip receivers
+   with nothing parked (a bitmap) and the MPI poll could be skipped with one node.  Unmeasured
+   and off the critical path.
+7. **Method:** one 960G demo at a time.  `pgrep -P` for the demo, SIGKILL it, then *wait for
+   `MemAvailable`* -- the release is normally 5 s and was once over two minutes -- and abort rather
+   than launch on a timeout.  A perf record over 512 CPUs takes 20 s to write out after `sleep`
+   returns; time the kill from the PROBE mark, not from perf's exit.
+
+## Reproducing
+
+```bash
+oarsub -p grdix --project cryptanalyse -l nodes=1,walltime=2 "sleep 7200"   # then ssh the node
+module load openmpi/4.1.6 hwloc/2.13.0 ucx/1.20.0
+cmake -S . -B build -DCMAKE_BUILD_TYPE=release \
+    -DHWLOC_INCLUDE_DIR=/gnu/store/hl3isj962ghsvvxig6ls84mw54nfc917-hwloc-2.13.0-lib/include \
+    -DHWLOC_LIBRARY=/gnu/store/hl3isj962ghsvvxig6ls84mw54nfc917-hwloc-2.13.0-lib/lib/libhwloc.so
+make -C build -j 96 double_speck64_demo
+sudo-g5k sysctl -w kernel.perf_event_paranoid=-1 kernel.kptr_restrict=0
+
+# the run: FILL ~34 s, kill ~30 s into PROBE; build/session15/run2.sh does this with the guards
+mpirun -np 1 --bind-to none --mca btl ^openib build/examples/double_speck64_demo \
+    --n 40 --ram 960G --producers-per-node 63 --dicts-per-node 192
+
+# roles: the placer pins, so thread -> CPU from /proc, omp order = service, 192 dicts, 63 producers
+for t in /proc/$(pgrep -P $MPIRUN_PID -x double_speck64_)/task/*; do
+    echo "$(basename $t) $(awk '/Cpus_allowed_list/{print $2}' $t/status)"; done | sort -n | grep -vE '[-,]'
+perf record -a -F 199 -o probe.data -- sleep 20        # during PROBE
+perf report -i probe.data --stdio --no-children -C <cpus of one role> --sort srcline
+perf stat -C <cpus> -e cycles,instructions,cache-misses,cache-references -- sleep 20
+
+# the variants: ~/mitm-exp on the Nancy home, -DEXP_A / -DEXP_B / -DEXP_C (EXP_D=<lookahead> at run time)
+cmake -S ~/mitm-exp -B ~/mitm-exp/build-C -DCMAKE_BUILD_TYPE=release -DCMAKE_CXX_FLAGS=-DEXP_C ...
+# the DRAM random-access ceiling: independent and dependent (one miss in flight per stream) random lines
+gcc -O2 -fopenmp -march=native build/session15/randread2.c -o randread2
+OMP_NUM_THREADS=192 OMP_PLACES=cores OMP_PROC_BIND=spread ./randread2 3145728 2 1,2,4,8,16 b
+perf stat -a -e ls_dmnd_fills_from_sys.dram_io_near,ls_dmnd_fills_from_sys.dram_io_far -- ./randread2 3145728 3 8 i
+```
+
+`build/session15/` in the grdix worktree keeps every log, tids file, perf.data and script of this
+session (`run.sh`, `run2.sh`, `report.sh`, `batch2.sh`, `batch3.sh`, `check.sh`, `randread.c`,
+`randread2.c`).
