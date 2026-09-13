@@ -18,6 +18,8 @@
 
 namespace mitm::direct {
 
+using std::vector;
+
 /******************************* the shard's pages ****************************/
 
 /* the page these mappings ask for: the kernel rounds a MAP_HUGETLB length up to it, munmap does not */
@@ -80,15 +82,13 @@ static u64 huge_bytes(const void *ptr, size_t nbytes)
 /******************************* dictionary shard *****************************/
 
 /*
- * One shard of the distributed dictionary: linear probing over 8-byte slots, insert-only while the round fills,
- * probe-only while it probes, emptied after that.  A slot is the preimage in its low n bits, the key's check
- * bits above, and bit 63 set; zero is empty.  The key is the hashed image the Router delivered, mixed once more
- * here: the routing consumed the top bits of its low word, and a shard above 2^32 slots cut from the key itself
- * would leave part of its slots unreachable.  Built by its dict thread once it is pinned.
+ * One shard of the distributed dictionary: linear probing over 64-bit slots.
+ * A slot is the preimage in its low n bits, the key's check bits above, and
+ * bit 63 set; zero is empty.  Built by its dict thread once it is pinned.
  */
 class DirectDict {
 public:
-	static constexpr u64 OCCUPIED = 1ull << 63;   /* the occupancy bit, above the check bits */
+	static constexpr u64 OCCUPIED = 1ull << 63;   /* occupancy bit */
 
 	const u64 n_slots;     /* size of A */
 	const int n;           /* preimage bits */
@@ -104,10 +104,10 @@ public:
 	{
 		assert(n <= 63);
 		if (n_slots == 0)
-			return;            /* the service thread and the producers hold an empty shard */
-		nbytes = (n_slots * sizeof(u64) + HUGE_PAGE - 1) & ~(HUGE_PAGE - 1);
+			return;
+		nbytes = (n_slots * sizeof(*A) + HUGE_PAGE - 1) & ~(HUGE_PAGE - 1);
 		A = map_shard(nbytes, &hugetlb_errno);
-		memset(A, 0, nbytes);      /* by the calling thread: the first touch of every page, and its promotion */
+		memset(A, 0, nbytes);      /* first touch (NUMA awareness) + claiming of transparent huge pages */
 		huge = huge_bytes(A, nbytes);
 	}
 
@@ -120,87 +120,52 @@ public:
 	DirectDict(const DirectDict &) = delete;
 	DirectDict &operator=(const DirectDict &) = delete;
 
-	/*
-	 * Store (key, x) in the first empty slot of its run, which starts at the top bits of the mixed key, scaled
-	 * to the table by one multiplication.  Tallies the insert and the slots it visited.
-	 */
-	void insert(u64 key, u64 x, u64 *ctr)
+	/* assumption: h is a uniformly random u64 */
+	void insert(u64 h, u64 x)
 	{
-		u64 h = murmur64(key);
-		u64 slot = OCCUPIED | ((h & cmask) << n) | x;
-		u64 s = (u64) (((unsigned __int128) h * n_slots) >> 64);
-		for (u64 k = 0; k < n_slots; k++, s = (s + 1 == n_slots) ? 0 : s + 1) {
-			if (A[s] != 0)
-				continue;
-			A[s] = slot;
-			ctr[N_INSERT] += 1;
-			ctr[N_STEPS] += k;
-			return;
+		u64 i = (u64) (((unsigned __int128) h * n_slots) >> 64);
+		while (A[i] != 0) {
+			i += 1;
+			if (i == n_slots)
+				i = 0;
 		}
-		errx(1, "direct: a dictionary shard is full (%" PRIu64 " slots): lower --fill", n_slots);
+		A[i] = OCCUPIED | ((h & cmask) << n) | x;
 	}
 
-	/*
-	 * One probe (key, y) against the shard: every slot of the key's run carrying its tag -- bit 63 and the
-	 * mixed key's low check bits -- holds a collision, bar a check-bit false positive, and is offered to
-	 * is_good_pair; what that accepts is verified by one f(x), the guard of the answer, and goes to `shared`.
+	/* 
+	 * The preimages the shard holds under `key`: every slot of its run carrying the key's tag, check-bit
+	 * false positives included; `out` is cleared first. 
 	 */
-	template <class Wrapper>
-	void probe(const Wrapper &wrapper, Shared &shared, u64 *ctr, u64 round, u64 key, u64 y) const
+	void probe(u64 h, vector<u64> &out) const
 	{
-		u64 h = murmur64(key);
-		u64 tag = OCCUPIED | ((h & cmask) << n);
-		u64 s = (u64) (((unsigned __int128) h * n_slots) >> 64);
-		u64 k = 0;
-		for (; k < n_slots && A[s] != 0; k++, s = (s + 1 == n_slots) ? 0 : s + 1) {
-			if ((A[s] & ~xmask) != tag)
-				continue;
-			ctr[N_COLLISIONS] += 1;
-			u64 x = A[s] & xmask;
-			if (not wrapper.good(x, y))
-				continue;
-			if (murmur64(wrapper.pb.f(x)) != key) {
-				ctr[FALSE_GOOD] += 1;
-				continue;
-			}
-			printf("\nFound golden pair! round=%" PRIu64 " x=%" PRIx64 " y=%" PRIx64 "\n", round, x, y);
-			shared.set_golden(x, y);
+	    out.clear();
+	    u64 tag = OCCUPIED | ((h & cmask) << n);
+	    u64 i = (u64) (((unsigned __int128) h * n_slots) >> 64);
+		while (A[i] != 0) {
+	        if ((A[i] & ~xmask) == tag)
+	            out.push_back(A[i] & xmask);
+			i += 1;
+			if (i == n_slots)
+				i = 0;
 		}
-		ctr[N_PROBE] += 1;
-		ctr[N_STEPS] += k;
 	}
 
-	/* Pull the first slot of the key's run into cache ahead of its insert (write intent) or probe (read). */
-	void prefetch(u64 key, bool write) const
+	/* Pull the first slot of the key's run into cache ahead of its probe (read). */
+	void prefetch(u64 h) const
 	{
-		u64 h = murmur64(key);
-		u64 s = (u64) (((unsigned __int128) h * n_slots) >> 64);
-		if (write)
-			__builtin_prefetch(&A[s], 1);
-		else
-			__builtin_prefetch(&A[s], 0);
+		u64 i = (u64) (((unsigned __int128) h * n_slots) >> 64);
+		__builtin_prefetch(&A[i], 0);
 	}
 
-	/* empty the shard after a PROBE phase; the owner alone today */
-	void flush()
+	/* empty the shard after a PROBE phase */
+	void clear()
 	{
-		memset(A, 0, n_slots * sizeof(u64));
+		memset(A, 0, n_slots * sizeof(*A));
 	}
 };
 
 
 /******************************* the dict thread ******************************/
-
-/* Retire one point into the shard: an entry inserted while the round fills, a probe resolved while it probes. */
-template <class Wrapper>
-static void retire(const Wrapper &wrapper, Shared &shared, DirectDict &dict, u64 *ctr, u64 round, int phase,
-                   const Point &p)
-{
-	if (phase == FILL)
-		dict.insert(p.key, p.val, ctr);
-	else
-		dict.probe(wrapper, shared, ctr, round, p.key, p.val);
-}
 
 /*
  * A dict thread's phase: take the points the Router delivers, one at a time, until nothing more can arrive.
@@ -211,39 +176,73 @@ static void retire(const Wrapper &wrapper, Shared &shared, DirectDict &dict, u64
  * alone.  The ring spans blocks and is drained, oldest first, once the Router is; D == 0 retires every point as
  * it comes.  After a PROBE phase the shard is emptied.
  */
+
+template <class Wrapper>
+inline void retire(const Wrapper &wrapper, Shared &shared, DirectDict &dict, u64 *ctr, vector<u64> &candidates, u64 h, u64 y)
+{
+	dict.probe(h, candidates);
+	ctr[N_PROBE] += 1;
+	for (u64 x : candidates) {
+		ctr[N_COLLISIONS] += 1;
+		if (not wrapper.good(x, y))
+			continue;
+		shared.set_golden(x, y);
+	}	
+}
+
+
 template <class Wrapper>
 void dict_round(Router_thread &rt, const Wrapper &wrapper, Shared &shared, DirectDict &dict, u64 *ctr,
                 u64 round, int phase, int D)
 {
-	Point ring[MAX_PREFETCH];          /* the points popped and prefetched but not yet retired */
+	pair<u64,u64> ring[MAX_PREFETCH];    /* the points popped and prefetched but not yet retired */
 	int head = 0;                      /* the oldest of them, the next one retired */
 	int n_pending = 0;                 /* how many wait: D once the ring is full */
+	vector<u64> candidates;
+
 	for (;;) {
-		Point p;                       /* the hashed image the producer routed on, and its preimage */
-		if (not Router_Pop(&p.key, &p.val, rt)) {
+		u64 h, x;
+		/* get (h, xi), with h = murmur64(f(xi)), but h is skewed (destination picked from high bits) */
+		if (not Router_Pop(&h, &x, rt)) {
 			if (Router_Test_drained(rt))
 				break;
 			cpu_relax();               /* no CAS in Router_Pop --> no need for backoff */
 			continue;
 		}
-		if (D > 0) {
-			dict.prefetch(p.key, phase == FILL);
-			if (n_pending < D) {       /* the ring is still filling: the point waits, nothing is retired */
-				ring[n_pending] = p;
-				n_pending += 1;
-				continue;
-			}
-			std::swap(p, ring[head]);  /* the oldest pending point comes out, the new one takes its place */
-			head = (head + 1 == D) ? 0 : head + 1;
+		u64 hh = murmur64(h);          /* re-randomize the hash, to get rid of the skew */
+		if (phase == FILL) {           /* no prefetching in FILL: we hit the random-write ceiling */
+			dict.insert(hh, x);
+			ctr[N_INSERT] += 1;
+			continue;
 		}
-		retire(wrapper, shared, dict, ctr, round, phase, p);
+		if (D == 0) {
+			retire(wrapper, shared, dict, ctr, candidates, hh, x);
+			continue;
+		}
+        /* prefetching ring */
+		dict.prefetch(hh);
+		if (n_pending < D) {       /* the ring is still filling */
+			ring[n_pending] = pair(hh, x);
+			n_pending += 1;
+			continue;
+		}
+		auto [hh_old, y_old] = ring[head];
+		retire(wrapper, shared, dict, ctr, candidates, hh_old, y_old);
+		ring[head] = pair(hh, x);
+		head += 1;
+		if (head == D)
+			head = 0;
 	}
-	for (int i = 0; i < n_pending; i++) {   /* the drain: what still waits, oldest first */
-		retire(wrapper, shared, dict, ctr, round, phase, ring[head]);
-		head = (head + 1 == D) ? 0 : head + 1;
+
+	for (int i = 0; i < n_pending; i++) {   /* drain the prefect ring */
+		auto [hh, y] = ring[head];
+		retire(wrapper, shared, dict, ctr, candidates, hh, y);
+		head += 1;
+		if (head == D)
+			head = 0;
 	}
 	if (phase == PROBE)
-		dict.flush();
+		dict.clear();
 }
 
 }

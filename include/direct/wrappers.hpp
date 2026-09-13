@@ -36,7 +36,7 @@ public:
 	ClawWrapper(const Problem &pb) : pb(pb), n(pb.n), m(pb.m), in_mask(make_mask(pb.n))
 	{
 		static_assert(std::is_base_of<AbstractClawProblem, Problem>::value,
-		              "problem not derived from mitm::AbstractClawProblem");
+					  "problem not derived from mitm::AbstractClawProblem");
 		assert(n <= 63 && m <= 64);
 		for (int k = 0; k < vlen; k++) {
 			choice[FILL][k] = true;
@@ -56,7 +56,13 @@ public:
 	/* is the collision f(x) == g(y) the one we want? */
 	bool good(u64 x, u64 y) const
 	{
-		return pb.is_good_pair(x, y);
+		/* 
+		 * check is_good_pair() first: non-colliding inputs happen because of
+		 * (rare) false positives in the hash table. Most non-colliding
+		 * inputs will be caught by is_good_pair(), so validating the
+		 * collision afterwards saves work on "not-good" but colliding inputs.
+		 */
+		return pb.is_good_pair(x, y) && (pb.f(x) == pb.g(y)); 
 	}
 
 	/* one value every rank must agree on: the functions have no uninitialised state */
@@ -84,8 +90,8 @@ public:
 	CollisionWrapper(const Problem &pb) : pb(pb), n(pb.n), m(pb.m), in_mask(make_mask(pb.n))
 	{
 		static_assert(std::is_base_of<AbstractCollisionProblem, Problem>::value,
-		              "problem not derived from mitm::AbstractCollisionProblem");
-		assert(n <= 63 && m <= 64);
+					  "problem not derived from mitm::AbstractCollisionProblem");
+		assert(n <= 63 && m <= 64);       /* n <= 63 is imposed by dict.hpp */
 	}
 
 	void veval(int, const u64 x[], u64 y[]) const
@@ -99,7 +105,13 @@ public:
 	/* is the collision f(x) == f(y) the one we want?  is_good_pair is symmetric, so either order will do */
 	bool good(u64 x, u64 y) const
 	{
-		return x != y && pb.is_good_pair(x, y);
+		/* 
+		 * check is_good_pair() first: non-colliding inputs happen because of
+		 * (rare) false positives in the hash table. Most non-colliding
+		 * inputs will be caught by is_good_pair(), so validating the
+		 * collision afterwards saves work on "not-good" but colliding inputs.
+		 */
+		return (x != y) && pb.is_good_pair(x, y) && (pb.f(x) == pb.f(y));
 	}
 
 	u64 self_test(u64 a, u64 b) const

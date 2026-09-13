@@ -52,7 +52,7 @@ no control channel.
 | phase | a producer evaluates | on | a dict thread | at the end of the phase |
 |---|---|---|---|---|
 | `FILL` | `f` | chunk `round` of the domain: `[round * w', min((round + 1) * w', 2^n))` | inserts `(key, val)` | keeps the shard |
-| `PROBE` | `g` (`f` for a collision problem) | the whole domain | probes `key`; resolves every match on the spot | `flush()`es the shard |
+| `PROBE` | `g` (`f` for a collision problem) | the whole domain | probes `key`; resolves every candidate on the spot | `clear()`s the shard |
 
 **The phase boundary is `Router_Reset`**, and that is the barrier the algorithm needs: it returns on
 a thread only after every node has left the round, so every entry of a `FILL` phase is in its shard
@@ -75,45 +75,51 @@ One phase, on each thread:
 
 A point is the two words the Router carries: `key` is `murmur64(image)`, `val` the preimage.
 
-**Routing.**  `dest = ((key & 0xffffffff) * n_dicts) >> 32`, a multiply-shift on the low word,
-where `n_dicts` is `n_nodes * I` -- not a Router query, the same shard count every node derives
-from its own `Options`, and therefore equal to the number of shards by construction.  The hash
-buys the producer a fan-out with no 64-bit division on the hot path; `murmur64` is a bijection, so
-distinct images stay distinct and a match is verified against `key` itself.
+**Routing.**  `dest = (key * n_dicts) >> 64`, a multiply-shift on the key's top bits, where
+`n_dicts` is `n_nodes * I` -- not a Router query, the same shard count every node derives from its
+own `Options`, and therefore equal to the number of shards by construction.  The hash buys the
+producer a fan-out with no 64-bit division on the hot path; `murmur64` is a bijection, so distinct
+images stay distinct.
 
 **The shard.**  `DirectDict` is linear probing over 8-byte slots, `OCCUPIED | check << n | preimage`,
-zero empty, `n <= 63`, with three operations: `insert`, `probe` and `flush`.  It mixes the key once
-more, `h = murmur64(key)`: the run starts at `(h * n_slots) >> 64`, from `h`'s top bits, and its tag
--- bit 63 and `h`'s low `63 - n` bits, shifted above the preimage -- is what every slot holding that
-key carries.  The second mix is
-required, not cosmetic: routing consumed the top bits of the key's low word, and a shard of more than
-2^32 slots cut from the key itself would leave part of its slots unreachable.
+zero empty, `n <= 63`, a plain container that knows nothing of the problem, with four operations:
+`insert`, `probe`, `prefetch` and `clear`.  The first three take the key **mixed once more** by the
+dict thread, `h = murmur64(key)`: the run starts at `(h * n_slots) >> 64`, from `h`'s top bits, and
+its tag -- bit 63 and `h`'s low `63 - n` bits, shifted above the preimage -- is what every slot
+holding that key carries.  The second mix is required, not cosmetic: routing consumed the key's top
+bits, so every key a shard receives lies in one interval of 2^64 / n_dicts, and a run cut from the
+key itself would crowd one n_dicts-th of the shard.
 
-`FILL`: insert into the first empty slot of the run; a full shard is fatal, which `fill <= 0.9` rules
-out.  `PROBE`: every slot of the run carrying the key's tag holds a collision (`N_COLLISIONS`) -- bar
-a check-bit false positive, one slot in 2^(63-n) -- and is tested with `good(x, y)`: `is_good_pair`,
-which is symmetric by contract, so the pair is judged in the order it came, a collision problem
-demanding `x != y` on top -- and a collision search probes the domain it has just filled, so every
-preimage of the chunk meets **itself**, `N_INSERT` self-matches per phase that `x != y` rejects but
-`N_COLLISIONS` has already counted.  What the predicate accepts is verified with **one evaluation**,
-`murmur64(wrapper.pb.f(x)) == key`, and goes to `set_golden(x, y)` at once.  The verification is the
-guard of the answer, not a filter -- it rejects one slot in 2^(63-n) where the predicate rejects all
-but the golden pair -- so it comes last, and `is_good_pair` is therefore **asked about pairs that do
-not collide**, which `problem.hpp` requires it to answer.  `FALSE_GOOD` counts what the verification
-catches, a false positive the predicate accepted, and must stay near zero.  No collision queue and no
-candidate: a match costs about what a probe does, and a hand-off would cost more than it saves.
+`FILL`: `insert` into the first empty slot of the run; the run of a full shard never ends, which
+`fill <= 0.9` rules out.  `PROBE`: `probe` fills a caller-owned `vector<u64>`, cleared first, with
+the preimage of every slot of the run carrying the key's tag -- the **candidates**, each a collision
+(`N_COLLISIONS`) bar a check-bit false positive, one slot in 2^(63-n).  The dict thread's `retire`
+then tests each with the wrapper's `good(x, y)`, which is `is_good_pair(x, y) && f(x) == g(y)` --
+for a collision problem `x != y && is_good_pair(x, y) && f(x) == f(y)`, `is_good_pair` being
+symmetric by contract so the pair is judged in the order it came; and a collision search probes the
+domain it has just filled, so every preimage of the chunk meets **itself**, `N_INSERT` self-matches
+per phase that `x != y` rejects but `N_COLLISIONS` has already counted.  The predicate comes first
+because it is cheap and rejects all but the golden pair; the evaluation, the guard of the answer
+against the check bits' false positives, is spent only on what the predicate accepted.
+`is_good_pair` is therefore **asked about pairs that do not collide**, which `problem.hpp` requires
+it to answer.  What `good` accepts goes to `set_golden(x, y)` at once.  No collision queue and no
+hand-off: a match costs about what a probe does, and a hand-off would cost more than it saves.  The
+vector is the dict thread's own, one per round, sized once by its first long run and never by more
+than the run.
 
 A dict thread takes its points one at a time, with `Router_Pop`, which reads the block **where it
 lies** and releases it on its last point: nothing is copied, and a block may hold fewer than
-`block_points` points.  A point popped is not retired at once: the first slot of its run is
-prefetched (write intent in `FILL`, read in `PROBE`) and the point waits in the thread's **ring of
-`--prefetch` points** (`Options::prefetch`, default 16, at most 64, 0 disables the ring), retired
-when the point that many pops later arrives, so that a slot's DRAM miss overlaps the pops and
-retirements behind it instead of being sat through alone -- on grdix, 192 dict threads at one miss
-in flight each were the machine's pace.  The ring spans blocks and is **drained**, every waiting
-point inserted or probed oldest first, once `Router_Pop` finds nothing and `Router_Test_drained` is
-true, before the flush and before the thread returns: nothing is dropped and the round's end is
-unchanged.  The ring is private to its dict thread, an array on its stack.
+`block_points` points.  In `FILL` a point is inserted as it comes: the phase runs at the machine's
+random-write pace and a prefetch buys it nothing, as measured on grdix.  In `PROBE` a point
+popped is not retired at once: the first slot of its run is prefetched and the point waits in the
+thread's **ring of `--prefetch` points** (`Options::prefetch`, default 8, at most 64, 0 probes each
+point as it comes), retired when the point that many pops later arrives, so that a slot's DRAM miss
+overlaps the pops and retirements behind it instead of being sat through alone -- on grdix, 192 dict
+threads at one miss in flight each were the machine's pace.  The ring spans blocks and is
+**drained**, every waiting point probed oldest first, once `Router_Pop` finds nothing and
+`Router_Test_drained` is true, before the shard is cleared and before the thread returns: nothing is
+dropped and the round's end is unchanged.  The ring is private to its dict thread, an array on its
+stack.
 
 ### 1.4 The epilogue: one `MPI_Allgather` per phase
 
@@ -150,8 +156,7 @@ which is what makes the writes visible.  The golden pair is the one exception, `
 mutex and an `std::atomic` flag, because any dict thread of the node may find one at any moment.
 
 **Counters.**  `N_EVAL` (producers: evaluations, one point pushed each); `N_INSERT`, `N_PROBE`,
-`N_STEPS` (slots visited by inserts and probes: the cost of linear probing), `N_COLLISIONS`,
-`FALSE_GOOD` (dict threads).  Everything about the communication -- points pushed and delivered,
+`N_COLLISIONS` (dict threads).  Everything about the communication -- points pushed and delivered,
 bytes and messages on the wire, blocks stalled, the service thread's turns -- is the Router's own
 tallies, in the same record; the engine keeps no counter of its own for it.
 

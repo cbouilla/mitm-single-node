@@ -48,7 +48,7 @@ void producer_round(Router_thread &rt, const Wrapper &wrapper, const Params &par
 		wrapper.veval(phase, x, y);
 		for (int k = 0; k < valid; k++) {
 			u64 h = murmur64(y[k]);
-			int dest = (int) (((h & 0xffffffffull) * n_recv) >> 32);
+		    int dest = (int) (((unsigned __int128) h * n_recv) >> 64);
 			Router_Push(h, x[k], dest, rt);
 		}
 		ctr[N_EVAL] += valid;

@@ -106,9 +106,7 @@ enum counter {
 	N_EVAL = 0,             /* producers: evaluations of f (FILL) or g (PROBE), one point pushed each */
 	N_INSERT,               /* dict threads: entries inserted (FILL) */
 	N_PROBE,                /* probes retired (PROBE) */
-	N_STEPS,                /* slots visited by inserts and probes: the cost of linear probing */
 	N_COLLISIONS,           /* slots matching a probe: a collision f(x) == g(y), bar a check-bit false positive */
-	FALSE_GOOD,             /* ... one of those false positives, accepted by is_good_pair and denied by f(x) */
 	N_COUNTERS
 };
 

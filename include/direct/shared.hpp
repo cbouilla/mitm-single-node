@@ -58,6 +58,7 @@ struct Shared {
 		std::lock_guard<std::mutex> lock(golden_mtx);
 		if (found)
 			return;
+		fmt::print("\nFound golden pair! x={:x} y={:x}\n", x, y);
 		golden[0] = x;
 		golden[1] = y;
 		found.store_release(1);
