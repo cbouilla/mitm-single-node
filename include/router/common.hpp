@@ -36,7 +36,7 @@ enum router_stat {
 
 /* every field has a working default; every node must supply the same values */
 struct Router_Opts {
-	size_t block_points = 4096;         /* points per block, a power of two >= 4: one block is one message */
+	size_t block_points = 16384;        /* points per block, a power of two >= 4: one block is one message */
 	size_t swc_linesize = 0;            /* points per private write-combining line, 4..block_points; 0 == auto */
 	int n_recv = 32;                    /* always-posted MPI_Irecv(ANY_SOURCE) slots, and as many send slots */
 	int inbox_blocks = 64;              /* a receiver's inbox, in blocks */

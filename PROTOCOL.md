@@ -90,11 +90,17 @@ required, not cosmetic: routing consumed the top bits of the key's low word, and
 2^32 slots cut from the key itself would leave part of its slots unreachable.
 
 `FILL`: insert into the first empty slot of the run; a full shard is fatal, which `fill <= 0.9` rules
-out.  `PROBE`: every slot of the run carrying the key's tag is a match, verified with **one
-evaluation**, `murmur64(wrapper.pb.f(x)) == key` -- the check bits' false positives die here
-(`BAD_MATCH`) -- counted as a collision (`N_COLLISIONS`) and tested with `good(x, y)`: `is_good_pair`,
+out.  `PROBE`: every slot of the run carrying the key's tag holds a collision (`N_COLLISIONS`) -- bar
+a check-bit false positive, one slot in 2^(63-n) -- and is tested with `good(x, y)`: `is_good_pair`,
 which is symmetric by contract, so the pair is judged in the order it came, a collision problem
-demanding `x != y` on top.  A golden pair goes to `set_golden(x, y)` at once.  No collision queue and no
+demanding `x != y` on top -- and a collision search probes the domain it has just filled, so every
+preimage of the chunk meets **itself**, `N_INSERT` self-matches per phase that `x != y` rejects but
+`N_COLLISIONS` has already counted.  What the predicate accepts is verified with **one evaluation**,
+`murmur64(wrapper.pb.f(x)) == key`, and goes to `set_golden(x, y)` at once.  The verification is the
+guard of the answer, not a filter -- it rejects one slot in 2^(63-n) where the predicate rejects all
+but the golden pair -- so it comes last, and `is_good_pair` is therefore **asked about pairs that do
+not collide**, which `problem.hpp` requires it to answer.  `FALSE_GOOD` counts what the verification
+catches, a false positive the predicate accepted, and must stay near zero.  No collision queue and no
 candidate: a match costs about what a probe does, and a hand-off would cost more than it saves.
 
 A dict thread takes its points one at a time, with `Router_Pop`, which reads the block **where it
@@ -136,8 +142,8 @@ which is what makes the writes visible.  The golden pair is the one exception, `
 mutex and an `std::atomic` flag, because any dict thread of the node may find one at any moment.
 
 **Counters.**  `N_EVAL` (producers: evaluations, one point pushed each); `N_INSERT`, `N_PROBE`,
-`N_STEPS` (slots visited by inserts and probes: the cost of linear probing), `N_MATCH`, `BAD_MATCH`,
-`N_COLLISIONS` (dict threads).  Everything about the communication -- points pushed and delivered,
+`N_STEPS` (slots visited by inserts and probes: the cost of linear probing), `N_COLLISIONS`,
+`FALSE_GOOD` (dict threads).  Everything about the communication -- points pushed and delivered,
 bytes and messages on the wire, blocks stalled, the service thread's turns -- is the Router's own
 tallies, in the same record; the engine keeps no counter of its own for it.
 

@@ -209,7 +209,7 @@ inline void Router_node::connect()
 
 	/* installed, the stash, the slots, what the receivers may hold, the senders' caches, pending, and sealed or
 	 * parked */
-	size_t slack = (size_t) F > 32 * (size_t) S ? (size_t) F : 32 * (size_t) S;
+	size_t slack = 16 * ((size_t) F > 32 * (size_t) S ? (size_t) F : 32 * (size_t) S);   /* EXPERIMENT: x16 */
 	size_t nb = (size_t) F + 2 * ROUTER_BATCH + 2 * (size_t) opt.n_recv
 				+ (size_t) R * ((size_t) opt.inbox_blocks + 1) + (size_t) S * (ROUTER_BATCH + 1) + slack;
 	if (nb > ((size_t) 1 << 30))          /* the ring's sequence arithmetic is 32-bit */
