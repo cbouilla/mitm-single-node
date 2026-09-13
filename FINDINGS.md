@@ -3255,3 +3255,132 @@ perf stat -a -e ls_dmnd_fills_from_sys.dram_io_near,ls_dmnd_fills_from_sys.dram_
 `build/session15/` in the grdix worktree keeps every log, tids file, perf.data and script of this
 session (`run.sh`, `run2.sh`, `report.sh`, `batch2.sh`, `batch3.sh`, `check.sh`, `randread.c`,
 `randread2.c`).
+
+# Session 16 -- `--prefetch` on grdix: the ring's lookahead sweep
+
+2026-09-13, **grdix-2** (2 x EPYC 9754, 1003 GB), `oarsub -p grdix --project cryptanalyse -l
+nodes=1,walltime=1:30` (job 6924742).  Commit `e88aa67` on `bench-grdix` = `51f6d0b` of
+`router-fat-slack` -- the dict thread's ring of `--prefetch` points between `Router_Pop` and the
+shard (session 15's variant C, rebuilt on `Router_Pop` with a ring that spans blocks and is drained
+at round end) -- plus session 15's FINDINGS.  Release build, debian13, the modules of session 14.
+
+Same run as session 15: `double_speck64_demo --n 40 --ram 960G --producers-per-node 63
+--dicts-per-node 192`, one rank, killed 30 s into the first PROBE (`build/session15/run2.sh`, the
+guarded version), one run per lookahead in the interleaved order 0, 8, 4, 16, 2, 32, 12, 64, 24, 48,
+so that a drift over the 15 minutes would show as a zigzag rather than a trend.  FILL is the round
+report's time for 6.0e10 inserts (it includes round 0's 5 s ramp, section 15.1); PROBE is the live
+line's cumulative rate about 30 s in.  `--prefetch 0` is the old loop, byte for byte.
+
+## The sweep
+
+| `--prefetch` | FILL, 6.0e10 inserts | blocks held back in FILL | PROBE, from the completion % |
+| --- | --- | --- | --- |
+| 0 (the old loop) | 34.0 s | 656 K | **1.77 G points/s** |
+| 2 | 33.9 s | 530 K | 2.08 |
+| 4 | 33.5 s | 227 K | 2.34 |
+| 8 | 33.8 s | 115 K | 2.33 |
+| 12 | 34.0 s | 104 K | 2.36 |
+| **16** | 33.8 s | 93 K | **2.39** |
+| 24 | 33.7 s | 95 K | 2.39 |
+| 32 | 33.5 s | 109 K | 2.37 |
+| 48 | 33.5 s | 105 K | 2.34 |
+| 64 | 33.8 s | 117 K | 2.35 |
+
+The PROBE column is the live line's completed fraction of 2^40 over its elapsed time, resolved to
+0.1 % of the domain, i.e. about 1.5 % of the rate at 30 s; the live line's own "G points/s" prints
+to one decimal and cannot separate 8 from 16.
+
+**PROBE gains 34 %** (1.77 -> 2.39 G points/s) and the curve is a knee, not a hill: 2 buys half of
+it, 4 almost all, and **4 to 32 is flat within the 2 % the measurement resolves**.  48 and 64 lose
+about 2 %, at the edge of significance.  **16 is the default from here** (`51f6d0b` shipped 8; the
+follow-up commit moves it), the middle of the flat range and so the choice least likely to fall off
+it on a machine with a longer loaded latency or a smaller L1.  The ring costs nothing visible
+against session 15's in-place variant: 2.39 here against 2.4 there, one copy and a second murmur per
+point.
+
+**FILL does not move**, 33.5-34.0 s for every D, while the blocks the service held back for a full
+inbox fall 7x (656 K -> 93 K): the receivers do keep up better in FILL, and FILL is still 34 s.  So
+FILL's ceiling is not the insert's miss latency.  The candidates are the memory system -- an insert
+dirties a random line, and at 2.0 G inserts/s that is 128 GB/s of random write-back on top of 128
+GB/s of fills, where session 15's randread2 measured reads alone -- and the producers, which in FILL
+run f where PROBE runs g.  Session 15's variant A (receivers discarding) did FILL in 21 s, so the
+producers are not it.  The random-write measurement is below.
+
+## Where the prefetched receiver's cycles go
+
+At `--prefetch 16` (`perf stat` on the 192 dict CPUs over 5 s of PROBE at 2.39 G points/s): **251
+cycles a point, 215 instructions at IPC 0.86**, 28 branches of which **1.15 mispredicted per
+point**, 2.2 L1D load misses per point.  Against D = 0's 330 cycles and 142 instructions at IPC
+0.43, the prefetch took some 200 cycles of exposed miss out and put some 70 instructions in: a
+second murmur for the prefetch address, the ring's copy and swap, the retire call.  What is left is
+the instruction stream and two things it drags.  The mispredicts: the run loop's exit and the tag
+compare are decided by the slot just loaded, a coin toss at load 0.5, so about one mispredict a
+point at ~20 cycles on Zen 4.  The L1D misses: the prefetched slot lands in L1 but is gone 16 points
+later, so the probe hits L2 (~14 cycles), and the block stream costs a line every 4 points.  The
+source-line profile again puts 37 % at the head of `Router_Pop`, and it is skid again with a
+different cause: a mispredicted branch's penalty lands on the resolved path's first instructions,
+the counters after the loop and the loop top.  The 5.5 % collision rate's scalar Speck in
+`is_good_pair` is 12 % of the instructions.
+
+So in PROBE the receiver is no longer waiting on DRAM, it is executing: the node's random-read
+ceiling is 7.6 G fetches/s (session 15) and the dictionary uses a third of it.  The lever left is
+instructions per point -- carry the hash from the prefetch to the probe instead of computing murmur
+twice, retire in place instead of copying and swapping, and test a whole 64-byte line of 8 slots at
+once instead of walking the run slot by slot behind a data-dependent exit -- perhaps down to 150
+cycles, ~4 G/s.  At that point the **producers**, 3.5 G/s with the push (session 15), are the wall,
+and the push's 21 cycles the thing to shave.
+
+## FILL is at the random-write wall
+
+Three measurements settle why FILL never moves:
+
+1. **randread2 in write mode** (one 8-byte word written per random 64-byte line, 192 threads, 3 GB
+   each): **3.35 G lines/s** whatever the number of streams, against 7.5-7.8 G/s for reads in the
+   same binary a minute later.  A random write is a fill and a write-back, two DRAM line operations,
+   so 3.35 G writes/s is 6.7 G operations/s: the read ceiling in disguise.
+2. **Half the dict threads, the same FILL.**  96 dict threads (and 159 producers) at `--prefetch 16`
+   fill in **36.7 s**, 192 in 33.8 s; at `--prefetch 0` the 96 need 45.1 s.  With the prefetch,
+   halving the threads costs 9 %: the limit is shared, not per thread.
+3. **The blocks held back fall 7x** (656 K -> 93 K) as D grows while FILL stays at 34 s: the
+   receivers keep up better, and something else does not.
+
+At 2.07 G inserts/s (6.0e10 in the 29 s after round 0's ramp) FILL dirties 2.07 G random lines/s,
+4.1 G DRAM operations, plus the block traffic (16 bytes written by the producer's non-temporal store
+and read once by the receiver, 0.5 G lines/s each way): about 5 G operations/s against a 6.7-7.8 G
+ceiling, in a mix of reads and writes that costs the bus turnarounds a pure read stream does not.
+**FILL is at the memory wall for random writes, and the prefetch cannot lift it**; it only makes the
+wall reachable with fewer dict threads.  An insert costs the memory system what 2.3 probes do.
+
+## What to change
+
+1. **`--prefetch` defaults to 16, shipped** (`7c90c48`; `51f6d0b` had 8).  Within 2 % of the best
+   from 4 to 32; 16 matches the outstanding read requests an x86 core keeps in flight, which is the
+   user's reason to expect it to travel to other x86 machines -- re-measure on grvingt (Skylake, 12
+   fill buffers a core) before trusting it there.  The gain: PROBE 1.77 -> 2.39 G points/s, 34 %,
+   the n = 40 round from about 620 s to about 490.
+2. **The receiver's next 100 cycles are instructions, not misses** (section 2): carry the hash,
+   retire in place, scan a line of 8 slots at once.  Then measure; 4 G/s would put the producers on
+   the critical path.
+3. **FILL is memory-bound on random writes**, 2.3 probes' worth of DRAM work per insert (section 3).
+   Nothing in the dict thread fixes it; only fewer dirty lines would -- a layout where several
+   inserts share a line, or a full-line write that skips the read-for-ownership.  Unmeasured.  And
+   with the prefetch **96 dict threads fill nearly as fast as 192**: in FILL half the receivers are
+   idle by construction, so the team's shape should be chosen for PROBE and accepted for FILL.
+4. **PROBE at 2.39 G/s is 68 % of what the producers can push into idle receivers** (3.5 G/s,
+   session 15). The two sides are 1.5x apart; after (2) the producer's 21-cycle push is the wall.
+5. **Method**: the live line's one-decimal rate cannot separate lookaheads on a plateau; the
+   completed fraction of the domain over the elapsed time can (`summ.sh`, the percentage column).  A
+   profile that pins 37 % on the first line of a function on L1-resident data is skid, and the
+   counters -- IPC, branch-misses, L1D misses -- say what it is skid from.
+
+## Reproducing
+
+```bash
+# on the node, after the module loads and the release build of session 15
+for D in 0 8 4 16 2 32 12 64 24 48; do
+    EXTRA="--prefetch $D" TAG=pf$D STOP=probe bash -l build/session15/run2.sh
+done
+build/session15/summ.sh pf0 pf2 pf4 pf8 pf12 pf16 pf24 pf32 pf48 pf64     # the table
+EXTRA="--prefetch D" TAG=pfDp STOP=probe PERF=1 STAT=1 bash -l build/session15/run2.sh   # the profile
+build/session15/report.sh pfDp
+```
