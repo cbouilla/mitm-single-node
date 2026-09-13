@@ -40,7 +40,7 @@ static void usage(const char *argv0)
 	printf("  --n BITS         problem size.  Small == easy\n");
 	printf("  --seed S         PRNG seed.  0 == draw a fresh one from /dev/urandom\n");
 	printf("  --fill F         dictionary fill ratio, entries per round == F * slots.  Default: 0.5\n");
-	printf("  --prefetch D     points a dict thread prefetches ahead of the one it probes (0..64).  Default: 8\n");
+	printf("  --prefetch D     points a dict thread prefetches ahead of the one it probes (0..64).  Default: 16\n");
 	printf("  --nrounds R      give up after R rounds (PCS: R versions of the function)\n");
 	printf("  --benchmark      measure the problem's f/g rate and exit, no search: --ram is then useless\n");
 	printf("\n");

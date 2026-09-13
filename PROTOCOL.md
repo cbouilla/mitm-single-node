@@ -107,7 +107,7 @@ A dict thread takes its points one at a time, with `Router_Pop`, which reads the
 lies** and releases it on its last point: nothing is copied, and a block may hold fewer than
 `block_points` points.  A point popped is not retired at once: the first slot of its run is
 prefetched (write intent in `FILL`, read in `PROBE`) and the point waits in the thread's **ring of
-`--prefetch` points** (`Options::prefetch`, default 8, at most 64, 0 disables the ring), retired
+`--prefetch` points** (`Options::prefetch`, default 16, at most 64, 0 disables the ring), retired
 when the point that many pops later arrives, so that a slot's DRAM miss overlaps the pops and
 retirements behind it instead of being sat through alone -- on grdix, 192 dict threads at one miss
 in flight each were the machine's pace.  The ring spans blocks and is **drained**, every waiting
