@@ -134,10 +134,12 @@ static void round_report(const Params &params, const u64 r[], const u64 total[],
 		print("            {} inserted, load {:.2f}/slot, {:.2f} slots visited per insert\n",
 		      r[N_INSERT], (double) r[N_INSERT] / params.w, (double) r[N_STEPS] / r[N_INSERT]);
 	if (r[N_PROBE] > 0)
-		print("            {} probed, {:.2f} slots visited per probe.  {} matches: {} false positives, "
-		      "{} collisions (total 2^{:.2f})\n", r[N_PROBE], (double) r[N_STEPS] / r[N_PROBE],
-		      r[N_MATCH], r[BAD_MATCH], r[N_COLLISIONS],
+		print("            {} probed, {:.2f} slots visited per probe.  {} collisions (total 2^{:.2f})\n",
+		      r[N_PROBE], (double) r[N_STEPS] / r[N_PROBE], r[N_COLLISIONS],
 		      std::log2((double) (total[N_COLLISIONS] ? total[N_COLLISIONS] : 1)));
+	if (r[FALSE_GOOD] > 0)
+		print("            FALSE GOOD  {} pairs accepted by is_good_pair were not collisions\n",
+		      r[FALSE_GOOD]);
 	if (r[REC_ROUTER + ROUTER_STALL_OUT] | r[REC_ROUTER + ROUTER_STALL_IN])
 		print("            STALLED  {} blocks held back for a full destination / {} receives left "
 		      "unposted for want of a free block\n", r[REC_ROUTER + ROUTER_STALL_OUT],

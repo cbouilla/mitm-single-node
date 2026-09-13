@@ -20,9 +20,10 @@ public:
 	/* f : {0, 1}^n ---> {0, 1}^m */
 	u64 f(u64 x) const;
 
-	/* 
-	 * assuming that f(x0) == f(x1) and x0 != x1, is (x0, x1) an acceptable outcome? 
-	 * The predicate must be symmetric. 
+	/*
+	 * Assuming that f(x0) == f(x1) and x0 != x1, is (x0, x1) an acceptable outcome?
+	 * Returning false discards (x0, x1) unconditionally.  The predicate must be symmetric.
+	 * It may (rarely) be evaluated on non-colliding inputs, with f(x0) != f(x1).
 	 */
 	bool is_good_pair(u64 x0, u64 x1) const;
 
@@ -44,7 +45,11 @@ public:
 	u64 f(u64 x) const;
 	u64 g(u64 y) const;
 
-	/* assuming that f(x0) == g(x1), is (x0, x1) an acceptable outcome? */
+	/*
+	 * Assuming that f(x0) == g(x1), is (x0, x1) an acceptable outcome?
+	 * Returning false discards (x0, x1) unconditionally.
+	 * It may (rarely) be evaluated on non-colliding inputs, with f(x0) != g(x1).
+	 */
 	bool is_good_pair(u64 x0, u64 x1) const;
 
 	/* only with vlen > 1: f() where choice[j] is set, g() elsewhere, same results */

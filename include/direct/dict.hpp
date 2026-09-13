@@ -142,8 +142,8 @@ public:
 
 	/*
 	 * One probe (key, y) against the shard: every slot of the key's run carrying its tag -- bit 63 and the
-	 * mixed key's low check bits -- is a match, kept only if the preimage really maps to the key, and a true
-	 * collision is tested for the golden pair, which goes to `shared`.
+	 * mixed key's low check bits -- holds a collision, bar a check-bit false positive, and is offered to
+	 * is_good_pair; what that accepts is verified by one f(x), the guard of the answer, and goes to `shared`.
 	 */
 	template <class Wrapper>
 	void probe(const Wrapper &wrapper, Shared &shared, u64 *ctr, u64 round, u64 key, u64 y) const
@@ -155,15 +155,14 @@ public:
 		for (; k < n_slots && A[s] != 0; k++, s = (s + 1 == n_slots) ? 0 : s + 1) {
 			if ((A[s] & ~xmask) != tag)
 				continue;
-			ctr[N_MATCH] += 1;
-			u64 x = A[s] & xmask;
-			if (murmur64(wrapper.pb.f(x)) != key) {
-				ctr[BAD_MATCH] += 1;
-				continue;
-			}
 			ctr[N_COLLISIONS] += 1;
+			u64 x = A[s] & xmask;
 			if (not wrapper.good(x, y))
 				continue;
+			if (murmur64(wrapper.pb.f(x)) != key) {
+				ctr[FALSE_GOOD] += 1;
+				continue;
+			}
 			printf("\nFound golden pair! round=%" PRIu64 " x=%" PRIx64 " y=%" PRIx64 "\n", round, x, y);
 			shared.set_golden(x, y);
 		}
