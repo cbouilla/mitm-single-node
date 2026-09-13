@@ -170,6 +170,17 @@ public:
 		ctr[N_STEPS] += k;
 	}
 
+	/* Pull the first slot of the key's run into cache ahead of its insert (write intent) or probe (read). */
+	void prefetch(u64 key, bool write) const
+	{
+		u64 h = murmur64(key);
+		u64 s = (u64) (((unsigned __int128) h * n_slots) >> 64);
+		if (write)
+			__builtin_prefetch(&A[s], 1);
+		else
+			__builtin_prefetch(&A[s], 0);
+	}
+
 	/* empty the shard after a PROBE phase; the owner alone today */
 	void flush()
 	{
@@ -180,29 +191,56 @@ public:
 
 /******************************* the dict thread ******************************/
 
+/* Retire one point into the shard: an entry inserted while the round fills, a probe resolved while it probes. */
+template <class Wrapper>
+static void retire(const Wrapper &wrapper, Shared &shared, DirectDict &dict, u64 *ctr, u64 round, int phase,
+                   const Point &p)
+{
+	if (phase == FILL)
+		dict.insert(p.key, p.val, ctr);
+	else
+		dict.probe(wrapper, shared, ctr, round, p.key, p.val);
+}
+
 /*
  * A dict thread's phase: take the points the Router delivers, one at a time, until nothing more can arrive.
  * While the round fills, a point is an entry, (hashed image, preimage), inserted; while it probes, a point is a
- * probe, resolved on the spot: a match costs about what a probe does, so nothing is handed to anybody.  After a
- * PROBE phase the shard is emptied.
+ * probe, resolved on the spot: a match costs about what a probe does, so nothing is handed to anybody.  A point
+ * is not retired as it comes: its slot is prefetched and it waits in a ring of D points, retired when the point
+ * D pops later arrives, so that the slot's cache miss overlaps the pops behind it instead of being sat through
+ * alone.  The ring spans blocks and is drained, oldest first, once the Router is; D == 0 retires every point as
+ * it comes.  After a PROBE phase the shard is emptied.
  */
 template <class Wrapper>
 void dict_round(Router_thread &rt, const Wrapper &wrapper, Shared &shared, DirectDict &dict, u64 *ctr,
-                u64 round, int phase)
+                u64 round, int phase, int D)
 {
+	Point ring[MAX_PREFETCH];          /* the points popped and prefetched but not yet retired */
+	int head = 0;                      /* the oldest of them, the next one retired */
+	int n_pending = 0;                 /* how many wait: D once the ring is full */
 	for (;;) {
-		u64 key;                       /* the hashed image the producer routed on */
-		u64 val;                       /* its preimage */
-		if (not Router_Pop(&key, &val, rt)) {
+		Point p;                       /* the hashed image the producer routed on, and its preimage */
+		if (not Router_Pop(&p.key, &p.val, rt)) {
 			if (Router_Test_drained(rt))
 				break;
 			cpu_relax();               /* no CAS in Router_Pop --> no need for backoff */
 			continue;
 		}
-		if (phase == FILL)
-			dict.insert(key, val, ctr);
-		else
-			dict.probe(wrapper, shared, ctr, round, key, val);
+		if (D > 0) {
+			dict.prefetch(p.key, phase == FILL);
+			if (n_pending < D) {       /* the ring is still filling: the point waits, nothing is retired */
+				ring[n_pending] = p;
+				n_pending += 1;
+				continue;
+			}
+			std::swap(p, ring[head]);  /* the oldest pending point comes out, the new one takes its place */
+			head = (head + 1 == D) ? 0 : head + 1;
+		}
+		retire(wrapper, shared, dict, ctr, round, phase, p);
+	}
+	for (int i = 0; i < n_pending; i++) {   /* the drain: what still waits, oldest first */
+		retire(wrapper, shared, dict, ctr, round, phase, ring[head]);
+		head = (head + 1 == D) ? 0 : head + 1;
 	}
 	if (phase == PROBE)
 		dict.flush();
