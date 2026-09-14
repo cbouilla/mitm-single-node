@@ -2910,3 +2910,209 @@ cmake -S ~/mitm-exp17 -B ~/mitm-exp17/build-CW -DCMAKE_BUILD_TYPE=release -DCMAK
 ```
 
 `build/session17/` in the grvingt worktree keeps every log, `.tids` map, `perf.data`, stat log and script.
+
+# Session 19 -- 8 grvingt hosts on Omni-Path: the direct engine is bound by the service thread's SDMA page work, and the hfi1 pin cache buys 19 %
+
+2026-09-15, **grvingt-1, 2, 4, 6, 7, 8, 13, 24** (2 x Xeon Gold 6130, 32 cores / 64 PU, 187 GB, Omni-Path 100 Gb/s),
+`oarsub -t deploy -p grvingt --project cryptanalyse -l nodes=8,walltime=3:00` (job 6926976), **kadeploy of
+`debian13-big` with `iommu.passthrough=1` in its kernel parameters** (`~/debian13-big-iommupt.yaml`, the durable
+form of sessions 12-13's kexec), kernel 6.12.107, `module load openmpi/4.1.6 hwloc/2.13.0 ucx/1.20.0 gcc-toolchain`
+(Guix Open MPI 4.1.6, PSM2), `kernel.numa_balancing = 0`.  Commit `4d4d847` on `bench-grvingt` = `fe7ae49` of
+`omp_reboot` plus session 17's FINDINGS.  Release build on the node.  Scripts in `build/session19/`.
+
+**The question** (the user): the double_speck64 benchmark over 8 hosts with 32 threads per node, and whether the
+same rate is reached with fewer threads because the network is the bottleneck.
+
+**The run**: `double_speck64_demo --n 38 --ram 40G --prefetch 8 --nrounds 1 --producers-per-node P
+--dicts-per-node R`, one rank per host, the Router pinning its team on the first hardware thread of each core,
+`mpirun --hostfile nodes --map-by ppr:1:node --bind-to none -x PATH -x HFI_NO_CPUAFFINITY=1 --mca btl ^openib
+--mca pml cm --mca mtl psm2` from grvingt-1 in a login shell (`run19.sh`).  `--nrounds 1` ends the run after round
+0's PROBE with the exact round report (the live line on several nodes is rank 0's share scaled by 8, and the
+FILL-to-PROBE percentages it prints are that approximation).  FILL is 2^34.2 inserts a round, PROBE 2^38 probes;
+the engine's `node-->` figure is the bytes each node sends per second.
+
+## Summary
+
+| team per node (P / R) | threads | PROBE, G points/s, 8 hosts | per node | wire, GB/s per node |
+| --- | --- | --- | --- | --- |
+| 10 / 21, hfi1 pin cache 256 MB (the default) | 32 | 2.22 | 0.28 | 3.9 |
+| **10 / 21, pin cache 4 GB** (two runs) | 32 | **2.64, 2.40** | 0.33, 0.30 | 4.6, 4.2 |
+| 10 / 21, pin cache 4 GB, 1 MB blocks | 32 | 2.36 | 0.29 | 4.1 |
+| 10 / 21, pin cache 4 GB, `--n-recv 128 --credit 8` | 32 | 2.53 | 0.32 | 4.4 |
+| 8 / 15, pin cache 4 GB | 24 | 1.97 | 0.25 | 3.5 |
+| 7 / 12, pin cache 4 GB | 20 | 1.77 | 0.22 | 3.1 |
+| 6 / 9, pin cache 4 GB | 16 | 1.31 | 0.16 | 2.3 |
+| 5 / 10, pin cache 4 GB | 16 | 1.41 | 0.18 | 2.5 |
+| 4 / 7, pin cache 4 GB | 12 | 1.09 | 0.14 | 1.9 |
+
+**The 8-host engine runs at 0.33 G points/s per node, 72 % of the same team's 0.46 on one node (session 17), with
+the wire at 4.6 of its 11.6 GB/s.**  It is neither the producers nor the dict threads nor the fabric: both worker
+roles spend a fifth of their samples in `cpu_relax`, and the one thread that moves the blocks over MPI -- the
+service thread -- spends most of its time in the kernel's hfi1 SDMA path pinning the pages of every message.
+The driver's pin cache (`/sys/module/hfi1/parameters/cache_size`, 256 MB) is smaller than the Router's pool
+(1.9 GB), so the cache thrashed; **4 GB is +19 % on PROBE and +32 % on FILL**, and the receive side never runs
+out of free blocks again.  Bigger blocks and more in-flight receives and credit do nothing or hurt: the service's
+cost is per byte, in the kernel.  **Fewer threads do not reach the maximum**: with the delivery fixed, PROBE scales with the dict threads (16-18 M
+probes/s each, whatever the team), 24 threads lose a quarter and 16 threads half; only FILL saturates early, at
+2.4-2.5 G/s from 20 threads up, because FILL is where the service thread's per-byte cost binds.  **Identical runs
+scatter 9 %** (10 / 21 with the cache: 2.64 then 2.40), so the cache's PROBE gain is +8 to +19 % and the knobs'
+differences below are inside the noise; the FILL gain (+32 %, 2.50 both times) and the vanished "receives left
+unposted" are the robust part.
+
+## 1. Getting 8 nodes to run at all
+
+Four things, each of which cost a launch:
+
+1. **A deploy job's nodes are unreachable until deployed** (ssh as the user: "not all its CPU cores are assigned
+   to the job, use oarsh"; `oarsh`: no cpuset; root: no key), so there is no kexec "out of the box"; and once
+   deployed there is no need for one: `kadeploy3 -a ~/debian13-big-iommupt.yaml -f nodes -k` boots the kernel
+   with `iommu.passthrough=1` directly (15 min for 8 nodes, two of which needed kadeploy's own hard reboot).
+   `post19.sh` then checks `Default domain type: Passthrough` and does the OPA rename on every node; `flood19.sh`
+   measured 11.6-11.7 GB/s over PSM2 between two of them (a cold first run 3.8), Open MPI's default choice
+   included.
+2. **libpsm2 pins the whole process to one CPU at `MPI_Init`.**  Every rank came up with a 1-CPU affinity mask
+   whatever `--bind-to none` said (a `bash -c taskset` under the same mpirun shows 0-63), and the Router refused
+   with "rank 0 has 1 CPUs in its affinity mask for 32 threads".  It happens under `--mca pml ucx` too (Open MPI
+   probes the psm2 MTL anyway).  **`-x HFI_NO_CPUAFFINITY=1`** on the mpirun line fixes it.  It never showed
+   before because PSM2 never worked before (sessions 10, 17).
+3. The deployed image has no `br0`: `--mca oob_tcp_if_include br0` aborts the launch; drop it.  Redeployed nodes
+   change host keys: `ssh-keygen -R` them, and launch with `--mca plm_rsh_agent "ssh -o StrictHostKeyChecking=no"`.
+4. **A problem size that makes the dictionary a large share of the range inflates the collision check.**  The
+   first sweep ran `--n 38 --ram 160G`: 2^36.2 entries in a 38-bit range means **29 % of probes hit a genuine
+   collision** and pay `is_good_pair`'s scalar Speck (key schedule + encryption), against 5.5 % in the grdix
+   reference (`--n 40`, 960G).  The dict threads then run 290 cycles a probe (35-50 % of their samples in Speck),
+   the whole machine is receiver-bound and every number is about Speck.  Discarded (`ram160/`); `--ram 40G`
+   brings the share to 7 % and FILL to 10 s.  The rule: `fill * w / 2^m` is the collision rate a probe pays for,
+   keep it where the reference has it.
+
+## 2. The team sweep (pin cache at its 256 MB default)
+
+| P / R | threads | FILL s | FILL G/s | PROBE s | PROBE G/s | wire in PROBE, GB/s per node | blocks held back |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 3 / 4 | 8 | 23.1 | 0.87 | 527.8 | 0.52 | 0.9 | 1.0 M |
+| 4 / 7 | 12 | 12.8 | 1.56 | 248.2 | 1.11 | 1.9 | 0.4 M |
+| 5 / 10 | 16 | 11.0 | 1.82 | 195.1 | 1.41 | 2.5 | 1.1 M |
+| 8 / 15 | 24 | 10.6 | 1.89 | 139.7 | 1.97 | 3.4 | 1.1 M |
+| 8 / 23 | 32 | 10.6 | 1.89 | 125.7 | 2.19 | 3.8 | 1.1 M |
+| **10 / 21** | 32 | 10.6 | 1.89 | 123.8 | **2.22** | 3.9 | 1.1 M |
+| 12 / 19 | 32 | 10.6 | 1.89 | 130.4 | 2.11 | 3.7 | 1.1 M |
+| 14 / 17 | 32 | 10.4 | 1.92 | 138.4 | 1.99 | 3.5 | 1.2 M |
+
+The 32-thread teams are flat at 2.0-2.2 G/s whatever the split, the 24-thread one is within 12 % of them, and
+below 16 threads the rate falls with the producers.  FILL is 1.9 G/s for every team of 24 threads or more.  A
+plateau that the split does not move and that a smaller team nearly reaches is not a worker-side limit.
+
+## 3. Where the time goes (perf on grvingt-2, 10 / 21, steady PROBE, pin cache 256 MB)
+
+Per-role counters over 5 s (`perf19.sh`, root on the node, the roles from the pinned threads' CPUs):
+
+| role | clock | instructions / point | cycles / point | in `cpu_relax` (`tools.hpp:32`) |
+| --- | --- | --- | --- | --- |
+| dict thread, 21 per node, 13.2 M probes/s each | 2.80 GHz | 177 | 212 | **19 %** of samples |
+| producer, 10 per node, 27.8 M points/s each | 2.40 GHz (AVX-512) | 115 | 86 | **24 %** |
+| service | 2.79 GHz | | | -- |
+
+The dict thread probes at 177 instructions a point (150 in session 18, plus the 7 % of Speck), so it is not
+starved outright, but a fifth of its samples are the pause of an empty inbox; the producer's 115 instructions are
+its 100 of work plus the pause of `refill` waiting for a free block (`workers.hpp:86`, and the free ring's CAS at
+`:65`).  Both roles wait on the same thing.  Every dict thread runs at the same rate (2.45-2.57 G instructions/s
+per CPU): no imbalance between receivers.
+
+**The service thread** (one per node, all the MPI) by symbol, 10 s of PROBE:
+
+| share | where |
+| --- | --- |
+| 14 % | `Router_Progress` (its own loop) |
+| 9.7 % | `__mmu_int_rb_subtree_search` (kernel: the hfi1 pinned-pages tree, looked up per SDMA packet) |
+| 7.8 % | `hfi1_add_pages_to_sdma_packet` (kernel: the pages of a message into SDMA descriptors) |
+| 5.5 % + 2.2 % | `ompi_request_default_test_some`, `PMPI_Testsome` |
+| 3.3 % | `user_sdma_send_pkts` (kernel) |
+| 3.7 % + 2.1 % + ... | `__list_del_entry_valid_or_report`, `memset_orig`, the syscall entry/return pairs |
+| 1.5 % | `psm2_mq_ipeek2` |
+
+and in the first, 160G profile also `unpin_user_pages`, `gup_fast_fallback`, `hfi1_mmu_rb_insert`: the pin
+cache **evicting and re-pinning**.  PSM2 sends a 256 KB message by SDMA from the user's pages; hfi1 pins them and
+keeps them in an MMU-notifier rb-tree whose size is the module parameter `cache_size` -- **256 MB**, while the
+Router's pool is 7111 blocks = **1.9 GB** at 10 / 21.  Every message therefore re-pins its 64 pages and evicts
+someone else's.  The Router counters agree: 1.1 M blocks held back for a full destination, and in PROBE
+**1.5 M "receives left unposted for want of a free block"** -- the receiving service had no block to post a
+receive into, the sending side's credits stalled, its sealed blocks parked, and its producers waited in
+`refill`.  The user's reading ("the pool is exhausted because the network does not keep up with the senders, so
+the blocks park") is the mechanism; what does not keep up is the one thread feeding the network, in the kernel.
+
+## 4. The intervention: `cache_size` 256 MB -> 4 GB (`setcache19.sh`, root, writable at runtime)
+
+Same team, same problem, one parameter:
+
+| | FILL s | FILL G/s | PROBE s | PROBE G/s | wire, GB/s per node | receives left unposted in PROBE |
+| --- | --- | --- | --- | --- | --- | --- |
+| 256 MB | 10.6 | 1.89 | 123.8 | 2.22 | 3.9 | 1.5 M |
+| **4 GB** | **8.0** | **2.50** | **104.2** | **2.64** | **4.6** | **0** |
+
++19 % on PROBE (+8 % on the repeat run: 2.40, the fabric's 9 % run-to-run scatter), +32 % on FILL (2.50 both times), and the receive side never runs dry again.  The dict threads' pause share fell
+from 19 % to 9 % (`perf19.sh` during the 4 GB run), and the service thread's profile still leads with
+`__mmu_int_rb_subtree_search` (13 %) and `hfi1_add_pages_to_sdma_packet` (10 %): the eviction is gone, the
+per-packet lookup is not -- that is the cost of the SDMA path on a hit, and it scales with bytes.
+
+**The Router's own knobs, on top of the 4 GB cache**: `--block 65536` (1 MB messages) 2.36 and FILL 2.1 (FILL
+**loses** 16 %, a robust difference), `--n-recv 128 --credit 8` 2.53, both together 2.32 -- all inside the 9 %
+run-to-run scatter on PROBE except the 1 MB blocks' FILL.  Fewer, bigger messages do not help because the
+kernel's work is per page, and more in flight does not help because the service is not waiting on the fabric.
+The 256 KB default stands, as session 10 found on this fabric.
+
+## 5. Fewer threads, with the fix
+
+Same problem, pin cache at 4 GB, the team shrunk at the same 1 : 2 ratio (`batch19.sh`, `TAGSUF=c`):
+
+| P / R | threads | FILL s | FILL G/s | PROBE s | PROBE G/s | per dict thread, M probes/s | wire in PROBE, GB/s per node |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 10 / 21 | 32 | 8.0, 8.1 | 2.50, 2.50 | 104.2, 114.7 | **2.64, 2.40** | 15.7, 14.3 | 4.6, 4.2 |
+| 8 / 15 | 24 | 8.5 | 2.40 | 139.4 | 1.97 | 16.4 | 3.5 |
+| 7 / 12 | 20 | 8.2 | 2.40 | 155.7 | 1.77 | 18.4 | 3.1 |
+| 6 / 9 | 16 | 10.3 | 2.00 | 209.5 | 1.31 | 18.2 | 2.3 |
+| 5 / 10 | 16 | 10.6 | 1.90 | 195.3 | 1.41 | 17.6 | 2.5 |
+| 4 / 7 | 12 | 12.5 | 1.60 | 252.4 | 1.09 | 19.5 | 1.9 |
+
+**PROBE**: the dict thread runs at 14-19 M probes/s whatever the team (124 cycles a probe in session 17 with 5.5 %
+collisions and local blocks, about 175 here with 7 % and blocks off the wire), so the aggregate is the dict-thread
+count times that, and 24 threads are 25 % short of 32.  Below 24 threads nothing changed with the pin cache
+(8 / 15: 1.97 before and after; 5 / 10: 1.41 both) -- those teams never touched the service's limit.  **FILL**: 2.4-2.5
+G/s from 20 threads up, the same for 7 / 12 as for 10 / 21: that is the service thread's ceiling in the phase that
+sends every point off the node, and the extra dict threads do nothing for it.  So, to the user's question: on this
+fabric the network is not what bounds the engine -- the wire idles at 4.6 GB/s -- and the 32-thread team is
+needed for PROBE; the one thread whose time is scarce is the service, and it binds FILL first.
+
+## What to change
+
+1. **On grvingt, boot `iommu.passthrough=1` (deploy `debian13-big-iommupt`), set `hfi1 cache_size` to cover the
+   Router's pool (4096 MB), rename the OPA device, and launch with `-x HFI_NO_CPUAFFINITY=1`** -- four per-boot
+   or per-launch settings, none of them code, worth respectively "works at all", +19 %, "PSM2 at all" and "the
+   Router pins at all".  `post19.sh` and `setcache19.sh` do the node side; the durable form of the cache size is
+   a `modprobe.d` option in the environment's postinstall.
+2. **The multi-node engine is bound by the service thread's kernel time per byte sent**, 4.6 GB/s per node with
+   the cache fixed against 11.6 on the wire.  Levers, none measured yet: a second service thread per node (the
+   Router has one, by design), PSM2's eager/PIO path for the block size (`PSM2_MQ_RNDV_HFI_THRESH`,
+   `PSM2_MQ_EAGER_SDMA_SZ`: a CPU copy instead of pinning), huge pages under the pool (fewer pages per message
+   to look up, if hfi1 pins compound pages as one), or -- the session 8 remark -- keeping points on the node.
+3. **Problem-size hygiene for multi-node runs**: keep `fill * w / 2^m` near the reference's 5 %, or the measurement
+   is of `is_good_pair`.  `--n 38 --ram 40G` on 8 grvingt nodes is the setting that does.
+4. **Keep the 32-thread team on grvingt** (10 / 21, one thread per core): PROBE scales with the dict threads to the
+   end; FILL is service-bound from 20 threads up, so it is the phase where a cheaper send path pays first.  The
+   8-host reference: `--n 38 --ram 40G --producers-per-node 10 --dicts-per-node 21 --prefetch 8`, PROBE 2.4-2.6 G
+   points/s, FILL 2.5 G inserts/s, pin cache 4 GB; three interleaved repeats before believing a knob (9 % scatter).
+
+## Reproducing
+
+```bash
+# frontend: reserve, deploy, verify, cache
+oarsub -t deploy -p grvingt --project cryptanalyse -l nodes=8,walltime=3:00 "sleep 10800"
+kadeploy3 -a ~/debian13-big-iommupt.yaml -f nodes.txt -k
+bash build/session19/post19.sh          # cmdline, Passthrough, OPA rename, link state, per node
+bash build/session19/setcache19.sh 4096 # hfi1 pin cache, per node
+bash build/session19/flood19.sh         # 11.6 GB/s over PSM2 between the first two nodes
+# grvingt-1, login shell: the sweep, the knobs, the profile
+RAM=40G CONFIGS="10/21 5/10 12/19 8/15 8/23 4/7 14/17 3/4" bash -l build/session19/batch19.sh
+P=10 R=21 N=38 RAM=40G KNOBS="cache4g|;cache4g_blk64k|--block 65536" bash -l build/session19/batch19k.sh
+python3 build/session19/summ19d.py d10_21 k10_21_cache4g ...
+ssh root@grvingt-2 bash build/session19/perf19.sh   # per-role counters and profile of the newest run, on the node
+```
