@@ -2765,7 +2765,48 @@ stream of uniformly random keys through `murmur64`; the FILL inserts 0.5 x n_slo
 `probe`'s, each through the same ring of D points as `dict_round`, each thread timing its own phase.  No
 Router, no producers, no block stream: what the dict thread's loop costs by itself.
 
-**Running when this session was written up** (`batch2.sh`, launched 09:14): T = 23, 31, 8, 1 threads, 4 GB shards, D = 0, 2, 4, 8, 16, 32, read and write intent, then `randread2` for the machine's random read and write ceilings.  Its output is `build/session17/batch2.out`; the table goes here.
+Points/s per thread, the phase time being the slowest thread's; T = 23 is the dict count of the 8/23
+team, 31 every worker core, 8 and 1 the uncontended thread (`batch2.out`, 09:14-09:27):
+
+| D ahead | FILL, T = 23 | FILL, T = 31 | FILL, T = 1 | PROBE, T = 23 | PROBE, T = 31 | PROBE, T = 1 |
+| --- | --- | --- | --- | --- | --- | --- |
+| 0 | 25.0 M/s (39.9 ns) | 24.1 | 29.5 | **15.2 M/s (65.7 ns)** | 14.9 | 17.0 |
+| 2 | 25.1 | 22.8 | 33.6 | 20.8 | 20.1 | 24.0 |
+| 4 | 29.0 | 25.4 | 40.5 | 24.2 | 23.5 | 28.3 |
+| 8 | 34.1 (+36 %) | 29.2 | 49.7 | **27.1 (+78 %)** | 26.1 | 31.9 |
+| 16 | 38.2 (+53 %) | 33.2 | 58.0 | 27.9 | 26.8 | 33.5 |
+| 32 | 40.1 (+60 %) | 35.2 | 61.5 | 27.5 | 26.4 | 33.2 |
+| 8, write intent | 35.7 | -- | -- | (27.1) | -- | -- |
+| 16, write intent | 38.9 | -- | -- | (27.9) | -- | -- |
+
+The unprefetched probe alone is **15.2 M/s a thread, the engine's 15.1 to the decimal**: the dict thread
+in PROBE is its probe loop and nothing else.  Prefetched, the loop alone reaches 27.1 M/s where the
+engine's dict thread reaches 22.5: the 7 ns between them are `Router_Pop`, the block stream and the
+collision check, 17 % of the prefetched thread's 44 ns.  The knee is the engine's (2 buys half, 8 nearly
+all; PROBE is flat from 8 on, FILL keeps climbing to 32 because an insert is the shorter operation).
+**FILL alone gains 36-60 %**, write intent 2-5 % more, confirming section 4 from outside the tree; and at
+T = 31, D = 32 the machine writes 1.09 G lines/s, which is **the random-write ceiling `randread2` measures
+(1.05-1.07 G lines/s at 32 threads, any number of streams)** -- 31 prefetched dict threads would sit on
+this machine's write wall in FILL just as 192 unprefetched ones did on grdix, at a third of grdix's
+line rate.  With 19-21 dict threads the engine stays under it (0.49 G/s in the CW run).
+
+The load matters more than the prefetch: at fill 0.25 a prefetched probe costs **20 ns (50 M/s a
+thread)**, at 0.5 it costs 37, at 0.75 it costs 76 -- the run walked behind the prefetched first line,
+crossing into a second line the prefetch did not fetch, is what the prefetched thread pays for.  A layout
+that keeps a key's run inside one 64-byte line (8-slot buckets, or the 8-slot compare of session 16) would
+give the fill-0.5 dictionary the fill-0.25 probe.
+
+**The machine's random-access ceilings (`randread2`, 32 threads x 3 GB, 2 MB pages):** reads with
+independent addresses **1.65-1.76 G lines/s** (113 GB/s of lines, 44 % of the 12 channels' peak) from one
+stream a thread up -- a Skylake core overlaps them by itself at 52-55 M lines/s, 18-19 ns each, which is
+also the per-thread limit at 23 threads (1.28 G/s); dependent addresses at one miss in flight **0.33 G/s,
+98 ns**, at 8 in flight 1.73 G/s; **writes 1.05-1.07 G lines/s** whatever the number of streams.  The
+unprefetched dict thread (15 M/s) does better than the one-miss chase (10 M/s) because the core overlaps
+the tail of a probe with the head of the next, 2.6 misses in flight (section 2).  And the best PROBE of
+this session, 613 M/s with two threads per core, at 2.3-2.7 lines a point is **1.4-1.6 G lines/s, 80-90 %
+of the random-read ceiling**: once the prefetch and the second hyperthread are both in, DRAM becomes the
+next wall on this machine, and the adjacent-line prefetcher's doubling of the traffic (section 3,
+hypothesis) becomes worth turning off.
 
 ## 6. The team's shape, and the second hyperthread
 
@@ -2790,7 +2831,7 @@ the shipped binary: a hyperthreaded dict thread runs at about 12-16 M probes/s i
 are 39 of them, and the producer beside each keeps 25 M points/s of the 50.  That is the same lever as
 the prefetch, misses in flight per core, bought with the other PU instead of a ring; and the two stack
 (613 against 405).  The grdix reference team (63/192, one per core, 512 PUs idle) has not tried this.
-Not measured: 20/43, 28/35 and the SMT team with the FILL prefetch.
+Not measured: 20/43, 28/35 and the SMT team with the FILL prefetch.  Section 5's ceilings say the SMT team is already at 80-90 % of the machine's random-read rate.
 
 ## 7. What the prefetched dict thread still waits for: the TLB and the run's tail
 
