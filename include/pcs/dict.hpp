@@ -84,13 +84,15 @@ public:
  * A dict thread's round: probe every distinguished point the Router delivers into its shard and hand the
  * hits to its own walkers, over its own queue and in runs.  A run goes over as soon as there is nothing
  * left to probe, so that a partial one never waits on the next hit.  Nothing is resolved here: a walk of
- * two trails costs far more than a probe, and the walkers own the mixing function.
+ * two trails costs far more than a probe, and the walkers own the mixing function.  `r` is this dict
+ * thread's local rank, which names its channel.
  */
 static void dict_round(Router_thread &rt, const Params &params, Shared &shared, PcsDict &dict, u64 *ctr, int r)
 {
 	CollisionQueue &coll_q = *shared.chan[r].q;
 	const u64 i = shared.header.i;
 	const u64 jmask = make_mask(params.jbits);
+	const u64 n_recv = (u64) Router_size(rt, ROUTER_RECEIVER, ROUTER_GLOBAL);   /* the routing modulus */
 	static const size_t BATCH = 64;
 	CollisionCandidate pending[BATCH];     /* hits waiting for the run to be handed over */
 	size_t n_pending = 0;
@@ -105,7 +107,7 @@ static void dict_round(Router_thread &rt, const Params &params, Shared &shared, 
 			/* unknown on the wire stays unknown in the slot, whatever the 8-bit field could hold */
 			u64 dict_len = len0_maybe ? len0_maybe : 0xffffffffffffffffull;
 			ctr[N_PROBE] += 1;
-			auto hit = dict.pop_insert(key / params.n_dicts, seed0, dict_len);
+			auto hit = dict.pop_insert(key / n_recv, seed0, dict_len);
 			if (not hit) {
 				ctr[BAD_PROBE] += 1;
 				continue;

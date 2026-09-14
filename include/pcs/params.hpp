@@ -13,7 +13,8 @@
 
 /*
  * What a PCS run derives once from the Options, the round header it draws every round, its tallies and the
- * record its nodes exchange.  Data only, and const from the top of the run on.
+ * record its nodes exchange.  Data only, and const from the top of the run on.  The team's shape is not
+ * here: the Router holds it, and a thread asks it (Router_size, Router_rank) once it has its handle.
  */
 
 namespace mitm::pcs {
@@ -31,13 +32,6 @@ static constexpr int REPORTS_PER_ROUND = 64;
 /********************************* parameters ********************************/
 
 struct Params : Options {
-	int rank;                              /* this node: one rank per node */
-	int n_nodes;                           /* MPI ranks */
-	int S;                                 /* walkers per node: the Router's senders */
-	int R;                                 /* dict threads per node: the Router's receivers */
-	int n_threads;                         /* 1 + R + S: the OpenMP team */
-	int n_producers;                       /* walkers over all nodes */
-	int n_dicts;                           /* dict threads over all nodes */
 	u64 w;                                 /* slots in the whole, distributed dictionary */
 	u64 w_shard;                           /* slots per shard */
 	int n;                                 /* domain bits of the mixed function */
@@ -55,6 +49,8 @@ struct Params : Options {
 
 	Params(const Options &o, u64 nbytes_memory, int n, int m) : Options(o), n(n), m(m)
 	{
+		int rank;                          /* this node, for the verbose gate */
+		int n_nodes;                       /* what turns a per-node count into the team's */
 		MPI_Comm_rank(mpi_comm, &rank);
 		MPI_Comm_size(mpi_comm, &n_nodes);
 		router.verbose = router.verbose && verbose;   /* the Router prints on rank 0 by itself */
@@ -65,9 +61,9 @@ struct Params : Options {
 			errx(1, "pcs: a %d-bit domain does not fit a %d-bit range: the trails have nowhere to walk", n, m);
 		if (dicts_per_node < 1)
 			errx(1, "--dicts-per-node %d: at least one dictionary shard per node", dicts_per_node);
-		R = dicts_per_node;
-		S = producers_per_node;
-		int n_cpu = omp_get_num_procs();   /* the CPUs the rank may use: what the team fills when W == 0 */
+		int R = dicts_per_node;            /* dict threads per node: the Router's receivers */
+		int S = producers_per_node;        /* walkers per node: the Router's senders; 0 == fill the mask */
+		int n_cpu = omp_get_num_procs();   /* the CPUs the rank may use: what the team fills when S == 0 */
 		if (S == 0)
 			S = n_cpu - 1 - R;
 		if (S < 1)
@@ -77,10 +73,8 @@ struct Params : Options {
 			errx(1, "pcs: %d dictionary shards for %d walker(s): every shard needs a walker of its own "
 			     "to resolve what it finds, so --dicts-per-node must not exceed --producers-per-node",
 			     R, S);
-		producers_per_node = S;
-		n_threads = 1 + R + S;
-		n_producers = n_nodes * S;
-		n_dicts = n_nodes * R;
+		producers_per_node = S;            /* resolved: the team run() builds, whose roles the Router counts */
+		int n_dicts = n_nodes * R;         /* shards over all nodes: what the RAM budget is cut into */
 
 		if (nbytes_memory == 0)
 			errx(1, "the RAM budget per node must be given (and nonzero)");

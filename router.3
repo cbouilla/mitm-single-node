@@ -1,5 +1,5 @@
 .\" Man page of the Router's interface (include/router/).  Render with: man -l router.3
-.TH ROUTER 3 2026-09-08 "MITM (omp_reboot)" "MITM Library Functions"
+.TH ROUTER 3 2026-09-13 "MITM (omp_reboot)" "MITM Library Functions"
 .SH NAME
 Router_Push, Router_Pop, Router_Close, Router_Test_drained, Router_Init,
 Router_Progress, Router_Test_quiescent, Router_Stats, Router_Reset,
@@ -35,13 +35,15 @@ threads across MPI ranks
 .BI "void   Router_Reset(Router_thread &" rt );
 .fi
 .SS Queries
-Any thread; both return
+Any thread; all return
 .B int
 and take
 .BI "const Router_thread &" rt .
 .PP
 .nf
 Router_group, Router_num_groups
+.BI "Router_size(" rt ", int " role ", int " scope )
+.BI "Router_rank(" rt ", int " scope )
 .fi
 .SH DESCRIPTION
 The Router carries
@@ -201,13 +203,14 @@ The service thread must be quiescent and a receiver must hold no block (see
 Any thread, once
 .BR Router_Init ()
 has returned.
-These are the only two: everything else a caller might want to know about its
-own identity (its local or global rank, the count of senders or receivers) is
-arithmetic over the shape it gave every
+They answer for the plan and for the team's shape: how many threads of a role
+there are, and where the caller stands among those of its own.
+The shape is what the caller gave every
 .BR Router_Init ()
-of the team, not something the Router computes for it (see
+of the team, so it could keep it; the Router holds it anyway, and answers, so
+that the caller stores nothing of it (see
 .BR EXAMPLE ).
-Placement beyond the group -- which CPU, which cache domain -- is likewise not
+Placement beyond the group -- which CPU, which cache domain -- is not
 exposed; it is printed, not queried (see
 .BR PLACEMENT ).
 .TP
@@ -216,6 +219,25 @@ The caller's group, 0..G\-1; \-1 for the service thread.
 .TP
 .BI Router_num_groups( rt )
 G, the groups of this node.
+.TP
+.BI Router_size( rt ", " role ", " scope )
+The threads of
+.I role
+.RB ( ROUTER_SERVICE ", " ROUTER_SENDER " or " ROUTER_RECEIVER )
+on this node
+.RI ( scope " == "
+.BR ROUTER_NODE )
+or over every node of the team
+.RB ( ROUTER_GLOBAL ).
+The service is one per node, so its global size is the number of nodes.
+.TP
+.BI Router_rank( rt ", " scope )
+The caller's rank among the threads of its own role, on this node or over
+every node.
+On a node the senders are numbered in the order of their OpenMP thread ids,
+and so are the receivers; globally, node by node, so a sender's global rank
+is its MPI rank times the senders per node plus its local rank.
+The service thread's local rank is 0 and its global rank the MPI rank.
 .SH PLACEMENT
 By default the Router decides where every thread of the team runs and which
 threads work together.
@@ -461,16 +483,13 @@ Every thread calls
 The next round may begin.
 .SH EXAMPLE
 .EX
-int n_nodes;
-MPI_Comm_size(MPI_COMM_WORLD, &n_nodes);
-int n_recv = R * n_nodes;   /* the shape this call gives every Router_Init below: no query needed */
-
 #pragma omp parallel
 {
     int tid  = omp_get_thread_num();
     int role = (tid <= R) ? ROUTER_RECEIVER : ROUTER_SENDER;   /* thread 0's is ignored */
     Router_thread rt = Router_Init(role, ROUTER_GROUP_AUTO, MPI_COMM_WORLD, 42,
                                    ROUTER_DEFAULT_OPTS);
+    int n_recv = Router_size(rt, ROUTER_RECEIVER, ROUTER_GLOBAL);   /* the destinations */
     for (int round = 0; round < N; round++) {
         if (tid == 0) {
             while (!Router_Test_quiescent(rt))

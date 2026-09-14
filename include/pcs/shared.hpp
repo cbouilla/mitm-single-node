@@ -11,6 +11,7 @@
 #include <strings.h>          // ffsll, for the HyperLogLog
 
 #include "tools.hpp"
+#include "router/router.hpp"
 #include "pcs/params.hpp"
 
 /*
@@ -197,7 +198,7 @@ struct alignas(64) CollChannel {
 /* what a rank's threads share.  Built before the team; every per-thread object is its owner's own */
 struct Shared {
 	std::vector<Tally> tally;              /* per OpenMP thread id */
-	std::vector<int> group;                /* each worker's Router group, published once it is pinned */
+	std::vector<int> group;                /* the workers' Router groups: dict threads then walkers, by local rank */
 	std::vector<u8 *> hll;                 /* each walker's own registers; NULL for the other roles */
 	std::vector<CollChannel> chan;         /* per dict thread */
 	Atomic<u32> round_over{0};              /* the controller closed the round: the walkers stop walking */
@@ -210,9 +211,9 @@ struct Shared {
 	bool solved = false;                   /* the search found a pair, on this node or another */
 	u64 solution[3] = {};                  /* the version and the pair, the same on every node */
 
-	Shared(const Params &params)
-		: tally(params.n_threads), group(params.n_threads, -1), hll(params.n_threads, NULL),
-		  chan(params.R) {}
+	/* the team's n_threads: the service, the R dict threads, then the walkers */
+	Shared(int n_threads, int R)
+		: tally(n_threads), group(n_threads - 1, -1), hll(n_threads, NULL), chan(R) {}
 
 	/* a walker's golden pair; the first one wins */
 	void set_golden(u64 i, u64 x0, u64 x1)
@@ -234,22 +235,26 @@ struct Shared {
  * Which dict thread each walker resolves for.  A group's walkers serve that same group's dict threads,
  * poorest first, so that the queue and the two threads touching it sit in one cache domain; a walker
  * whose group holds no dict thread falls back on the poorest dict thread of the node.  Deterministic
- * from the published groups alone, so every thread runs it and gets the same answer.
+ * from the published groups alone -- `group` is the Shared's: the R dict threads' then the S walkers',
+ * by local rank -- so every thread runs it and gets the same answer.
  */
-static void assign_receivers(const Params &params, int n_groups, const int group[], int recv_of[], int n_walkers[])
+static void assign_receivers(const Router_thread &rt, const int group[], int recv_of[], int n_walkers[])
 {
-	for (int r = 0; r < params.R; r++)
+	const int R = Router_size(rt, ROUTER_RECEIVER, ROUTER_NODE);
+	const int S = Router_size(rt, ROUTER_SENDER, ROUTER_NODE);
+	const int n_groups = Router_num_groups(rt);
+	for (int r = 0; r < R; r++)
 		n_walkers[r] = 0;
-	for (int s = 0; s < params.S; s++)
+	for (int s = 0; s < S; s++)
 		recv_of[s] = -1;
 
 	for (int g = 0; g < n_groups; g++) {
-		for (int s = 0; s < params.S; s++) {
-			if (group[1 + params.R + s] != g)
+		for (int s = 0; s < S; s++) {
+			if (group[R + s] != g)
 				continue;
 			int best = -1;
-			for (int r = 0; r < params.R; r++) {
-				if (group[1 + r] != g)
+			for (int r = 0; r < R; r++) {
+				if (group[r] != g)
 					continue;
 				if (best < 0 || n_walkers[r] < n_walkers[best])
 					best = r;
@@ -261,11 +266,11 @@ static void assign_receivers(const Params &params, int n_groups, const int group
 		}
 	}
 
-	for (int s = 0; s < params.S; s++) {
+	for (int s = 0; s < S; s++) {
 		if (recv_of[s] >= 0)
 			continue;
 		int best = 0;
-		for (int r = 1; r < params.R; r++)
+		for (int r = 1; r < R; r++)
 			if (n_walkers[r] < n_walkers[best])
 				best = r;
 		recv_of[s] = best;

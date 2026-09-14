@@ -10,8 +10,9 @@
 #include "router/router.hpp"
 
 /*
- * What a direct run derives once from the Options: the MPI topology, the team's shape, the domain and
- * how many FILL/PROBE rounds cover it, plus the per-thread counters and the epilogue's record layout.
+ * What a direct run derives once from the Options: the dictionary's slots, the domain and how many
+ * FILL/PROBE rounds cover it, plus the per-thread counters and the epilogue's record layout.  The team's
+ * shape is not here: the Router holds it, and a thread asks it (Router_size, Router_rank) once it has its handle.
  */
 
 namespace mitm::direct {
@@ -29,17 +30,10 @@ static constexpr int ROUTER_TAG = 1;
 /********************************* parameters ********************************/
 
 /*
- * Everything a run needs beyond the Options, derived once before the team and const from then on: the MPI
- * topology, the team's shape, the dictionary's slots, the domain and how many rounds cover it.  Data only.
+ * Everything a run needs beyond the Options, derived once before the team and const from then on: the
+ * dictionary's slots, the domain and how many rounds cover it.  Data only, and nothing about the team.
  */
 struct Params : Options {
-	int rank;                              /* this node: one rank per node */
-	int n_nodes;                           /* MPI ranks */
-	int S;                                 /* producers per node: the Router's senders */
-	int R;                                 /* dict threads per node: the Router's receivers */
-	int n_threads;                         /* 1 + R + S: the OpenMP team */
-	int n_producers;                       /* producers over all nodes */
-	int n_dicts;                           /* dict threads over all nodes */
 	u64 w;                                 /* slots in the whole, distributed dictionary */
 	u64 w_shard;                           /* slots per shard */
 	int n;                                 /* domain bits: a preimage is n-bit */
@@ -51,6 +45,8 @@ struct Params : Options {
 
 	Params(const Options &o, u64 nbytes_memory, int n, int m) : Options(o), n(n)
 	{
+		int rank;                          /* this node, for the verbose gate */
+		int n_nodes;                       /* what turns a per-node count into the team's */
 		MPI_Comm_rank(mpi_comm, &rank);
 		MPI_Comm_size(mpi_comm, &n_nodes);
 		router.verbose = router.verbose && verbose;   /* the Router prints on rank 0 by itself */
@@ -61,18 +57,16 @@ struct Params : Options {
 			errx(1, "direct: %d-bit images do not fit a 64-bit key", m);
 		if (dicts_per_node < 1)
 			errx(1, "--dicts-per-node %d: at least one dictionary shard per node", dicts_per_node);
-		R = dicts_per_node;
-		S = producers_per_node;
-		int n_cpu = omp_get_num_procs();   /* the CPUs the rank may use: what the team fills when W == 0 */
+		int R = dicts_per_node;            /* dict threads per node: the Router's receivers */
+		int S = producers_per_node;        /* producers per node: the Router's senders; 0 == fill the mask */
+		int n_cpu = omp_get_num_procs();   /* the CPUs the rank may use: what the team fills when S == 0 */
 		if (S == 0)
 			S = n_cpu - 1 - R;
 		if (S < 1)
 			errx(1, "direct: no CPU left for a producer (%d available, 1 service thread, %d dict threads)",
 			     n_cpu, R);
-		producers_per_node = S;
-		n_threads = 1 + R + S;
-		n_producers = n_nodes * S;
-		n_dicts = n_nodes * R;
+		producers_per_node = S;            /* resolved: the team run() builds, whose roles the Router counts */
+		int n_dicts = n_nodes * R;         /* shards over all nodes: what the RAM budget is cut into */
 
 		if (nbytes_memory == 0)
 			errx(1, "the RAM budget per node must be given (and nonzero)");

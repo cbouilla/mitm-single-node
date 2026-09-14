@@ -37,7 +37,12 @@ inside the one parallel region, and keeps its handle for the team's whole life.
 plan and the measured layout itself.  The engine passes `ROUTER_GROUP_AUTO`, never pins a thread and
 never queries hwloc; `--no-bind` is `opts.router.pin = false`, needed when two ranks share a host.
 The engine ignores the groups: a match is resolved where it is found, so no producer needs to be
-paired with a dict thread.  A dict thread builds its shard right after `Router_Init`, i.e. once
+paired with a dict thread.  What it does ask the Router is **the team's shape**, through
+`Router_size(rt, role, scope)` and `Router_rank(rt, scope)`: the shard count for the routing
+(§1.3), the producer count and a producer's global rank for its piece of the span, the node count
+for the epilogue's record array (§1.4), the node's dict threads for the shard report.
+`direct::Params` holds the dictionary's slots, the domain and the round count, nothing about the
+team.  A dict thread builds its shard right after `Router_Init`, i.e. once
 pinned, so the zero-fill is the first touch of every page.  That shard is one `mmap`, asked for on
 2 MB pages (`MAP_HUGETLB`) and taken on ordinary ones when the kernel has no huge page reserved; the
 length is rounded up to a whole huge page, so a run holds up to 2 MB per shard more than `--ram`
@@ -76,8 +81,9 @@ One phase, on each thread:
 A point is the two words the Router carries: `key` is `murmur64(image)`, `val` the preimage.
 
 **Routing.**  `dest = (key * n_dicts) >> 64`, a multiply-shift on the key's top bits, where
-`n_dicts` is `n_nodes * I` -- not a Router query, the same shard count every node derives from its
-own `Options`, and therefore equal to the number of shards by construction.  The hash buys the
+`n_dicts` is `Router_size(rt, ROUTER_RECEIVER, ROUTER_GLOBAL)`, the receivers over every node --
+the number of shards by construction, one per receiver, and the same on every node, since the
+Router refuses a team whose nodes differ in shape.  The hash buys the
 producer a fan-out with no 64-bit division on the hot path; `murmur64` is a bijection, so distinct
 images stay distinct.
 
@@ -200,9 +206,13 @@ handle.
 | `I+1..I+W` | sender | the walker: walks `vlen` trails, pushes every distinguished point, and resolves the hits its dict thread found |
 
 **The Router owns placement**, exactly as in §1: PCS pins nothing and never touches hwloc.  It
-only *reads* the plan, through `Router_group` and `Router_num_groups`; a thread's own rank, local
-or global, is arithmetic over the shape it was given (`rank * S + Router_thread::index`), not a
-query.
+only *reads* the plan, through `Router_group` and `Router_num_groups`, and **the team's shape**
+through `Router_size(rt, role, scope)` and `Router_rank(rt, scope)`: how many walkers, dict
+threads or nodes there are (`ROUTER_NODE` or `ROUTER_GLOBAL`), and a thread's own rank among
+those of its role.  PCS stores none of it -- `pcs::Params` is the dictionary's geometry and the
+round's quota, nothing about the team -- and asks wherever it needs one: the chain-index stride
+and a walker's first chain (§2.3), the routing modulus (§2.3), the pass below, the size of the
+epilogue's record array (§2.5) and the controller's end-of-round to every node (§2.2).
 
 **Every per-thread object is built by its owner right after `Router_Init`**, i.e. once pinned,
 so the zero-fill is the first touch of every page: a dict thread's shard and its collision
@@ -215,8 +225,9 @@ round, because the groups and the queues have to be published to the team.
 least one walker.  The Router's groups do not give that for free: a group is senders and
 receivers in one cache domain, so it may hold several receivers, or none, and the Router exposes
 no query for "the receivers of a group" -- only `Router_group`, one thread's own, and
-`Router_num_groups`.  So each worker publishes its group into the `Shared`, and after the startup
-barrier every thread runs the same deterministic pass over those groups:
+`Router_num_groups`.  So each worker publishes its group into the `Shared`, at its local rank
+(`Router_rank(rt, ROUTER_NODE)`; the dict threads' slots first, then the walkers'), and after the
+startup barrier every thread runs the same deterministic pass over those groups:
 
 1. **the groups that hold a receiver**, in group order: each of that group's senders, in
    order, goes to the **poorest receiver of that group** -- fewest walkers so far, ties to the
@@ -233,9 +244,10 @@ barrier every thread runs the same deterministic pass over those groups:
 
 A round ends on a count no node holds, so PCS keeps what §1 does without: a **controller on
 rank 0**, driven by that rank's service thread between two Router turns, and three tags of its
-own on the Router's communicator.  Every message is `MPI_Bsend` into a buffer the engine
-attaches once, so a report never waits on the controller, and all of it is thread 0's -- the
-same thread the Router does its MPI on, which is what keeps `MPI_THREAD_FUNNELED` legal.
+own on the Router's communicator.  Every message is `MPI_Bsend` into a buffer the `Control`
+attaches when thread 0 builds it, right after `Router_Init`, and gives back when the run ends,
+so a report never waits on the controller; all of it is thread 0's -- the same thread the Router
+does its MPI on, which is what keeps `MPI_THREAD_FUNNELED` legal.
 
 | tag | direction | payload | when |
 |---|---|---|---|

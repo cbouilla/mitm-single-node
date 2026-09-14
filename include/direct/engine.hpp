@@ -30,23 +30,20 @@ using fmt::print;       /* the reports format with {fmt}, unqualified */
 
 /******************************** the printing ********************************/
 
-/* the startup report, on rank 0 before the team exists; the Router prints its own layout after it */
+/* the startup report, on rank 0 before the team exists; the Router prints the team's shape right after it */
 template <class Wrapper>
 static void banner(const Wrapper &wrapper, const Params &params, u64 seed)
 {
 	print("Starting direct {} search with {} : {{0,1}}^{} --> {{0, 1}}^{} (vlen={})\n", Wrapper::kind,
 	      Wrapper::funcs, wrapper.n, wrapper.m, Wrapper::vlen);
 	print("Starting the direct (exhaustive) meet-in-the-middle on the Router with seed={:016x}\n", seed);
-	print("MPI: {} node(s) x (1 service + {} dict + {} producer) = {} threads/node\n", params.n_nodes,
-	      params.R, params.S, params.n_threads);
-	print("MPI: {} dictionary shards, {} producer threads in total\n", params.n_dicts, params.n_producers);
 	double work = (double) params.n_rounds * (params.per_round + params.domain);
 	std::string hper = human_format(params.per_round);
 	print("Dictionary: linear probing, 8-byte slots = {}-bit preimage | {} check bits | occupancy.  "
 	      "Fill {:.2f}: {} entries per round.  Prefetch {} points ahead\n", params.n, 63 - params.n, params.fill,
 	      hper, params.prefetch);
 	print("RAM per node == {:.1f} MB of dictionary; {} slots in all (2^{:.2f}), {} per shard\n",
-	      (double) params.w_shard * params.R * sizeof(u64) / 1e6, human_format(params.w),
+	      (double) params.w_shard * params.dicts_per_node * sizeof(u64) / 1e6, human_format(params.w),
 	      std::log2((double) params.w), hper);
 	print("{} round(s) of two phases: FILL (f on 2^{:.2f} preimages) then PROBE (g on all 2^{}).  "
 	      "Total work: {} evaluations = 2^{:.2f}\n", params.n_rounds, std::log2((double) params.per_round),
@@ -64,24 +61,20 @@ static void banner(const Wrapper &wrapper, const Params &params, u64 seed)
 static void hugetlb_advice(u64 nbytes, int n_shards)
 {
 	u64 pages = (u64) n_shards * nbytes / HUGE_PAGE;
-	print("            to get them: as root, `sysctl vm.nr_hugepages={}` (or `echo {} > /proc/sys/vm/"
-	      "nr_hugepages`),\n", pages, pages);
-	print("            then run again.  {} pages cover this rank's {} shard(s); ask for more -- the pool is "
-	      "the host's,\n", pages, n_shards);
-	print("            shared by every rank on it and spread over its NUMA nodes.  `vm.nr_hugepages = {}` "
-	      "in /etc/sysctl.conf,\n", pages);
-	print("            or `hugepages={}` on the kernel command line, reserves it at every boot, out of "
-	      "unfragmented memory.\n", pages);
+	print("            to get them: as root, `sysctl vm.nr_hugepages={}` (or `echo {} > /proc/sys/vm/nr_hugepages`),\n", pages, pages);
+	print("            then run again.  {} pages cover this rank's {} shard(s); ask for more -- the pool is the host's,\n", pages, n_shards);
+	print("            shared by every rank on it and spread over its NUMA nodes.  `vm.nr_hugepages = {}` in /etc/sysctl.conf,\n", pages);
+	print("            or `hugepages={}` on the kernel command line, reserves it at every boot, out of unfragmented memory.\n", pages);
 }
 
 /*
  * What this node's dict threads got for their shards' pages, printed by thread 0 once every one of them has
  * reported -- before the live line starts, which is why the service thread holds that line until then.
  */
-static void shard_report(const Params &params, const Shared &shared)
+static void shard_report(const Shared &shared)
 {
 	int refused = 0;
-	for (int i = 0; i < params.R; i++) {
+	for (size_t i = 0; i < shared.pages.size(); i++) {
 		const ShardPages &p = shared.pages[i];
 		if (p.hugetlb_errno == 0) {
 			print("Dictionary: shard {} of {}B on MAP_HUGETLB, {}B measured on 2 MB pages\n", i,
@@ -93,44 +86,46 @@ static void shard_report(const Params &params, const Shared &shared)
 		refused += 1;
 	}
 	if (refused > 0)
-		hugetlb_advice(shared.pages[0].nbytes, params.R);
+		hugetlb_advice(shared.pages[0].nbytes, (int) shared.pages.size());
 	fflush(stdout);
 }
 
 /* the live one-line refresh: rank 0's own node, read from its tallies without synchronisation, scaled to
    every node -- the points its dict threads retired are the points the Router delivered to them */
-static void display(const Params &params, const Shared &shared, const u64 *stats, double delta, u64 round,
-                    int phase)
+static void display(const Router_thread &rt, const Params &params, const Shared &shared, const u64 *stats,
+                    double delta, u64 round, int phase)
 {
+	const int nodes = Router_size(rt, ROUTER_SERVICE, ROUTER_GLOBAL);
 	u64 eval = 0;
 	u64 retired = 0;
-	for (int t = 0; t < params.n_threads; t++) {
+	for (size_t t = 0; t < shared.tally.size(); t++) {
 		eval += shared.tally[t].ctr[N_EVAL];
 		retired += shared.tally[t].ctr[N_INSERT] + shared.tally[t].ctr[N_PROBE];
 	}
 	u64 span = params.domain;
 	if (phase == FILL)
 		span = std::min(params.per_round, params.domain - round * params.per_round);
-	double completion = (double) eval * params.n_nodes / (double) span;
+	double completion = (double) eval * nodes / (double) span;
 	print("\rRound {}/{} {}:  {:.1f}s ({:.1f}%, ETA {:.1f}s).  {} points routed/s.  node-->{}B/s   ",
 	      round, params.n_rounds, (phase == FILL) ? "FILL" : "PROBE", delta, 100. * completion,
 	      (completion > 0) ? delta * (1 - completion) / completion : 0.,
-	      human_format((double) retired * params.n_nodes / delta),
+	      human_format((double) retired * nodes / delta),
 	      human_format((double) stats[ROUTER_BYTES_SENT] / delta));
 	fflush(stdout);
 }
 
 /* the end-of-phase report: `r` is the exact sum over every thread of every node, `total` the all-time sums */
-static void round_report(const Params &params, const u64 r[], const u64 total[], double delta, u64 round,
-                         int phase)
+static void round_report(const Router_thread &rt, const Params &params, const u64 r[], const u64 total[],
+                         double delta, u64 round, int phase)
 {
+	const int nodes = Router_size(rt, ROUTER_SERVICE, ROUTER_GLOBAL);
 	print("\n");
 	print("Round {} {}.  {:.1f}s.  2^{:.2f} evaluations (total 2^{:.2f}).  {} points routed/s.  "
 	      "node-->{}B/s\n", round, (phase == FILL) ? "FILL" : "PROBE", delta,
 	      std::log2((double) (r[N_EVAL] ? r[N_EVAL] : 1)),
 	      std::log2((double) (total[N_EVAL] ? total[N_EVAL] : 1)),
 	      human_format((double) (r[N_INSERT] + r[N_PROBE]) / delta),
-	      human_format((double) r[REC_ROUTER + ROUTER_BYTES_SENT] / params.n_nodes / delta));
+	      human_format((double) r[REC_ROUTER + ROUTER_BYTES_SENT] / nodes / delta));
 	if (r[N_INSERT] > 0)
 		print("            {} inserted, load {:.2f}/slot\n", r[N_INSERT], (double) r[N_INSERT] / params.w);
 	if (r[N_PROBE] > 0)
@@ -178,9 +173,9 @@ static void service_round(Router_thread &rt, const Params &params, const Shared 
 		Router_Progress(rt);
 		turns += 1;
 		if (pending) {
-			if (shared.pages_ready.load_acquire() < (u32) params.R)
+			if (shared.pages_ready.load_acquire() < (u32) Router_size(rt, ROUTER_RECEIVER, ROUTER_NODE))
 				continue;              /* no live line over a shard still being mapped and touched */
-			shard_report(params, shared);
+			shard_report(shared);
 			pending = false;
 		}
 		if (not params.verbose || (turns & 0xff) != 0)
@@ -190,7 +185,7 @@ static void service_round(Router_thread &rt, const Params &params, const Shared 
 			continue;
 		last = now;
 		Router_Stats(stats, rt);
-		display(params, shared, stats, now - t0, round, phase);
+		display(rt, params, shared, stats, now - t0, round, phase);
 	}
 	Router_Stats(stats, rt);
 }
@@ -200,11 +195,12 @@ static void service_round(Router_thread &rt, const Params &params, const Shared 
  * the golden pair it may hold -- goes into one Allgather, and every node reads the same verdict out of it.
  * The lowest rank that found a pair provides the answer.
  */
-static void epilogue(const Params &params, Shared &shared, const u64 *stats, u64 *records, u64 *total,
-                     u64 round, int phase, double delta)
+static void epilogue(const Router_thread &rt, const Params &params, Shared &shared, const u64 *stats,
+                     u64 *records, u64 *total, u64 round, int phase, double delta)
 {
+	const int nodes = Router_size(rt, ROUTER_SERVICE, ROUTER_GLOBAL);
 	u64 rec[REC_WORDS] = {};
-	for (int t = 0; t < params.n_threads; t++)
+	for (size_t t = 0; t < shared.tally.size(); t++)
 		for (int c = 0; c < N_COUNTERS; c++)
 			rec[c] += shared.tally[t].ctr[c];
 	for (int k = 0; k < ROUTER_STATS_SIZE; k++)
@@ -217,7 +213,7 @@ static void epilogue(const Params &params, Shared &shared, const u64 *stats, u64
 	MPI_Allgather(rec, REC_WORDS, MPI_UINT64_T, records, REC_WORDS, MPI_UINT64_T, params.mpi_comm);
 
 	u64 sum[REC_WORDS] = {};
-	for (int r = 0; r < params.n_nodes; r++) {
+	for (int r = 0; r < nodes; r++) {
 		const u64 *q = records + (size_t) r * REC_WORDS;
 		for (int k = 0; k < REC_FOUND; k++)
 			sum[k] += q[k];
@@ -232,7 +228,7 @@ static void epilogue(const Params &params, Shared &shared, const u64 *stats, u64
 	shared.phases += 1;
 	shared.stop = shared.solved || (phase == PROBE && round + 1 >= params.n_rounds);
 	if (params.verbose)
-		round_report(params, sum, total, delta, round, phase);
+		round_report(rt, params, sum, total, delta, round, phase);
 }
 
 /******************************** the engine ********************************/
@@ -261,16 +257,19 @@ optional<pair<u64, u64>> run(const Wrapper &wrapper, u64 nbytes_memory, const Op
 	if (params.verbose)
 		banner(wrapper, params, prng.seed);
 
-	Shared shared(params.n_threads, params.R);
+	/* the team: thread 0 the service, then the dict threads, then the producers; the Router counts the roles */
+	const int R = params.dicts_per_node;
+	const int n_threads = 1 + R + params.producers_per_node;
+	Shared shared(n_threads, R);
 	double t_start = wtime();
 
-	#pragma omp parallel num_threads(params.n_threads)
+	#pragma omp parallel num_threads(n_threads)
 	{
 		int tid = omp_get_thread_num();
 		int role = ROUTER_SENDER;
 		if (tid == 0)
 			role = ROUTER_SERVICE;
-		else if (tid <= params.R)
+		else if (tid <= R)
 			role = ROUTER_RECEIVER;
 		Router_thread rt = Router_Init(role, ROUTER_GROUP_AUTO, params.mpi_comm, ROUTER_TAG, &params.router);
 		u64 *ctr = shared.tally[tid].ctr;
@@ -278,13 +277,13 @@ optional<pair<u64, u64>> run(const Wrapper &wrapper, u64 nbytes_memory, const Op
 		/* a dict thread's shard, mapped and zero-filled here: its own first touch.  Empty on the other roles */
 		DirectDict dict(role == ROUTER_RECEIVER ? params.w_shard : 0, params.n);
 		if (role == ROUTER_RECEIVER)
-			shared.publish_pages(tid - 1, dict.nbytes, dict.huge, dict.hugetlb_errno);
+			shared.publish_pages(Router_rank(rt, ROUTER_NODE), dict.nbytes, dict.huge, dict.hugetlb_errno);
 
 		std::vector<u64> records;              /* thread 0: the nodes' records, from the Allgather */
 		std::vector<u64> total;                /* thread 0: the all-time sums */
 		std::vector<u64> stats;                /* thread 0: the node's Router tallies for the phase */
 		if (role == ROUTER_SERVICE) {
-			records.assign((size_t) params.n_nodes * REC_WORDS, 0);
+			records.assign((size_t) Router_size(rt, ROUTER_SERVICE, ROUTER_GLOBAL) * REC_WORDS, 0);
 			total.assign(REC_WORDS, 0);
 			stats.assign(ROUTER_STATS_SIZE, 0);
 		}
@@ -306,7 +305,8 @@ optional<pair<u64, u64>> run(const Wrapper &wrapper, u64 nbytes_memory, const Op
 			Router_Reset(rt);      /* its own team barriers and MPI_Barrier: every tally is written by now */
 
 			if (role == ROUTER_SERVICE)
-				epilogue(params, shared, stats.data(), records.data(), total.data(), round, phase, wtime() - t0);
+				epilogue(rt, params, shared, stats.data(), records.data(), total.data(), round, phase,
+				         wtime() - t0);
 
 			#pragma omp barrier    /* the verdict, and every thread's next tally, are thread 0's to publish */
 			if (shared.stop)

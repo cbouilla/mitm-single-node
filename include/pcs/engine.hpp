@@ -36,18 +36,15 @@ using fmt::print;       /* the reports format with {fmt}, unqualified */
 
 /******************************** the printing ********************************/
 
-/* the startup report, on rank 0 before the team exists; the Router prints its own layout after it */
+/* the startup report, on rank 0 before the team exists; the Router prints the team's shape right after it */
 template <class Wrapper>
 static void banner(const Wrapper &wrapper, const Params &params, u64 seed)
 {
 	print("Starting PCS {} search with {} : {{0,1}}^{} --> {{0, 1}}^{} (vlen={})\n", Wrapper::kind,
 	      Wrapper::funcs, wrapper.n, wrapper.m, Wrapper::vlen);
 	print("Starting the parallel collision search on the Router with seed={:016x}\n", seed);
-	print("MPI: {} node(s) x (1 service + {} dict + {} walker) = {} threads/node\n", params.n_nodes,
-	      params.R, params.S, params.n_threads);
-	print("MPI: {} dictionary shards, {} walker threads in total\n", params.n_dicts, params.n_producers);
 	print("RAM per node == {:.1f} MB of dictionary; {} slots in all (2^{:.2f}), {} per shard\n",
-	      (double) params.w_shard * params.R * sizeof(u64) / 1e6, human_format(params.w),
+	      (double) params.w_shard * params.dicts_per_node * sizeof(u64) / 1e6, human_format(params.w),
 	      std::log2((double) params.w), human_format(params.w_shard));
 	print("DP == 2 words: endpoint + ({}-bit length | {}-bit chain index).  ", params.lenbits, params.jbits);
 	if (params.dp_max_it > params.len_sat)
@@ -67,17 +64,20 @@ static void banner(const Wrapper &wrapper, const Params &params, u64 seed)
 }
 
 /* the live one-line refresh, from the progress reports so far: rank 0's, and approximate on purpose */
-static void display(const Params &params, const u64 reported[], double delta, u64 nround)
+static void display(const Router_thread &rt, const Params &params, const u64 reported[], double delta, u64 nround)
 {
 	u64 ndp = reported[N_DP];
 	double completion = (double) ndp / params.points_per_version;
+	const int walkers = Router_size(rt, ROUTER_SENDER, ROUTER_GLOBAL);
+	const int dicts = Router_size(rt, ROUTER_RECEIVER, ROUTER_GLOBAL);
+	const int nodes = Router_size(rt, ROUTER_SERVICE, ROUTER_GLOBAL);
 	print("\rRound {}:  {:.1f}s ({:.1f}%, ETA {:.1f}s).  {:.2f}*w #DP.  {} #f/s per walker.  "
 	      "{} probe/s per dict thread.  node-->{}B/s   ", nround + 1, delta, 100. * completion,
 	      (completion > 0) ? delta * (1 - completion) / completion : 0.,
 	      (double) ndp / params.w,
-	      human_format((double) ndp / params.theta / params.n_producers / delta),
-	      human_format((double) reported[N_PROBE] / params.n_dicts / delta),
-	      human_format((double) reported[REC_ROUTER + ROUTER_BYTES_SENT] / params.n_nodes / delta));
+	      human_format((double) ndp / params.theta / walkers / delta),
+	      human_format((double) reported[N_PROBE] / dicts / delta),
+	      human_format((double) reported[REC_ROUTER + ROUTER_BYTES_SENT] / nodes / delta));
 	fflush(stdout);
 }
 
@@ -85,10 +85,13 @@ static void display(const Params &params, const u64 reported[], double delta, u6
  * The end-of-round report: `r` is the exact sum over every thread of every node, `total` the all-time
  * sums, `round` and `all` the distinct-collision registers of the round and of every round.
  */
-static void round_report(const Params &params, const u64 r[], const u64 total[], const RoundStats &round,
-                         const RoundStats &all, double delta, u64 nround)
+static void round_report(const Router_thread &rt, const Params &params, const u64 r[], const u64 total[],
+                         const RoundStats &round, const RoundStats &all, double delta, u64 nround)
 {
 	u64 ndp = r[N_DP];
+	const int walkers = Router_size(rt, ROUTER_SENDER, ROUTER_GLOBAL);
+	const int dicts = Router_size(rt, ROUTER_RECEIVER, ROUTER_GLOBAL);
+	const int nodes = Router_size(rt, ROUTER_SERVICE, ROUTER_GLOBAL);
 
 	print("\n");
 	print("Round {}.  {:.1f}s.  #DP {:.2f}*w (total 2^{:.2f}).  #coll {:.2f}*w (total 2^{:.2f}).  "
@@ -97,8 +100,8 @@ static void round_report(const Params &params, const u64 r[], const u64 total[],
 	      (double) r[N_COLLISIONS] / params.w,
 	      std::log2((double) (total[N_COLLISIONS] ? total[N_COLLISIONS] : 1)),
 	      std::log2((double) (total[N_EVAL] ? total[N_EVAL] : 1)),
-	      human_format((double) r[N_EVAL] / params.n_producers / delta),
-	      human_format((double) r[REC_ROUTER + ROUTER_BYTES_SENT] / params.n_nodes / delta));
+	      human_format((double) r[N_EVAL] / walkers / delta),
+	      human_format((double) r[REC_ROUTER + ROUTER_BYTES_SENT] / nodes / delta));
 
 	if (ndp > 0) {
 		double avglen = (double) r[N_POINTS_TRAILS] / ndp;
@@ -123,7 +126,7 @@ static void round_report(const Params &params, const u64 r[], const u64 total[],
 		print("            ROUTED  {} DP/s found --> {} DP/s inserted ({:.2f}% reached a shard, "
 		      "{} probe/s per dict thread).  dict load {:.2f}/slot\n",
 		      human_format((double) ndp / delta), human_format((double) r[N_PROBE] / delta),
-		      100. * r[N_PROBE] / ndp, human_format((double) r[N_PROBE] / params.n_dicts / delta),
+		      100. * r[N_PROBE] / ndp, human_format((double) r[N_PROBE] / dicts / delta),
 		      (double) r[N_PROBE] / params.w);
 	}
 
@@ -160,11 +163,11 @@ static void done(const Params &params, u64 nround, bool found, double seconds)
 /**************************** the service thread and the epilogue ***************************/
 
 /* the node's record as it stands: its threads' tallies, then what its Router did */
-static void node_snapshot(const Params &params, const Shared &shared, const u64 *stats, u64 *cur)
+static void node_snapshot(const Shared &shared, const u64 *stats, u64 *cur)
 {
 	for (int k = 0; k < REC_FOUND; k++)
 		cur[k] = 0;
-	for (int t = 0; t < params.n_threads; t++)
+	for (size_t t = 0; t < shared.tally.size(); t++)
 		for (int c = 0; c < N_COUNTERS; c++)
 			cur[c] += shared.tally[t].ctr[c];
 	for (int k = 0; k < ROUTER_STATS_SIZE; k++)
@@ -186,7 +189,7 @@ static void service_round(Router_thread &rt, const Params &params, Shared &share
 		if ((turns & 0xff) != 0)
 			continue;
 		Router_Stats(stats, rt);
-		node_snapshot(params, shared, stats, cur);
+		node_snapshot(shared, stats, cur);
 		control.service(cur, shared);
 		if (not params.verbose)
 			continue;
@@ -194,10 +197,10 @@ static void service_round(Router_thread &rt, const Params &params, Shared &share
 		if (now - control.last_display < params.ping_delay)
 			continue;
 		control.last_display = now;
-		display(params, control.reported, now - control.round_start, shared.nround);
+		display(rt, params, control.reported, now - control.round_start, shared.nround);
 	}
 	Router_Stats(stats, rt);                       /* Router_Reset would clear them */
-	node_snapshot(params, shared, stats, cur);
+	node_snapshot(shared, stats, cur);
 	control.service(cur, shared);                  /* the last turn: rank 0 drains the round's reports */
 }
 
@@ -207,12 +210,14 @@ static void service_round(Router_thread &rt, const Params &params, Shared &share
  * of it.  The lowest rank that found a pair provides the answer.  Then the next round's function, drawn
  * from the PRNG every rank holds a copy of, so it travels on no wire.
  */
-static void epilogue(const Params &params, Shared &shared, Control &control, const u64 *stats, u64 *records,
-                     PRNG &prng, u64 out_mask)
+static void epilogue(const Router_thread &rt, const Params &params, Shared &shared, Control &control,
+                     const u64 *stats, u64 *records, PRNG &prng, u64 out_mask)
 {
 	double delta = wtime() - control.round_start;
+	const int nodes = Router_size(rt, ROUTER_SERVICE, ROUTER_GLOBAL);
+	const int rank = Router_rank(rt, ROUTER_GLOBAL);
 	u64 rec[REC_WORDS] = {};
-	node_snapshot(params, shared, stats, rec);
+	node_snapshot(shared, stats, rec);
 	if (shared.found.load_acquire()) {
 		rec[REC_FOUND] = 1;
 		rec[REC_I] = shared.golden[0];
@@ -222,7 +227,7 @@ static void epilogue(const Params &params, Shared &shared, Control &control, con
 	MPI_Allgather(rec, REC_WORDS, MPI_UINT64_T, records, REC_WORDS, MPI_UINT64_T, params.mpi_comm);
 
 	u64 sum[REC_WORDS] = {};
-	for (int d = 0; d < params.n_nodes; d++) {
+	for (int d = 0; d < nodes; d++) {
 		const u64 *q = records + (size_t) d * REC_WORDS;
 		for (int k = 0; k < REC_FOUND; k++)
 			sum[k] += q[k];
@@ -235,21 +240,21 @@ static void epilogue(const Params &params, Shared &shared, Control &control, con
 	}
 
 	control.round.collect(shared.hll);             /* every walker's registers, merged and zeroed */
-	control.round.reduce(params.mpi_comm, params.rank);
+	control.round.reduce(params.mpi_comm, rank);
 
 	shared.nround += 1;
 	shared.stop = shared.solved || shared.nround >= params.max_versions;
-	if (params.rank == 0) {
+	if (rank == 0) {
 		for (int k = 0; k < REC_FOUND; k++)
 			control.total[k] += sum[k];
 		control.all.fold(control.round);
 		if (params.verbose)
-			round_report(params, sum, control.total, control.round, control.all, delta, shared.nround);
+			round_report(rt, params, sum, control.total, control.round, control.all, delta, shared.nround);
 	}
 
 	/* the next round is thread 0's to set up: the barrier that follows publishes all of it */
 	shared.round_over = 0;
-	for (int r = 0; r < params.R; r++)
+	for (size_t r = 0; r < shared.chan.size(); r++)
 		shared.chan[r].done = 0;
 	if (shared.stop)
 		return;
@@ -285,31 +290,25 @@ optional<tuple<u64,u64,u64>> run(const Wrapper &wrapper, u64 nbytes_memory, cons
 	if (params.verbose)
 		banner(wrapper, params, prng.seed);
 
-	/* the control channel's own MPI_Bsend buffer: a report never waits on the controller */
-	void *prev_buf = NULL;
-	int prev_size = 0;
-	MPI_Buffer_detach(&prev_buf, &prev_size);
-	size_t slots = 2 * (size_t) params.n_nodes + 64;
-	std::vector<char> bsend_buf(slots * (REC_FOUND * sizeof(u64) + MPI_BSEND_OVERHEAD));
-	MPI_Buffer_attach(bsend_buf.data(), (int) bsend_buf.size());
-
-	Shared shared(params);
-	Control control(params);
+	/* the team: thread 0 the service, then the dict threads, then the walkers; the Router counts the roles */
+	const int R = params.dicts_per_node;
+	const int n_threads = 1 + R + params.producers_per_node;
+	Shared shared(n_threads, R);
 	shared.header.i = prng.rand() & wrapper.out_mask;
 	shared.header.root_seed = prng.rand();
-	control.begin_round();
 	double t_start = wtime();
 
-	#pragma omp parallel num_threads(params.n_threads)
+	#pragma omp parallel num_threads(n_threads)
 	{
 		int tid = omp_get_thread_num();
 		int role = ROUTER_SENDER;
 		if (tid == 0)
 			role = ROUTER_SERVICE;
-		else if (tid <= params.R)
+		else if (tid <= R)
 			role = ROUTER_RECEIVER;
 		Router_thread rt = Router_Init(role, ROUTER_GROUP_AUTO, params.mpi_comm, ROUTER_TAG, &params.router);
 		u64 *ctr = shared.tally[tid].ctr;
+		const int me = Router_rank(rt, ROUTER_NODE);           /* among this node's threads of my role */
 
 		/* every per-thread object is built here, once the Router has pinned its thread: first touch */
 		PcsDict dict(params.jbits, (role == ROUTER_RECEIVER) ? params.w_shard : 0);
@@ -320,12 +319,14 @@ optional<tuple<u64,u64,u64>> run(const Wrapper &wrapper, u64 nbytes_memory, cons
 		std::vector<int> n_walkers;                 /* ... and how many walkers each of them has */
 		std::vector<u64> records;                   /* thread 0: the nodes' records, from the Allgather */
 		std::vector<u64> stats;                     /* thread 0: the node's Router tallies for the round */
+		std::unique_ptr<Control> control;           /* thread 0: its end of the control channel */
 
-		if (role != ROUTER_SERVICE)
-			shared.group[tid] = Router_group(rt);
-		if (role == ROUTER_RECEIVER)
-			shared.chan[tid - 1].q = std::make_unique<CollisionQueue>(params.coll_queue_capacity);
+		if (role == ROUTER_RECEIVER) {
+			shared.group[me] = Router_group(rt);
+			shared.chan[me].q = std::make_unique<CollisionQueue>(params.coll_queue_capacity);
+		}
 		if (role == ROUTER_SENDER) {
+			shared.group[Router_size(rt, ROUTER_RECEIVER, ROUTER_NODE) + me] = Router_group(rt);
 			hll.assign(HLL_REGISTERS, 0);
 			shared.hll[tid] = hll.data();
 			resolver = std::make_unique<VecResolver<Wrapper>>();
@@ -333,8 +334,10 @@ optional<tuple<u64,u64,u64>> run(const Wrapper &wrapper, u64 nbytes_memory, cons
 				trail.resize(params.dp_max_it + 1);
 		}
 		if (role == ROUTER_SERVICE) {
-			records.assign((size_t) params.n_nodes * REC_WORDS, 0);
+			records.assign((size_t) Router_size(rt, ROUTER_SERVICE, ROUTER_GLOBAL) * REC_WORDS, 0);
 			stats.assign(ROUTER_STATS_SIZE, 0);
+			control = std::make_unique<Control>(params, rt);
+			control->begin_round();
 		}
 
 		#pragma omp barrier    /* the groups, the queues and the registers are the team's to read now */
@@ -344,18 +347,18 @@ optional<tuple<u64,u64,u64>> run(const Wrapper &wrapper, u64 nbytes_memory, cons
 		 * over the published groups; thread 0 runs it to check that no shard was left without a walker,
 		 * which would silently drop every collision it found.
 		 */
-		int my_recv = -1;
+		int chan = me;                 /* the channel this thread works: a dict thread's own, a walker's assigned */
 		if (role != ROUTER_RECEIVER) {
-			recv_of.assign(params.S, -1);
-			n_walkers.assign(params.R, 0);
-			assign_receivers(params, Router_num_groups(rt), shared.group.data(), recv_of.data(), n_walkers.data());
+			recv_of.assign(Router_size(rt, ROUTER_SENDER, ROUTER_NODE), -1);
+			n_walkers.assign(Router_size(rt, ROUTER_RECEIVER, ROUTER_NODE), 0);
+			assign_receivers(rt, shared.group.data(), recv_of.data(), n_walkers.data());
 		}
 		if (role == ROUTER_SENDER)
-			my_recv = recv_of[tid - 1 - params.R];
+			chan = recv_of[me];
 		if (role == ROUTER_SERVICE) {
 			int lo = n_walkers[0];
 			int hi = n_walkers[0];
-			for (int r = 1; r < params.R; r++) {
+			for (size_t r = 1; r < n_walkers.size(); r++) {
 				lo = std::min(lo, n_walkers[r]);
 				hi = std::max(hi, n_walkers[r]);
 			}
@@ -363,7 +366,7 @@ optional<tuple<u64,u64,u64>> run(const Wrapper &wrapper, u64 nbytes_memory, cons
 				warnx("pcs: rank %d has a dictionary shard with no walker to resolve for it, so "
 				      "every collision it finds would be dropped.  Raise --producers-per-node, "
 				      "lower --dicts-per-node, or widen a Router group (--group, --cache-level)",
-				      params.rank);
+				      Router_rank(rt, ROUTER_GLOBAL));
 				MPI_Abort(params.mpi_comm, 1);
 			}
 			if (params.verbose)
@@ -376,30 +379,24 @@ optional<tuple<u64,u64,u64>> run(const Wrapper &wrapper, u64 nbytes_memory, cons
 				ctr[c] = 0;
 
 			if (role == ROUTER_SERVICE)
-				service_round(rt, params, shared, control, stats.data());
+				service_round(rt, params, shared, *control, stats.data());
 			else if (role == ROUTER_RECEIVER)
-				dict_round(rt, params, shared, dict, ctr, tid - 1);
+				dict_round(rt, params, shared, dict, ctr, chan);
 			else
-				walker_round(rt, wrapper, params, shared, ctr, hll.data(), *resolver, trail.data(),
-				             my_recv);
+				walker_round(rt, wrapper, params, shared, ctr, hll.data(), *resolver, trail.data(), chan);
 
 			Router_Reset(rt);      /* its own team barriers and MPI_Barrier: every tally is written by now */
 
 			if (role == ROUTER_SERVICE)
-				epilogue(params, shared, control, stats.data(), records.data(), prng, wrapper.out_mask);
+				epilogue(rt, params, shared, *control, stats.data(), records.data(), prng, wrapper.out_mask);
 
 			#pragma omp barrier    /* the verdict and the next round's header are thread 0's to publish */
 			if (shared.stop)
 				break;
 		}
+		if (role == ROUTER_SERVICE)
+			control->shutdown();
 	}
-
-	void *my_buf = NULL;
-	int my_size = 0;
-	MPI_Buffer_detach(&my_buf, &my_size);
-	control.shutdown();
-	if (prev_size > 0)
-		MPI_Buffer_attach(prev_buf, prev_size);
 
 	if (params.verbose)
 		done(params, shared.nround, shared.solved, wtime() - t_start);

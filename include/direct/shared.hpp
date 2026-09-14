@@ -41,7 +41,8 @@ struct Shared {
 	std::vector<ShardPages> pages;         /* per dict thread, for thread 0 to report */
 	Atomic<u32> pages_ready{0};            /* dict threads that have published theirs */
 
-	Shared(int n_threads, int n_dicts) : tally(n_threads), pages(n_dicts) {}
+	/* the team's n_threads: the service, the R dict threads, then the producers */
+	Shared(int n_threads, int R) : tally(n_threads), pages(R) {}
 
 	/* a dict thread's shard, once it is mapped and touched: thread 0 reports them all together */
 	void publish_pages(int shard, u64 nbytes, u64 huge, int hugetlb_errno)
