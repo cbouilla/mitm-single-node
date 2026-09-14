@@ -3384,3 +3384,293 @@ build/session15/summ.sh pf0 pf2 pf4 pf8 pf12 pf16 pf24 pf32 pf48 pf64     # the 
 EXTRA="--prefetch D" TAG=pfDp STOP=probe PERF=1 STAT=1 bash -l build/session15/run2.sh   # the profile
 build/session15/report.sh pfDp
 ```
+
+# Session 18 -- the team's shape on grdix: 159 producers and 352 dict threads on the 512 hardware threads, 2.97 G points/s
+
+2026-09-14, **grdix-2** (2 x EPYC 9754, Zen 4c family 25 model 160, 256 cores / 512 PU, 2 NUMA nodes, 32 L3
+of 16 MB, 1003 GB), `oarsub -p grdix --project cryptanalyse -l nodes=1,walltime=3:00` (job 6926914).  Commit
+`a1232e4` on `bench-grdix` = `fe7ae49` of `omp_reboot` (the dict thread's ring now prefetches in FILL as well as
+in PROBE, `--prefetch` defaults to 8, the dict is a plain container whose `probe` fills a caller-owned vector)
+plus sessions 14-16's FINDINGS.  Release build, debian13, `module load openmpi/4.1.6 hwloc/2.13.0 ucx/1.20.0`,
+`kernel.numa_balancing = 0`, `perf_event_paranoid = -1`.
+
+**The question**: with `--prefetch 8`, which split of the team between producers and dict threads runs the
+direct engine fastest, on the 256 cores and on all 512 hardware threads, and where the best team's time goes.
+Sessions 15 and 16 measured one split only, the 63/192 of the reference benchmark.
+
+**The run**: `double_speck64_demo --n 40 --ram 900G --producers-per-node P --dicts-per-node R --prefetch 8`,
+one rank, killed 30 s (the sweep) or 60 s (the finalists) into the first PROBE, one run per split, the 256- and
+512-thread teams interleaved so that a drift would show as a zigzag (`build/session18/run18.sh`, `batch18.sh`).
+**900G instead of the reference's 960G**: the Router's pool grows with the senders (its slack term is 16 x 32 x S
+blocks of 256 KB, 41 GB at 255 senders) and 960G + 41 GB does not fit beside the OS in 1003 GB; per point
+nothing changes -- the 63/192 anchor reproduces session 16 (PROBE 2.35 vs 2.33 G/s at `--prefetch 8`, FILL 2.06
+vs 2.07 G inserts/s).  FILL is 5.6e10 inserts a round here (2^35.71), a round of PROBE 2^40 probes.
+
+**Metric**: the live line's completed fraction of the domain over the elapsed time (0.1 % of 2^40 = 1.1e9 points,
+so +-0.037 G/s at 30 s and +-0.018 at 60 s); the live line's own one-decimal rate cannot separate the splits, and
+the 5-s and 10-s interval rates it allows move in steps of 0.22 and 0.11 G/s -- `summ18.py`'s `PROBElast` column
+is that quantised number and misled for a moment.  FILL's rate is taken between the live line at 10 s and its
+last, which leaves out round 0's zero-fill ramp (shorter with more shards).
+
+## Summary
+
+| team (P producers / R dict threads) | threads | FILL, G inserts/s | PROBE, G points/s |
+| --- | --- | --- | --- |
+| 63/192, the reference so far | 256 | 2.06 | 2.35 |
+| 79/176 | 256 | 2.15 | 2.57 |
+| **95/160**, the best on the cores alone | 256 | 2.16 | **2.61** |
+| 111/144 | 256 | 2.10 | 2.56 |
+| 127/384 | 512 | 2.15 | 2.87 |
+| 143/368 | 512 | 2.13 | 2.91 |
+| **159/352**, the best | 512 | 2.12 | **2.97** |
+| 175/336 | 512 | 2.09 | 2.95 |
+| 191/320 | 512 | 2.06 | 2.93 |
+| 255/256 | 512 | 1.98 | 2.81 |
+
+**The best team is 159 producers and 352 dict threads on all 512 hardware threads: 2.97 G points/s in PROBE, 26 %
+over the 63/192 reference at the same prefetch, and 14 % over the best team on the cores alone (95/160, 2.61).**
+The 512-thread plateau is broad: 143 to 191 producers within 2 %.  FILL is 2.1 G inserts/s for every team from
+79/176 to 191/320, SMT or not: it is at the random-write wall of session 16, and both roles spin there.
+
+The n = 40 round: FILL 31.5 s + PROBE 2^40 / 2.97e9 = 370 s = **6.7 min per round** at 159/352, against about
+8.5 min at 63/192 with the same prefetch (the round report of `s159_352P` read PROBE 385 s, the stats' perf
+runs included).
+
+## 1. The sweep
+
+The full sweep, 30 s of PROBE each (`s*` logs), then the finalists at 60 s (`s*L` logs):
+
+| P / R | threads | FILL s | FILL G/s | blocks held back | PROBE 30 s | PROBE 60 s |
+| --- | --- | --- | --- | --- | --- | --- |
+| 31 / 224 | 256 | 43.3 | 1.46 | 38 K | 1.50 | |
+| 47 / 208 | 256 | 35.0 | 1.86 | 66 K | 2.03 | |
+| 63 / 192 | 256 | 31.8 | 2.06 | 117 K | 2.35 | |
+| 79 / 176 | 256 | 30.0 | 2.15 | 486 K | 2.57 | |
+| 95 / 160 | 256 | 30.0 | 2.15 | 2.0 M | 2.63 | 2.61 |
+| 111 / 144 | 256 | 29.8 | 2.10 | 2.1 M | | 2.56 |
+| 127 / 128 | 256 | 31.8 | 1.96 | 3.4 M | 2.32 | |
+| 63 / 448 | 512 | 36.2 | 1.92 | 104 K | 2.23 | |
+| 95 / 416 | 512 | 32.7 | 2.16 | 169 K | 2.76 | |
+| 127 / 384 | 512 | 32.2 | 2.15 | 321 K | 2.87 | |
+| 143 / 368 | 512 | 31.5 | 2.13 | 878 K | | 2.91 |
+| 159 / 352 | 512 | 31.8 | 2.10 | 1.9 M | 2.99 | 2.97 |
+| 175 / 336 | 512 | 31.3 | 2.09 | 1.9 M | | 2.95 |
+| 191 / 320 | 512 | 31.2 | 2.06 | 2.1 M | 2.96 | 2.93 |
+| 255 / 256 | 512 | 31.7 | 1.98 | 3.0 M | 2.81 | |
+
+The "blocks held back" column is the Router's count of blocks the service could not place at its first try
+because the destination's inbox was full -- the receiver-bound signature.  It grows a hundredfold from 31/224 to
+127/128: the fewer the dict threads, the more the producers wait on them.  With `--prefetch`, 63/192 is on the
+producer-bound side of the optimum (117 K held back, 37 M points/s per producer), not the receiver-bound side
+session 15 found it on without the prefetch.
+
+**On the cores alone the total is flat where the roles are balanced, and the dict thread's own rate is not.**
+From 176 to 144 shards the dict thread goes from 14.6 to 16.3 to 17.8 M probes/s (sessions 15-16's per-thread
+rate was taken as a constant), while the total stays at 2.56-2.61 G/s: the dict threads share their limit,
+they do not each carry one.  The per-role counters below say what it is.
+
+**On 512 threads the placer puts the receivers first**, one per core and then the second hardware thread of
+each core, the senders after: the 159/352 team has 128 cores holding two dict threads, 127 holding a dict
+thread and a producer, one holding a dict thread and the service (siblings are k and k + 256).  So SMT adds
+dict threads to cores that already have one, and producers to the remaining cores' second thread; there is no
+core with two producers.
+
+## 2. Where the cycles go at the two best teams (perf stat, PROBE, 10 s per role)
+
+Cycles and instructions are per hardware thread and per point of the machine's rate (`stat18.py`); the clock is
+3.07-3.10 GHz on every role, SMT or not, so the cores are not throttled by the second thread.
+
+| team | role | cycles / point | instructions / point | IPC | branch mispredicts / point | L1D misses / point |
+| --- | --- | --- | --- | --- | --- | --- |
+| 95/160 | dict thread (alone on its core) | **190** | 151 | 0.79 | 1.16 | 2.11 |
+| 95/160 | producer (alone on its core) | 112 | 101 | 0.90 | | 1.95 (1.77 hit L2) |
+| 159/352 | dict thread (SMT) | **367** | 150 | 0.41 | 1.16 | 1.90 |
+| 159/352 | producer (SMT, next to a dict thread) | 164 | 99 | 0.60 | | 2.01 (1.63 hit L2) |
+| 111/144 | dict thread | 174 | 150 | 0.86 | 1.16 | 2.11 |
+| 191/320 | dict thread (SMT) | 339 | 153 | 0.45 | 1.16 | 1.90 |
+
+Three things:
+
+1. **The producer waits.**  Its work is 35 cycles a point and its push 21 (session 15), and it spends 112 to 201
+   cycles a point depending on how many producers there are, at 100 instructions whatever the team: the rest is
+   the push's wait for a free block.  Every team of the plateau is receiver-bound.
+2. **A dict core delivers the same probes per second with one thread or two.**  190 cycles a point alone; two
+   SMT dict threads at 367 cycles each are 184 core cycles a point.  The per-CPU instruction counts
+   (`percpu18.py`, `perf stat -A`) show every dict thread of the 512 team at 8.3-8.5 M probes/s whether its
+   sibling is a dict thread or a producer, and every dict thread of the 256 team at 16.4.  SMT buys the *machine*
+   14 % because 352 dict threads at 8.4 M/s are more than 160 at 16.4, not because a core does more.
+3. **The dict thread's instruction count fell from 215 (session 16) to 150** with the plain-container rewrite
+   (`b6fb95d`, `fe7ae49`); at IPC 0.79 those are 190 cycles, of which the 1.16 mispredicts (the run loop's
+   data-dependent exit at load 0.5) are some 25 and the exposed misses the rest.
+
+## 3. What a probe costs the memory (the fill counters)
+
+Zen 4's `ls_*_fills_from_sys` counters split the L1D fills by who asked -- a demand load, the hardware
+prefetchers, a software `prefetch` -- and by where the line came from (`perf list`: `ls_dmnd_fills_from_sys`,
+`ls_hw_pf_dc_fills`, `ls_sw_pf_dc_fills`, `ls_any_fills_from_sys`, each `.all / .local_l2 / .local_ccx /
+.dram_io_near / .dram_io_far`).  On the 160 dict threads of 95/160, per probe:
+
+| asked by | L1D fills / probe | of which from DRAM |
+| --- | --- | --- |
+| software prefetch (the run's first line, `dict.prefetch`) | 0.79 | 0.79 |
+| demand loads | 0.25 | 0.23 |
+| hardware prefetchers | 0.64 | 0.48 |
+| **total** | **1.68** | **1.51** (1.49 near, 0.02 far) |
+
+**A probe costs 1.5 DRAM lines**, not the 2.5-2.8 "cache-misses" of session 15 (a generic event that counts
+something else).  The software prefetch and the demand DRAM fills add up to 1.0: the run's first line, brought
+by the prefetch four times in five and by the load itself once -- the once is the run that crosses into a
+second line (at load 0.5 a run is 2-3 slots long, so about a fifth of the probes read a second line the
+prefetch did not ask for) plus the ring's lookahead falling short.  The block stream is 16 bytes a point, a
+quarter line, and the hardware prefetcher fetches it -- it is sequential -- and about another quarter line of
+neighbours nobody reads.  The far-DRAM share is 1 %: the placer's NUMA interleave and the shard's first touch
+work.
+
+Machine-wide (`perf stat -a`): **5.3 G DRAM lines/s in PROBE at 95/160** (2.02 lines per point over every CPU,
+the producers' and the service's share included), against the 7.6-7.8 G/s random-read ceiling of session 15's
+randread2; at 159/352 about 6.0 G/s of fills plus 0.75 G/s of non-temporal block writes.  **The 512-thread
+PROBE runs the DRAM at 80-90 % of its random-access ceiling**; the 256-thread one at 70 %.  That is the shared
+limit of section 1: the loaded latency at that utilisation is what the dict thread's eight outstanding
+prefetches divide, and more dict threads (or a second per core) buy throughput only as far as the DRAM has
+left.
+
+## 4. FILL is at the random-write wall, and both roles spin there
+
+Every team from 79/176 to 191/320 fills at 2.06-2.16 G inserts/s.  The counters at 159/352 during FILL: the
+dict thread runs **210 instructions a point where FILL's insert path is 99** (95/160's FILL count), the producer
+141 where its work is 91 -- both are spinning, the dict thread in `Router_Pop` for a block, the producer in
+`Router_Push` for a free one, and neither is the limit.  Per insert the dict thread fills 2.66 L1D lines
+(0.64 demand, 0.70 hardware prefetch, 1.32 software prefetch) of which **2.5 from DRAM**, and the machine
+moves 5.9 G DRAM lines/s of fills plus the 2.1 G/s of dirty lines it writes back and 0.5 G/s of block writes:
+about 8.5 G line operations/s, the 6.7-7.8 G ceiling of session 16 with the mix's turnarounds.  Nothing in the
+team's shape moves it; the layout of the dictionary (several inserts per dirty line, or a full-line write) is
+still the only lever, unmeasured.
+
+## 5. The best team's profile (perf record, 20 s of PROBE, 199 Hz, every CPU)
+
+`perf record -a -F 199 -- sleep 20` on `s159_352P`, 2.0 M samples, the roles separated by the CPU lists of
+the pinned threads (`-C`), `--sort srcline` (`report18.sh`, on the node: the report over a 107 MB `perf.data`
+takes minutes and does not belong on the frontend).
+
+**Dict thread (352 SMT threads, 8.4 M probes/s each).**  94.3 % in the engine's `run` loop (everything inlined),
+5.0 % in `Speck64128KeySchedule`.  By source line:
+
+| share | line | what |
+| --- | --- | --- |
+| 25.7 % | `dict.hpp:188`, `ctr[N_PROBE] += 1` after `probe` | skid: the first instructions after the run loop's mispredicted exit |
+| 19.1 % | `dict.hpp:145`, the tag compare on `A[i]` | the slot load's exposed part: the run's second line, the prefetch that fell short |
+| 11.5 % | `dict.hpp:189`, `for (u64 x : candidates)` | skid again, the loop over an almost always empty vector |
+| 3.9 % + 2.5 % + 1.2 % + 1.9 % | `dict.hpp:144, 142, 143, 148` | the `while (A[i] != 0)`, the tag, the index, the wrap |
+| 13 % | `Speck64128KeySchedule` + `double_speck64_problem.hpp:20-31` | `is_good_pair`'s scalar Speck, on the 5.5 % of probes that have a candidate |
+| 3.3 % + 0.9 % + 0.7 % | `workers.hpp:236, 242, 241`, `Router_Pop` | the pop, no longer a pile (37 % in session 16: that was the unprefetched miss's skid) |
+| 2.7 % + 1.6 % + 1.1 % + 1.0 % | `dict.hpp:229, 234, 232, 224` | the ring |
+| 1.3 % | `dict.hpp:215`, `cpu_relax()` | the spin on an empty inbox: a little starvation even here |
+| 0.9 % | `tools.hpp:92` | the second murmur |
+
+Two thirds of the dict thread is the probe loop and what its data-dependent exit costs; the levers of session 16
+stand (test a line of 8 slots at once, no per-slot branch; carry the hash; retire in place), and the run's
+second line is the one prefetch the ring does not issue.  The Speck at 13 % is the price of m = 40 with a
+900 GB dictionary: 5.5 % of the probes hit a genuine 40-bit collision and each one is a key schedule and an
+encryption -- `vfg` on a batch of candidates, or more check bits, would take most of it back.
+
+**The same dict thread alone on its core (`s95_160P`, 16.4 M probes/s)** has the same shape with the
+proportions shifted towards the compute: the probe loop and its skid (`:188, 145, 189, 144, 142, 143, 148`)
+56 % instead of 66 %, `is_good_pair`'s Speck **28 %** instead of 13 % (`Speck64128KeySchedule` 10.7 % alone),
+`Router_Pop` 3.3 %, the ring 7 %.  In cycles the Speck is the same 50 a point both ways (28 % of 190, 13 % of
+367): the SMT thread's extra cycles are all stall, on the probe's lines, which is what a busier DRAM looks like
+from inside the core.
+
+**Producer (159 SMT threads, next to a dict thread each, 18.7 M points/s).**  99.5 % in `run`.  The vector
+Speck (`double_speck64_problem.hpp:48-65, 137` and the AVX-512 intrinsics) about 35 %; the push -- the private
+line's write at `workers.hpp:161` (13.0 %, the L1D miss served by L2 of session 15), its neighbours
+`:158-164` (13 %) and the non-temporal stream copy of a full line into the block at `common.hpp:93` (6.0 %) --
+about 32 %; `murmur64` and the destination pick (`tools.hpp:92-96`, `producer.hpp:39-43`) about 20 %.  The
+producer's 164 cycles a point against its 56 of work do not show up as a spin: the waiting is the SMT sibling's
+share of the core (IPC 0.60 here, 0.90 alone at 95/160) and the memory stalls of the line write and the
+stream copy under a DRAM at 80-90 % load.  Alone on its core (`s95_160P`) the producer is half vector Speck
+(50 %), a fifth push (22 %: the line write 5.8 %, the stream copy 3.8 %, and **6.5 % in the free ring -- the CAS
+of `free_pop_many` at `workers.hpp:65` and `refill`'s spin at `:86`**, the wait for a block the receivers have
+not released), a fifth murmur and lane loop (22 %).
+
+**Service thread**: 81 % in `Router_Progress` (its own loop: `service.hpp:426`, the ring reads, the atomics),
+16 % in `MPI_Testsome` -- a spinner with one node, 1.0-1.2 cycles per thousand points routed, 5 % of a core.
+
+## 6. Switching the hardware prefetchers off (PrefetchControl, MSR C000_0108)
+
+Zen 4 exposes a per-core **PrefetchControl** MSR (`C000_0108`; bit 0 L1 stream, 1 L1 stride, 2 L1 region, 3 L2
+stream, 5 up/down; 1 = off; it reads 0 on the debian13 image, everything on).  `pf18.sh MASK` writes it on the
+512 CPUs through `/dev/cpu/*/msr` under `sudo-g5k` and reads it back; `pfbatch18.sh` runs the best team under a
+mask and restores 0 at exit.  Each run is 60 s of counters inside PROBE (about 110 s of it in all, +-0.01 G/s),
+FILL counters included:
+
+| PrefetchControl | PROBE, G points/s | vs default | dict thread, DRAM lines / probe | hw-prefetch L1D fills / probe | machine DRAM, G lines/s | FILL, G inserts/s |
+| --- | --- | --- | --- | --- | --- | --- |
+| 0x0, the defaults | 2.95 | | 1.46 | 0.40 | 5.90 | 2.10 |
+| **0x2f, everything off** | **3.06** | **+3.7 %** | 1.35 | 0 | 5.77 | 2.13 |
+| 0x4, L1 region off | 2.99 | +1.4 % | 1.38 | 0.21 | 5.71 | 2.11 |
+| 0x8, L2 stream off | 2.97 | +0.7 % | 1.48 | 0.41 | 6.08 | 2.12 |
+| 0x1, L1 stream off | 2.87 | **-2.7 %** | 1.48 | 0.42 | 5.85 | 2.10 |
+| 0x20, up/down off | 2.95 | 0 | 1.46 | 0.40 | 5.92 | 2.11 |
+
+**Everything off is 3.7 % faster.**  The L1 stream prefetcher earns its keep -- it is what reads the block
+stream ahead of `Router_Pop`, and losing it alone costs 2.7 % -- the region prefetcher wastes a fifth of a line a
+probe on neighbours of a random slot that nobody reads (+1.4 % without it), the L2 stream prefetcher's traffic
+never reaches the L1D counters but shows in the machine's DRAM count, and with all of them off the block stream
+comes in by demand (0.58 demand fills a probe instead of 0.37) and the machine still moves 2 % fewer lines for
+3.7 % more points.  **That is the DRAM-bound signature: fewer lines per probe, proportionally more probes**,
+which is the second confirmation, after section 3's 80-90 % of the random-access ceiling, that on 512 threads
+PROBE is bound by the memory system and not by the core.  On FILL the prefetchers make no difference (2.10-2.13).
+The MSR needs root and is per boot; it is a note for a BIOS setting, not a code lever.  The MSR was restored to 0
+on every CPU at the end (`phase3.out`), and the FILL-phase "all CPUs" lines of `stat18.py` can straddle the
+phase's end (`pf0x4`'s 3.38 GHz reading) and are not to be quoted.
+
+## What to change
+
+1. **The reference benchmark on grdix is now `--producers-per-node 159 --dicts-per-node 352 --prefetch 8` on
+   all 512 hardware threads, `--ram 900G`** (the pool is 28.8 GB at 159 senders; 960G no longer fits), 2.97 G
+   points/s in PROBE, 2.1 G inserts/s in FILL, 6.7 min per n = 40 round.  Without SMT, 95/160 (2.61).  The
+   63/192 of sessions 15-16 is 26 % below the best and on the producer-bound side once the receivers prefetch.
+   The plateau is broad (143-191 producers within 2 %), so the split need not be tuned to the unit.
+2. **On 512 threads PROBE is DRAM-bound at 1.46 lines a probe**, 5.9 G lines/s of fills plus 0.75 G/s of block
+   writes against a 7.6-7.8 G/s random-access ceiling, and the rate follows the lines per probe (section 6).  The
+   lever is **fewer DRAM lines per probe**: a line-aligned layout of 8-slot buckets makes a probe exactly one line
+   (no second line for the run that crosses: 0.2-0.3 demand lines a probe today), a compare of 8 slots at once
+   takes the run loop's 1.16 mispredicts and part of the 150 instructions with it, and the same layout spares
+   FILL its second line too.  Expected: 1.46 -> 1.25 lines a probe, up to +15 % PROBE if the DRAM stays the
+   wall.  Session 17 asked for the same thing from grvingt's side ("8-slot buckets or the 8-slot compare would
+   give fill 0.5 the fill 0.25 cost").
+3. **On 256 threads PROBE is latency-bound** (70 % of the ceiling, the dict thread's 8 outstanding prefetches
+   dividing a loaded latency), and there the dict thread's cycles matter: `is_good_pair`'s scalar Speck is 50
+   cycles a point (28 % of the dict thread alone on its core) for 5.5 % of probes -- more check bits, or a
+   vectorised batch of candidates, take most of it; the run's second line is the one prefetch the ring does not
+   issue.  Both are moot on 512 threads until the lines per probe come down.
+4. **The producers have slack at every team of the plateau**: 100 instructions a point, 56 cycles of work, 112 to
+   200 cycles spent.  Session 15's 21-cycle push is not on grdix's critical path any more; leave it.
+5. **FILL stays at 2.1 G inserts/s** for any team, SMT or prefetchers or not: 2.5 DRAM lines an insert plus the
+   write-back, both roles spinning.  Only the dictionary's layout can move it (item 2 takes the second line;
+   the dirty line per insert stays).
+6. **The hardware prefetchers cost 3.7 %** on this access pattern (all off is fastest; keep L1 stream if only one
+   is kept) -- a BIOS or per-boot root setting, not something the code does; noted, not recommended for the
+   library.
+7. **Method.**  (a) The live line's completed fraction over the elapsed time is the rate metric, at 60 s or more;
+   its 5-s and 10-s differences are quantised to 0.22 and 0.11 G/s and mislead.  (b) An n = 40 PROBE lasts 370 s
+   at this rate, and a `perf record -a` of 512 CPUs writing 107 MB to the NFS home took six minutes once
+   (`s159_352P`), so the counters that followed it straddled the phase's end: write `perf.data` to local disk,
+   or take the counters before the record.  (c) `perf report` over such a file runs on the node, never on the
+   frontend.  (d) Zen 4's `ls_{dmnd,hw_pf,sw_pf,any}_fills_from_sys.*` are the counters that say what a probe
+   costs the memory and who asked for it; the generic `cache-misses` (2.8 a point in session 15) counts something
+   else.  (e) `perf stat -A` per CPU, joined with the pinned threads' CPU lists, separates the two siblings'
+   roles.
+
+## Reproducing
+
+```bash
+# on the node, after the module loads (build/session18/setup18.sh builds and sets the sysctls)
+bash -l build/session18/batch18.sh                                    # the sweep, 12 splits, 30 s of PROBE each
+SPLITS="159/352 95/160 191/320 111/144 175/336 143/368" TAGSUF=L PROBE_S=60 STAT=1 bash -l build/session18/batch18b.sh
+SPLITS="159/352 95/160" TAGSUF=P PERF=1 STAT=1 FILLSTAT=1 PROBE_S=95 bash -l build/session18/batch18c.sh   # the profiles
+MASKS="0x0 0x2f 0x4 0x8 0x1 0x20" bash -l build/session18/pfbatch18.sh   # the prefetcher intervention, restores 0
+python3 build/session18/summ18.py s159_352L ...     # the rate table (light: fine on the frontend)
+python3 build/session18/stat18.py s159_352P         # the per-role counters; percpu18.py TAG [fill] per thread
+bash build/session18/report18.sh s159_352P          # perf report by symbol and source line per role -- ON THE NODE
+```
