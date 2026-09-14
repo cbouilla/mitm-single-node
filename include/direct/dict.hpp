@@ -178,15 +178,20 @@ public:
  */
 
 template <class Wrapper>
-inline void retire(const Wrapper &wrapper, Shared &shared, DirectDict &dict, u64 *ctr, vector<u64> &candidates, u64 h, u64 y)
+inline void retire(const Wrapper &wrapper, Shared &shared, DirectDict &dict, u64 *ctr, int phase, vector<u64> &candidates, u64 h, u64 y)
 {
-	dict.probe(h, candidates);
-	ctr[N_PROBE] += 1;
-	for (u64 x : candidates) {
-		ctr[N_COLLISIONS] += 1;
-		if (not wrapper.good(x, y))
-			continue;
-		shared.set_golden(x, y);
+	if (phase == FILL) {
+		dict.insert(h, y);
+		ctr[N_INSERT] += 1;
+	} else {
+		dict.probe(h, candidates);
+		ctr[N_PROBE] += 1;
+		for (u64 x : candidates) {
+			ctr[N_COLLISIONS] += 1;
+			if (not wrapper.good(x, y))
+				continue;
+			shared.set_golden(x, y);
+		}
 	}	
 }
 
@@ -195,7 +200,7 @@ template <class Wrapper>
 void dict_round(Router_thread &rt, const Wrapper &wrapper, Shared &shared, DirectDict &dict, u64 *ctr,
                 u64 round, int phase, int D)
 {
-	pair<u64,u64> ring[MAX_PREFETCH];    /* the points popped and prefetched but not yet retired */
+	pair<u64,u64> ring[MAX_PREFETCH];  /* the points popped and prefetched but not yet retired */
 	int head = 0;                      /* the oldest of them, the next one retired */
 	int n_pending = 0;                 /* how many wait: D once the ring is full */
 	vector<u64> candidates;
@@ -210,13 +215,8 @@ void dict_round(Router_thread &rt, const Wrapper &wrapper, Shared &shared, Direc
 			continue;
 		}
 		u64 hh = murmur64(h);          /* re-randomize the hash, to get rid of the skew */
-		if (phase == FILL) {           /* no prefetching in FILL: we hit the random-write ceiling */
-			dict.insert(hh, x);
-			ctr[N_INSERT] += 1;
-			continue;
-		}
 		if (D == 0) {
-			retire(wrapper, shared, dict, ctr, candidates, hh, x);
+			retire(wrapper, shared, dict, ctr, phase, candidates, hh, x);
 			continue;
 		}
         /* prefetching ring */
@@ -227,7 +227,7 @@ void dict_round(Router_thread &rt, const Wrapper &wrapper, Shared &shared, Direc
 			continue;
 		}
 		auto [hh_old, y_old] = ring[head];
-		retire(wrapper, shared, dict, ctr, candidates, hh_old, y_old);
+		retire(wrapper, shared, dict, ctr, phase, candidates, hh_old, y_old);
 		ring[head] = pair(hh, x);
 		head += 1;
 		if (head == D)
@@ -236,7 +236,7 @@ void dict_round(Router_thread &rt, const Wrapper &wrapper, Shared &shared, Direc
 
 	for (int i = 0; i < n_pending; i++) {   /* drain the prefect ring */
 		auto [hh, y] = ring[head];
-		retire(wrapper, shared, dict, ctr, candidates, hh, y);
+		retire(wrapper, shared, dict, ctr, phase, candidates, hh, y);
 		head += 1;
 		if (head == D)
 			head = 0;
