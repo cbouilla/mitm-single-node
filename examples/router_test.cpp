@@ -194,6 +194,9 @@ static void check_placement(const Router_thread &rt, const RouterArgs &a, Shared
 	int G = Router_num_groups(rt);
 	CHECK(G >= 1);
 	CHECK(sh.t_group[0] == -1);                 /* the service has no group */
+	CHECK(Router_size(rt, ROUTER_SENDER, ROUTER_NODE) == S);      /* one role asking about another */
+	CHECK(Router_size(rt, ROUTER_RECEIVER, ROUTER_NODE) == R);
+	CHECK(Router_size(rt, ROUTER_SERVICE, ROUTER_GLOBAL) == g_nodes);
 	std::vector<int> gs(G, 0);
 	std::vector<int> gr(G, 0);
 	for (int t = 1; t < nt; t++) {
@@ -247,6 +250,12 @@ static void run_config(const RouterArgs &a, const char *name, bool use_colors = 
 		Router_thread rt = Router_Init(role, group, MPI_COMM_WORLD, 42, &a.opts);
 		sh.t_group[tid] = Router_group(rt);
 		sh.t_cpu[tid] = sched_getcpu();
+		int per_node = (role == ROUTER_SERVICE) ? 1 : (role == ROUTER_RECEIVER ? R : S);
+		int mine = (role == ROUTER_SERVICE) ? 0 : li;                 /* what Router_rank must answer */
+		CHECK(Router_size(rt, role, ROUTER_NODE) == per_node);
+		CHECK(Router_size(rt, role, ROUTER_GLOBAL) == per_node * g_nodes);
+		CHECK(Router_rank(rt, ROUTER_NODE) == mine);
+		CHECK(Router_rank(rt, ROUTER_GLOBAL) == g_rank * per_node + mine);
 		#pragma omp barrier
 		if (tid == 0)
 			check_placement(rt, a, sh, use_colors);

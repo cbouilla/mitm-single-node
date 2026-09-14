@@ -29,7 +29,7 @@ struct Options {
 
 	/* direct */
 	double fill = 0.5;                        /* dictionary fill ratio: entries per round == fill * slots */
-	int prefetch = 16;                        /* points a dict thread holds between Router_Pop and the shard, their
+	int prefetch = 8;                         /* points a dict thread holds between Router_Pop and the shard, their
 	                                             slot prefetched as they come in.  0 == probe each as it comes */
 
 	/* PCS */

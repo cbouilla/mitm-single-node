@@ -32,7 +32,7 @@ numbered receiver threads across ranks, and it owns thread placement.
 ## Build
 
 ```bash
-cmake -S . -B build -DCMAKE_BUILD_TYPE=release -DCMAKE_CXX_FLAGS="-mno-avx512f" && make -C build
+cmake -S . -B build -DCMAKE_BUILD_TYPE=release -DCMAKE_CXX_FLAGS="-mno-avx512f" && make -C build -j
 ```
 
 Requires **MPI**, **OpenMP**, **OpenSSL** (headers; the DES example checks itself

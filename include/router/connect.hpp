@@ -359,5 +359,24 @@ inline int Router_num_groups(const Router_thread &rt)
 	return rt.node.plan.n_groups;
 }
 
+/* Any thread.  The threads of `role` on this node (ROUTER_NODE) or over every node (ROUTER_GLOBAL). */
+inline int Router_size(const Router_thread &rt, int role, int scope)
+{
+	int per_node = 1;                    /* the service: one per node, so its global size is the node count */
+	if (role == ROUTER_SENDER)
+		per_node = rt.node.S;
+	else if (role == ROUTER_RECEIVER)
+		per_node = rt.node.R;
+	return (scope == ROUTER_GLOBAL) ? per_node * rt.node.n_nodes : per_node;
+}
+
+/* Any thread.  Its rank among the threads of its own role, on this node or over every node (node by node). */
+inline int Router_rank(const Router_thread &rt, int scope)
+{
+	if (scope == ROUTER_NODE)
+		return rt.index;
+	return rt.node.rank * Router_size(rt, rt.role, ROUTER_NODE) + rt.index;
+}
+
 }
 #endif

@@ -90,7 +90,7 @@ static void raw_report(const Router_thread &rt)
 	MPI_Reduce(&xor_hash, &folded, 1, MPI_UINT64_T, MPI_BXOR, 0, MPI_COMM_WORLD);
 	if (rt.node.rank != 0)
 		return;
-	int nsend = rt.node.S * rt.node.n_nodes;
+	int nsend = Router_size(rt, ROUTER_SENDER, ROUTER_GLOBAL);
 	fmt::print("raw: {} senders generate {} pts/s without pushing ({:.1f} ns/point) | xor {:016x}\n",
 	           nsend, human_format((u64) total), 1e9 * nsend / total, folded);
 }
@@ -152,7 +152,7 @@ static void bench_report(const Router_thread &rt, const RouterArgs &a, int round
 	MPI_Reduce(mine, sum, 4, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
 	if (rt.node.rank != 0)
 		return;
-	int P = rt.node.n_nodes;
+	int P = Router_size(rt, ROUTER_SERVICE, ROUTER_GLOBAL);
 	double t = hi[3];
 	fmt::print("round {}: {:.2f}s | routed {} pts/s | per node: push {}/s ({:.0f}-{:.0f} M/s) pop {}/s "
 	           "net {} pts/s {:.2f} GB/s {} msgs/s {} blocks/s | {:.1f} ns/point | service {:.0f}% busy "

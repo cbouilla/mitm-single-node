@@ -7,32 +7,24 @@
 #include "router/router.hpp"
 #include "direct/params.hpp"
 
-/* The direct engine's producer: it evaluates the phase's function and pushes every image it gets. */
-
 namespace mitm::direct {
 
 /******************************** the producer thread ********************************/
 
-/*
- * A producer's phase: evaluate the phase's function on its own contiguous piece of the phase's span -- the
- * round's chunk while filling, the whole domain while probing -- vlen inputs at a time, push every image as
- * (murmur64(image), preimage) to the receiver the hash's low word names, then close.  The pieces of the
- * n_producers producers cut the span into equal parts, the same on every node, so the partition needs no
- * message; the hash spares the producer a 64-bit division per point.
- */
+/* push every image as(murmur64(image), preimage) to the receiver the hash's names */
 template <class Wrapper>
 void producer_round(Router_thread &rt, const Wrapper &wrapper, const Params &params, u64 *ctr, u64 round, int phase)
 {
 	constexpr int vlen = Wrapper::vlen;
-	const u64 n_recv = (u64) params.n_dicts;
+	const u64 n_recv = (u64) Router_size(rt, ROUTER_RECEIVER, ROUTER_GLOBAL);
 	u64 lo = 0;
 	u64 hi = params.domain;
 	if (phase == FILL) {
 		lo = round * params.per_round;
 		hi = std::min(lo + params.per_round, params.domain);
 	}
-	u64 p = (u64) (params.rank * params.S + rt.index);      /* this sender's rank among all producers */
-	u64 n_pieces = (u64) params.n_producers;
+	u64 p = (u64) Router_rank(rt, ROUTER_GLOBAL); 
+	u64 n_pieces = (u64) Router_size(rt, ROUTER_SENDER, ROUTER_GLOBAL);
 	u64 span = hi - lo;
 	u64 piece = span / n_pieces;
 	u64 extra = span % n_pieces;
@@ -48,7 +40,7 @@ void producer_round(Router_thread &rt, const Wrapper &wrapper, const Params &par
 		wrapper.veval(phase, x, y);
 		for (int k = 0; k < valid; k++) {
 			u64 h = murmur64(y[k]);
-			int dest = (int) (((h & 0xffffffffull) * n_recv) >> 32);
+		    int dest = (int) (((unsigned __int128) h * n_recv) >> 64);
 			Router_Push(h, x[k], dest, rt);
 		}
 		ctr[N_EVAL] += valid;

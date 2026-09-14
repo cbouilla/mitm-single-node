@@ -26,6 +26,9 @@ namespace mitm {
 
 /* router_role and ROUTER_GROUP_AUTO are defined in placement.hpp, which both this and RouterPlacement need */
 
+/* Router_size's and Router_rank's `scope`: over every node of the team, or this node alone */
+enum router_scope { ROUTER_GLOBAL = 0, ROUTER_NODE = 1 };
+
 /* Router_Stats layout */
 enum router_stat {
 	ROUTER_PUSHED, ROUTER_POPPED, ROUTER_SENT, ROUTER_RECV, ROUTER_LOCAL,

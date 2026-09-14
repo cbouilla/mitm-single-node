@@ -2,8 +2,10 @@
 #define MITM_PCS_CONTROL
 
 #include <mpi.h>
+#include <vector>
 
 #include "tools.hpp"
+#include "router/router.hpp"
 #include "pcs/params.hpp"
 #include "pcs/shared.hpp"
 
@@ -19,6 +21,10 @@ namespace mitm::pcs {
 
 class Control {
 	const Params &params;                           /* the round quota, the pacing and the communicator */
+	const Router_thread &rt;                        /* thread 0's handle: the node count, and which node this is */
+	std::vector<char> bsend_buf;                    /* the channel's own MPI_Bsend buffer, attached for the run */
+	void *prev_buf = NULL;                          /* the buffer that was attached before ours, put back at the end */
+	int prev_size = 0;                              /* ... and its size; 0 == there was none */
 	MPI_Request req_end_round = MPI_REQUEST_NULL;   /* every node: the controller's end-of-round */
 	MPI_Request req_report = MPI_REQUEST_NULL;      /* rank 0: one progress report as it lands */
 	MPI_Request req_solution = MPI_REQUEST_NULL;    /* rank 0: one node's golden pair */
@@ -38,15 +44,21 @@ public:
 	double round_start = 0;        /* wtime() when this round began */
 	double last_display = 0;       /* wtime() of the last live line */
 
-	Control(const Params &params) : params(params)
+	/* thread 0's, built once it holds its Router handle: the buffer attached and the receives posted here */
+	Control(const Params &params, const Router_thread &rt) : params(params), rt(rt)
 	{
 		for (int k = 0; k < REC_FOUND; k++) {
 			reported[k] = 0;
 			total[k] = 0;
 			prev[k] = 0;
 		}
+		/* room for rank 0's end-of-round to every node and a run of reports beside it: a send never waits */
+		MPI_Buffer_detach(&prev_buf, &prev_size);
+		size_t slots = 2 * (size_t) Router_size(rt, ROUTER_SERVICE, ROUTER_GLOBAL) + 64;
+		bsend_buf.resize(slots * (REC_FOUND * sizeof(u64) + MPI_BSEND_OVERHEAD));
+		MPI_Buffer_attach(bsend_buf.data(), (int) bsend_buf.size());
 		MPI_Irecv(NULL, 0, MPI_UINT64_T, 0, TAG_END_ROUND, params.mpi_comm, &req_end_round);
-		if (params.rank != 0)
+		if (Router_rank(rt, ROUTER_GLOBAL) != 0)
 			return;                /* nobody ever reports to us */
 		MPI_Irecv(report_buf, REC_FOUND, MPI_UINT64_T, MPI_ANY_SOURCE, TAG_REPORT, params.mpi_comm,
 		          &req_report);
@@ -100,7 +112,7 @@ public:
 			MPI_Bsend(msg, REC_FOUND, MPI_UINT64_T, 0, TAG_REPORT, params.mpi_comm);
 		}
 
-		if (params.rank != 0)
+		if (Router_rank(rt, ROUTER_GLOBAL) != 0)
 			return;
 
 		/*
@@ -131,13 +143,17 @@ public:
 		if (not found && reported[N_DP] < params.points_per_version)
 			return;
 		round_closed = true;
-		for (int d = 0; d < params.n_nodes; d++)
+		const int nodes = Router_size(rt, ROUTER_SERVICE, ROUTER_GLOBAL);
+		for (int d = 0; d < nodes; d++)
 			MPI_Bsend(NULL, 0, MPI_UINT64_T, d, TAG_END_ROUND, params.mpi_comm);
 	}
 
-	/* cancel the posted receives, on the master thread once the team is gone */
+	/* give the Bsend buffer back and cancel the posted receives: thread 0, after its last round */
 	void shutdown()
 	{
+		void *my_buf = NULL;
+		int my_size = 0;
+		MPI_Buffer_detach(&my_buf, &my_size);          /* waits for every message of ours to leave */
 		if (req_end_round != MPI_REQUEST_NULL) {
 			MPI_Cancel(&req_end_round);
 			MPI_Wait(&req_end_round, MPI_STATUS_IGNORE);
@@ -150,6 +166,8 @@ public:
 			MPI_Cancel(&req_solution);
 			MPI_Wait(&req_solution, MPI_STATUS_IGNORE);
 		}
+		if (prev_size > 0)
+			MPI_Buffer_attach(prev_buf, prev_size);
 	}
 };
 
