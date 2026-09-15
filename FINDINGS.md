@@ -3925,3 +3925,174 @@ Two lessons on the way.  **Never overwrite a running shell script** (bash reads 
 `mpirun`, and truncate the reference's log -- copy to a new name and `mv`).  And **`pkill -f` matches the shell
 that runs it** when the pattern's text is on that shell's command line: `pkill -f '[i]bsample[.]sh'` in one ssh,
 the `nohup bash ibsample.sh` in another.
+
+# Session 21 -- gros: the split on one node, then 64 nodes in one MPI job over 25 GbE
+
+2026-09-15, **gros** (Nancy): 1 x Xeon Gold 5220 (Cascade Lake, 2.2 GHz), 18 cores / 36 PU, one NUMA node, one
+24.8 MB L3, 93 GB, one 25 GbE port `eno1` (MTU 1500, `br0` bridged on it, 172.16.64.0/20).  One node first
+(gros-84, job 6927518, `oarsub -p gros --queue default -l nodes=1,walltime=1:30`), then **64 nodes in one MPI
+job** (gros-2 .. gros-87, job 6927528, `-l nodes=64,walltime=2:00 -r 13:05`; gros wants `--queue default`,
+unlike grdix and grvingt).  Commit `2220b0c` on `bench-gros` (fast-forwarded to `bench-grdix` = `fe7ae49` of
+`omp_reboot` plus sessions 14-20's FINDINGS), release build on the node, debian13, `module load openmpi/4.1.6
+hwloc/2.13.0 ucx/1.20.0` and `LD_LIBRARY_PATH` set to the Guix Open MPI (session 20's trap), `perf_event_paranoid
+= -1`, `numa_balancing = 0`.  The gros worktree had no `fmt` checkout: `git submodule update --init` first.
+
+**The question**: which team a gros node wants, what binds it alone, and what 64 of them deliver in one MPI job
+over the 25 GbE, against the wire's 3.1 GB/s a direction.
+
+**The run**: `double_speck64_demo --n 35 --ram 32G --producers-per-node P --dicts-per-node R --prefetch 8
+--nrounds 1` on the node (w = 4e9 slots, 2e9 inserts a round, `fill * w / 2^m` = 5.8 %; PROBE 2^35, 100-300 s),
+`--n 41` on 64 nodes (64x the slots, the same 5.8 %; 2^41 probes), `--n 36 / 37 / 39` at 2 / 4 / 16 nodes.  Open
+MPI 4.1.6 over TCP (`--mca pml ob1 --mca btl tcp,self,vader --mca btl_tcp_if_include 172.16.64.0/20 --mca
+btl_tcp_disable_family 6 --mca oob_tcp_if_include br0 --mca plm_rsh_no_tree_spawn 1`, one rank a host by
+`--map-by ppr:1:node`, session 8's IPv6 lesson carried over to 4.1.x's option names).  Scripts and logs in
+`build/session21/`: `run21.sh` / `run21m.sh` (one run, a memory-and-liveness guard on every host, the port's
+`tx_bytes` / `rx_bytes` / packets sampled every second by `ethsample.sh`), `batch21.sh` (the split sweep),
+`batch21m.sh` (the 64-node series), `summ21.py`, `live21.py`, `eth21.py`, `roles21.sh`, `waitprof21.sh`.
+
+**Metric**: as in session 20 -- the exact round report (ramp and drain in), the live line's 5-second plateau,
+and the port counters (10-second bins, plateau = median of the bins above half the peak; `eth21.py` prints the
+first hosts and the median / min / max over all of them).
+
+## Summary
+
+### One node: 11 producers and 24 dict threads, 0.33 G points/s
+
+| P / R | threads | FILL exact, G inserts/s | FILL plateau | PROBE exact, G points/s | PROBE plateau | blocks held back |
+| --- | --- | --- | --- | --- | --- | --- |
+| 3 / 14 | 18 | 0.16 | 0.17 | 0.17 | 0.16 | 2.6 K |
+| **5 / 12**, the best on the cores | 18 | 0.26 | 0.28 | **0.23** | 0.23 | 7 K |
+| 7 / 10 | 18 | 0.30 | 0.36 | 0.19 | 0.19 | 121 K |
+| 9 / 8 | 18 | 0.26 | 0.31 | 0.16 | 0.16 | 121 K |
+| 11 / 6 | 18 | 0.21 | 0.24 | 0.12 | 0.12 | 122 K |
+| 7 / 28 | 36 | 0.26 | 0.29 | 0.28 | 0.27 | 10 K |
+| 9 / 26 | 36 | 0.32 | 0.36 | **0.34** | 0.34 | 17 K |
+| **11 / 24** | 36 | **0.36** | **0.42** | **0.33** (0.33 on the repeat) | 0.33-0.34 | 55-68 K |
+| 15 / 20 | 36 | 0.33 | 0.39 | 0.29 | 0.30 | 121 K |
+| 19 / 16 | 36 | 0.33 | 0.40 | 0.22 | 0.25 | 121 K |
+| 23 / 12 | 36 | 0.30 | 0.36 | 0.20 | 0.19 | 121 K |
+
+**A gros node wants the 36 hardware threads: 11 producers and 24 dict threads, 0.33 G points/s in PROBE and 0.36
+G inserts/s in FILL, 43 % over the best team on the cores alone (5/12, 0.23).**  9/26 is the same PROBE (0.34)
+with a lower FILL.  The node is bound by its dict threads: a dict thread probes at a flat **19-20 M/s** with a core
+of its own (0.12 / 6 = 0.16 / 8 = 0.19 / 10 = 0.23 / 12) and **14 M/s** with a sibling on the core (0.33 / 24,
+0.29 / 20, 0.22 / 16), so a core with two dict threads does 28 M probes/s against 20 with one -- the latency-bound
+signature, as on grvingt (session 17), and unlike grdix's bandwidth wall.  A producer makes 31-38 M points/s with
+the push (46 M/s at 5/12, where five of them keep 12 dict threads fed; `--benchmark` says 71 M f/s a producer at 5
+and 55 at 11, dependent chains, without the Router).  At 11/24 both roles are saturated: the 30-second profiles
+(`p11_24`) put the dict threads at 97 % busy, a third of it on the slot's DRAM read (`dict.hpp:144`) and 10 % in
+`is_good_pair`'s Speck, 3 % in `Router_Pop`; the producers at 96 %, a quarter of it in `Router_Push`'s two
+stores into the private line (`workers.hpp:160-161`), 13 % hashing, the rest Speck, 3.6 % waiting for a block.
+The service thread at np 1 spins (63 % `Router_Progress`, 31 % `MPI_Testsome` over idle slots).
+
+### 64 nodes in one MPI job
+
+| run, 32G a node | np | n | FILL exact, G inserts/s (a node) | FILL plateau a node | PROBE exact, G points/s (a node) | PROBE plateau a node | wire, GB/s a node, tx / rx (median of the hosts) |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| smoke, 4/3, 1G, n 30 | 64 | 30 | 2.1 | -- | 1.2 | -- | -- |
+| 11/24, the single-node team | 64 | 41 | 2.97 (0.046) | 0.10 | 4.32 (0.068) | 0.08 | 1.44 / 1.42 |
+| **5/12** | 64 | 41 | 3.67 (0.057) | 0.10 | **5.64 (0.088)** | **0.10** | **1.71 / 1.70** |
+| 11/24 `--n-recv 256` (4 posted receives a peer) | 64 | 41 | **5.43 (0.085)** | -- | **5.66 (0.088)** | -- | 1.58 / 1.59 |
+| 11/24 `--block 65536` (1 MB messages) | 64 | 41 | 2.10 (0.033) | -- | 3.98 (0.062) | -- | 1.65 / 1.53, uneven (tx 1.43-1.96) |
+| **5/12 `--n-recv 256`**, the reference | 64 | 41 | **6.38 (0.100)** | -- | **6.58 (0.103)** | -- | **1.79 / 1.79** |
+| 5/12 | 2 | 36 | 0.29 (0.15) | -- | 0.30 (0.15) | -- | 1.28 / 1.28 |
+| 5/12 `--n-recv 64` | 16 | 39 | 1.69 (0.106) | -- | 1.68 (0.105) | -- | 1.83 / 1.81 |
+| 5/12 `--n-recv 256` over UCX's TCP (`--mca pml ucx`, `UCX_TLS=tcp,self,sm`) | 64 | 41 | not run: three launch failures, see 2 | | | | |
+| 5/12 `--n-recv 256`, repeat | 64 | 41 | 6.38 (0.100) | -- | 6.52 (0.102) | -- | 1.76 / 1.76 |
+| 3/6 `--n-recv 256`, ten threads of the 36 | 64 | 41 | 6.35 (0.099) | -- | 6.27 (0.098) | -- | 1.78 / 1.77 |
+
+**64 gros nodes in one MPI job run PROBE at 5.6 G points/s, 0.09-0.10 a node against 0.33 alone (30 %), and
+FILL at 3.7 G inserts/s (0.06 a node against 0.36).  The wire is not full: 1.7 GB/s each way a node, 55 % of the
+25 GbE.  What is full is the service thread: its CPU is 84 % in the kernel and 8 % in softirq with 0 % idle,
+copying the TCP stream in and out (43 % of its samples in the kernel's `copy_user`).  One thread's TCP work,
+about 1.7 GB/s a direction, is the ceiling of a gros node in a 64-node job**, and the team that respects it is
+the one that leaves the service thread its core: 5/12 on the 18 cores beats the node's own best team 11/24 by 30 %,
+because with 36 threads the placer puts a dict thread on the service thread's SMT sibling.
+
+## 1. The service thread is the node's ceiling at 64 nodes: TCP copies
+
+On gros-2 during the 5/12 run's PROBE, `/proc/stat` over 5 s: **cpu0, the service thread's, is 6 % user, 84 %
+system, 8 % softirq, 0 % idle**; the 17 worker CPUs are 95-100 % user (the dict threads and producers spin when
+starved), the other 18 hardware threads idle, and the machine as a whole is 46 % user, 2 % system, 1 % softirq,
+49 % idle.  The NIC's 30-odd `mlx5_comp` queues spread their interrupts over the CPUs (1 M packets/s each way at
+MTU 1500), so the receive-side softirq work lands on the workers' CPUs at 1-4 % each and costs the service thread
+little; what it pays is the copies.  `perf record -t` on that thread, user and kernel, 8 s of PROBE:
+
+| share | where |
+| --- | --- |
+| 42.7 % | `rep_movs_alternative`: the kernel's `copy_user`, `tcp_sendmsg` copying the block out of user memory and `tcp_recvmsg` copying the stream into the posted block |
+| 7.2 % | `clear_page_erms`, 0.5 % `prep_new_page`: page allocation and zeroing under the socket buffers |
+| 3.9 % | `__check_object_size`, 2.8 % `_copy_to_iter`, 1.7 % `__skb_datagram_iter`: the receive copy's bookkeeping |
+| 2.0 % | `pfn_to_dma_pte`, `intel_iommu_map_pages`, `dma_pte_clear_level`: the IOMMU mapping every skb for DMA (VT-d on, as on grvingt) |
+| 1.1 % + 0.6 % | `tcp_poll` / `sock_poll`: the TCP BTL polling 63 sockets; 0.6 % `nft_do_chain` (netfilter on every packet) |
+| 1.2 % | `memmove` in libc, 0.6 % `Router_Progress`: the Router's own share is nothing |
+
+IPC 0.59 (1.40 alone at np 1, where it spins).  Both directions carry 1.7 GB/s, so the thread moves 3.4 GB/s
+through `copy_user` and that is about half of its time; the rest is the TCP stack proper, per packet and per
+segment.  A pure MPI test on gros in session 8 (one thread a rank, 4 ranks, 1 MB messages) reached
+1.87-1.98 GB/s a host over the same path; the engine's service thread gets 1.7 with 63 peers and the blocks to
+place.
+
+**What follows** is that on TCP the fraction leaving the node barely matters: 2 / 4 / 16 nodes give
+0.15 a node at 2 nodes (1.28 GB/s each way on the one TCP stream to the one peer, half the points local) and 0.105 a node at 16 (1.83 GB/s, 15 streams), against 0.10 at 64 (63 streams, 1.79 GB/s): the per-node rate falls from 0.23 alone to 0.15 as soon as one peer exists and drifts down slowly with the peer count, the bytes a node moves rising from 1.3 to 1.8 GB/s a direction as the fraction leaving the node goes from 1/2 to 63/64.  The TCP wall is per node and per stream, not per wire.
+
+## 2. What the Router's knobs do here
+
+| PROBE at 64 nodes, exact, G points/s (a node) | | |
+| --- | --- | --- |
+| 11/24, defaults (32 posted receives, 262 KB messages, credit 4) | 4.32 (0.068) | the single-node team: a dict thread on the service thread's SMT sibling |
+| 5/12, defaults | 5.64 (0.088) | **+31 %**: the service thread's core to itself |
+| 11/24 `--n-recv 256` | 5.66 (0.088) | **+31 %**: four posted receives a peer instead of half of one (session 8's rule, still true) |
+| **5/12 `--n-recv 256`** | **6.58 (0.103)** | **+52 %**, the two together; FILL 6.38 (0.100), from 2.97 |
+| 11/24 `--block 65536` (1 MB messages) | 3.98 (0.062) | **-8 %**, FILL -29 %: 1 MB messages are a loss here (session 8's 2.5x was against the 65600 B message, 64 B into the rendezvous path; the default is 262 KB now), and the hosts' wire rates spread from 1.4 to 2.0 GB/s |
+| 5/12 `--n-recv 256` over UCX's TCP | not measured | `--mca pml ucx` with `UCX_TLS=tcp,self,sm`: the first attempt listed `pml` twice on the command line (Open MPI refuses), the second had `pml ucx` disqualify itself for want of an IB device (`pml_ucx_tls` / `pml_ucx_devices` filter TCP out by default), the third with both set to `any` and `UCX_NET_DEVICES=br0` died in `ucp_ep_create`: "Destination is unreachable" for some ranks.  Left for another session; the copies would be the same | |
+| 3/6 `--n-recv 256` | 6.27 (0.098) | -5 %: three producers and six dict threads carry 95 % of the rate; the other 26 hardware threads are not what a 64-node gros job lacks | |
+| 5/12 `--n-recv 256`, repeat | 6.52 (0.102) | the two identical runs differ by 1 % | |
+
+At 64 nodes a rank has 63 peers and 32 posted `MPI_ANY_SOURCE` receives: a peer whose message finds no receive
+posted waits for one, and with TCP the wait is a stream that stalls.  256 receives (4 a peer) is what the 25 GbE
+needs, as in session 8; it costs nothing on grdix (session 20).  The team matters only through the service
+thread's core: the dict threads are half idle at 5/12 (40 % of their cycles in `cpu_relax`, 11 % in `Router_Pop`
+on an empty inbox) and so are the producers (36 % `cpu_relax`, 16 % waiting for a block), which is why 12 dict
+threads and 5 producers are plenty for 0.10 G points/s -- the node alone needs 24 and 11 for 0.33.
+
+## 3. FILL
+
+FILL at 64 nodes is 0.10 a node on the plateau (3.7 G inserts/s in total), 28 % of the node alone, the same
+fraction as PROBE and for the same reason: the bytes a node must send and receive are the same in both phases
+(a FILL round is 2e9 inserts a node, a PROBE round 2^41 / 64 = 3.4e10 probes a node, both at 16 bytes a point),
+and the service thread carries them at the same 1.7 GB/s.  Session 20's grdix FILL question (a quarter lost with
+the wire at 61 %) does not arise where the transport is the wall in both phases.
+
+
+## What to change
+
+1. **A second service thread a node, or the network work split over two threads**, on TCP clusters: one thread's
+   `copy_user` at 1.7-1.8 GB/s a direction is the ceiling of a 64-node gros job, at 58 % of the wire, with 17 of
+   the 18 cores half idle.  Two threads (one per direction, or two peer sets) is the intervention; the placer must
+   then keep both cores free of siblings.
+2. **Fewer bytes a point on the wire** helps here as on grdix, and more: the cost is per byte copied, so 12 bytes
+   is +33 % and 8 bytes +100 % at 64 nodes.
+3. **`--n-recv` must follow the peer count** -- 4 a peer, 256 at 64 nodes -- on TCP; make it the default
+   (`4 * n_nodes`, floored at 32) rather than a knob to remember.
+4. **Keep 262 KB blocks**; 1 MB messages lose 8 % of PROBE and 29 % of FILL at 64 nodes on TCP, and halve grdix's
+   PROBE at 64 KB (session 20).  The block is right where it is.
+5. **On gros use 5/12 for multi-node runs and 11/24 alone**; and on every cluster the placer should leave the
+   service thread's SMT sibling empty when the team uses the second hardware thread (grdix -5 %, gros -31 %).
+6. **The IOMMU** costs the service thread 2 % here (VT-d mapping every skb); `iommu.passthrough=1` as on grvingt
+   (session 13) is a cheap 2 %, not the lever.  Jumbo frames (MTU 9000) would cut the per-packet part of the
+   TCP stack (1 M packets/s each way at MTU 1500) but not the copies; untested, the site's switches deciding.
+
+## Reproducing
+
+```bash
+oarsub -p gros --queue default --project cryptanalyse -l nodes=1,walltime=1:30 "sleep 6000"     # one node
+oarsub -p gros --queue default --project cryptanalyse -l nodes=64,walltime=2:00 -r "... 13:05:00" "sleep 7300"
+cd ~/mitm-gros && git submodule update --init && rm -rf build && \
+  module load openmpi/4.1.6 hwloc/2.13.0 ucx/1.20.0 && HWLOC_ROOT=/gnu/store/hl3isj962ghsvvxig6ls84mw54nfc917-hwloc-2.13.0-lib \
+  cmake -S . -B build -DCMAKE_BUILD_TYPE=release && make -C build -j36 double_speck64_demo
+cd build/session21 && ./batch21.sh                       # the split sweep on the node the job gave (nodes = that host)
+oarstat -f -j JOB | grep assigned_hostnames | sed "s/.*= //" | tr "+" "\n" | sed "s/.nancy.grid5000.fr//" > nodes64
+ssh gros-2 'cd ~/mitm-gros/build/session21 && ./batch21m.sh'    # mpirun runs from a reserved host
+python3 summ21.py TAG...; python3 live21.py 5 TAG...; python3 eth21.py TAG 10 4
+```
