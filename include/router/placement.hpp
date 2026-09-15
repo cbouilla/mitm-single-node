@@ -166,7 +166,9 @@ struct RouterPlacement {
 	}
 
 	/*
-	 * The pinned placement: the service on the first domain, then the receivers and the senders round-robined
+	 * The pinned placement: the service alone on a whole core of the first domain -- its SMT siblings stay empty,
+	 * since one service thread is the node's ceiling wherever the transport copies through the kernel, and a
+	 * sibling would take its issue slots --, then the receivers and the senders round-robined
 	 * over the domains on ONE cursor that starts after the service's domain, so that the two passes' remainders
 	 * do not stack up on the low domains (they did, and the team then doubled up cores at one end of the machine
 	 * while leaving cores idle at the other), each onto its domain's emptiest core (a full domain borrows
@@ -254,11 +256,20 @@ struct RouterPlacement {
 		std::vector<int> grp_recv(n_groups, 0);     /* receivers placed in each group so far, for least_filled */
 		std::vector<size_t> next_cpu(core_cpus.size(), 0);   /* each core's next free CPU */
 
-		int d0 = domain_order[0];                   /* the service: the first domain of the order, a core of its own */
+		int d0 = domain_order[0];                   /* the service: the first domain of the order, a whole core to itself */
 		int sk = emptiest_core(cache_cores[d0], core_cpus, next_cpu);
-		thread_cpu[0] = core_cpus[sk][next_cpu[sk]++];
+		thread_cpu[0] = core_cpus[sk][0];
+		next_cpu[sk] = core_cpus[sk].size();        /* the core is full: no worker ever lands on the service's siblings */
 		thread_domain[0] = d0;
 		thread_numa[0] = numa_of_cpu[thread_cpu[0]];
+
+		size_t room = 0;                            /* CPUs left for the workers */
+		for (size_t k = 0; k < core_cpus.size(); k++)
+			room += core_cpus[k].size() - next_cpu[k];
+		if (room < (size_t) (n_threads - 1))
+			errx(1, "Router: rank %d: %d CPUs in the affinity mask, %zu of them the service thread's core, %zu left for"
+			        " %d workers; use fewer threads, a larger mask (--bind-to none, --map-by slot:PE=n) or pin = false",
+			     rank, n_avail_cpu, core_cpus[sk].size(), room, n_threads - 1);
 
 		int dc = n_domains > 1 ? 1 : 0;             /* the cursor, a position in domain_order: the service took the
 		                                             * core it starts on */
@@ -314,7 +325,7 @@ struct RouterPlacement {
 			rmin = std::min(rmin, (int) group_receivers[g].size());
 			rmax = std::max(rmax, (int) group_receivers[g].size());
 		}
-		printf("; %d group(s) of %d..%d senders and %d..%d receivers, threads pinned\n",
+		printf("; %d group(s) of %d..%d senders and %d..%d receivers, threads pinned, the service alone on its core\n",
 		       n_groups, smin, smax, rmin, rmax);
 	}
 

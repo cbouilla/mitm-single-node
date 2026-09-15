@@ -301,7 +301,9 @@ the launcher and the OpenMP runtime.
 When
 .I opts->pin
 is true the Router must own that set: it refuses a set with fewer CPUs than the
-team has threads, and a set that overlaps another rank's on the same host.
+team needs -- one per thread, plus the SMT siblings of the service thread's
+core, which stay empty -- and a set that overlaps another rank's on the same
+host.
 Run with
 .BR "\-\-bind\-to none" ,
 give each rank disjoint CPUs
@@ -319,7 +321,10 @@ names.
 If the CPUs share no such cache, the whole set is one domain.
 Then:
 .IP 1. 4
-The service thread takes a core of the first domain, alone.
+The service thread takes a core of the first domain and keeps the whole core:
+no thread is ever placed on its SMT siblings.
+One service thread is the node's ceiling wherever the transport copies
+through the kernel, and a sibling would take its issue slots.
 .IP 2. 4
 The receivers, then the senders, are dealt round-robin over the domains, one
 cursor for the whole team starting after the service thread's domain.
@@ -331,7 +336,7 @@ Each takes the emptiest core of its domain, the one with the fewest threads
 placed so far; when every core of the domain is taken, the emptiest core of the
 whole set.
 Every thread thus has a core of its own while cores last, and SMT siblings fill
-up only after that.
+up only after that, the service thread's excepted.
 .IP 3. 4
 Every thread pins itself to its CPU and asks the kernel where it runs.
 If any thread is not where the plan put it,

@@ -321,7 +321,7 @@ struct PlacementCase {
 static const PlacementCase PLACEMENT_CASES[] = {
 	{"node:2 l3:16 core:8 pu:2", 2, 32, 256, 512,  71, 184, 16},   /* the EPYC whose roles the placer skewed */
 	{"node:2 l3:2 core:4 pu:1",  2,  4,  16,  16,   6,   9, 16},
-	{"node:2 l3:2 core:4 pu:2",  2,  4,  16,  32,  20,  11,  2},   /* a team on every CPU, groups within a domain */
+	{"node:2 l3:2 core:4 pu:2",  2,  4,  16,  32,  20,  10,  2},   /* every CPU but the service's sibling, groups within a domain */
 	{"node:4 l3:2 core:4 pu:2",  4,  8,  32,  64,  13,  21, 16},   /* four NUMA nodes, more threads than cores */
 	{"node:1 l3:4 core:4 pu:2",  1,  4,  16,  32,  17,   7,  4},   /* one NUMA node: the order stays the domains' */
 };
@@ -351,7 +351,8 @@ static int spread(const std::vector<int> &cnt)
 }
 
 /*
- * The pinned plan: a CPU of its own for every thread and a core of its own while cores last, the whole team
+ * The pinned plan: a CPU of its own for every thread, a core of its own while cores last and the service's core
+ * holding the service alone, the whole team
  * spread over the domains, and -- what the domain order is for -- every role spread over the NUMA nodes, not
  * just the team as a whole.  The machines are regular, so every one of those is a round-robin deal: +- 1.
  */
@@ -376,6 +377,7 @@ static void check_plan(const RouterPlacement &p, const PlacementCase &c)
 	}
 	for (int cpu = 0; cpu < c.n_cpu; cpu++)
 		CHECK(per_cpu[cpu] <= 1);
+	CHECK(per_core[p.thread_cpu[0] / pu_per_core] == 1);   /* nothing shares the service thread's core */
 	if (nt <= c.n_core)                         /* SMT siblings fill up only once every core is taken */
 		for (int k = 0; k < c.n_core; k++)
 			CHECK(per_core[k] <= 1);
@@ -392,10 +394,13 @@ static void check_plan(const RouterPlacement &p, const PlacementCase &c)
 	std::vector<int> cnt;                       /* the team, then each role on its own, over the NUMA nodes */
 	count_by_numa(p, -1, cnt);
 	CHECK(spread(cnt) <= 1);
+	int tol = (nt + pu_per_core - 1 >= c.n_cpu) ? 2 : 1;   /* a team filling every CPU but the service's idle
+	                                                        * siblings: its node has that many PUs fewer for the
+	                                                        * workers, and one role's deal is off by one more */
 	count_by_numa(p, ROUTER_RECEIVER, cnt);
-	CHECK(spread(cnt) <= 1);
+	CHECK(spread(cnt) <= tol);
 	count_by_numa(p, ROUTER_SENDER, cnt);
-	CHECK(spread(cnt) <= 1);
+	CHECK(spread(cnt) <= tol);
 }
 
 /*
