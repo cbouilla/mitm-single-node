@@ -159,6 +159,8 @@ static void check_round(const Router_thread &rt, const RouterArgs &a, Shared &sh
 	}
 	CHECK(st[ROUTER_PUSHED] == local_pushed);
 	CHECK(st[ROUTER_POPPED] == local_popped);
+	CHECK(st[ROUTER_ELAPSED] > 0);
+	CHECK(st[ROUTER_BUSY] <= st[ROUTER_ELAPSED]);     /* both the service's own stamps: exact */
 
 	std::vector<u64> tot_sent(F, 0);
 	std::vector<u64> tot_got(F, 0);
@@ -174,11 +176,21 @@ static void check_round(const Router_thread &rt, const RouterArgs &a, Shared &sh
 	CHECK(tot[ROUTER_BYTES_SENT] == tot[ROUTER_BYTES_RECV]);
 	for (int d = 0; d < F; d++)
 		CHECK(tot_sent[d] == tot_got[d]);
+	double send_wait;                        /* share of the round the senders waited for a block */
+	double recv_wait;                        /* share the receivers had nothing to pop */
+	double busy;                             /* share the service spent in turns that moved something */
+	const char *limit = Router_Bottleneck(tot, rt, &send_wait, &recv_wait, &busy);
+	if (a.check_limit) {                     /* dawdling receivers over an exhausted pool: the senders wait */
+		CHECK(send_wait > 0.5);
+		CHECK(strcmp(limit, "receivers") == 0);
+	}
 	if (a.opts.verbose)
 		printf("  round %d: pushed %" PRIu64 " popped %" PRIu64 " local %" PRIu64 " net %" PRIu64
-		       " msgs %" PRIu64 " blocks %" PRIu64 " turns %" PRIu64 " (%" PRIu64 " idle)\n",
+		       " msgs %" PRIu64 " blocks %" PRIu64 " turns %" PRIu64 " (%" PRIu64 " idle) | wait: senders %.1f%%"
+		       " receivers %.1f%%, service %.1f%% busy --> %s\n",
 		       round, tot[ROUTER_PUSHED], tot[ROUTER_POPPED], tot[ROUTER_LOCAL], tot[ROUTER_SENT],
-		       tot[ROUTER_MSGS_SENT], tot[ROUTER_BLOCKS], tot[ROUTER_TURNS], tot[ROUTER_IDLE_TURNS]);
+		       tot[ROUTER_MSGS_SENT], tot[ROUTER_BLOCKS], tot[ROUTER_TURNS], tot[ROUTER_IDLE_TURNS],
+		       100. * send_wait, 100. * recv_wait, 100. * busy, limit);
 }
 
 /* rank-local, on thread 0 after Init: the plan the Router built for this node -- the group ids and the
@@ -309,7 +321,7 @@ struct PlacementCase {
 static const PlacementCase PLACEMENT_CASES[] = {
 	{"node:2 l3:16 core:8 pu:2", 2, 32, 256, 512,  71, 184, 16},   /* the EPYC whose roles the placer skewed */
 	{"node:2 l3:2 core:4 pu:1",  2,  4,  16,  16,   6,   9, 16},
-	{"node:2 l3:2 core:4 pu:2",  2,  4,  16,  32,  20,  11,  2},   /* a team on every CPU, groups within a domain */
+	{"node:2 l3:2 core:4 pu:2",  2,  4,  16,  32,  20,  10,  2},   /* every CPU but the service's sibling, groups within a domain */
 	{"node:4 l3:2 core:4 pu:2",  4,  8,  32,  64,  13,  21, 16},   /* four NUMA nodes, more threads than cores */
 	{"node:1 l3:4 core:4 pu:2",  1,  4,  16,  32,  17,   7,  4},   /* one NUMA node: the order stays the domains' */
 };
@@ -339,7 +351,8 @@ static int spread(const std::vector<int> &cnt)
 }
 
 /*
- * The pinned plan: a CPU of its own for every thread and a core of its own while cores last, the whole team
+ * The pinned plan: a CPU of its own for every thread, a core of its own while cores last and the service's core
+ * holding the service alone, the whole team
  * spread over the domains, and -- what the domain order is for -- every role spread over the NUMA nodes, not
  * just the team as a whole.  The machines are regular, so every one of those is a round-robin deal: +- 1.
  */
@@ -364,6 +377,7 @@ static void check_plan(const RouterPlacement &p, const PlacementCase &c)
 	}
 	for (int cpu = 0; cpu < c.n_cpu; cpu++)
 		CHECK(per_cpu[cpu] <= 1);
+	CHECK(per_core[p.thread_cpu[0] / pu_per_core] == 1);   /* nothing shares the service thread's core */
 	if (nt <= c.n_core)                         /* SMT siblings fill up only once every core is taken */
 		for (int k = 0; k < c.n_core; k++)
 			CHECK(per_core[k] <= 1);
@@ -380,10 +394,13 @@ static void check_plan(const RouterPlacement &p, const PlacementCase &c)
 	std::vector<int> cnt;                       /* the team, then each role on its own, over the NUMA nodes */
 	count_by_numa(p, -1, cnt);
 	CHECK(spread(cnt) <= 1);
+	int tol = (nt + pu_per_core - 1 >= c.n_cpu) ? 2 : 1;   /* a team filling every CPU but the service's idle
+	                                                        * siblings: its node has that many PUs fewer for the
+	                                                        * workers, and one role's deal is off by one more */
 	count_by_numa(p, ROUTER_RECEIVER, cnt);
-	CHECK(spread(cnt) <= 1);
+	CHECK(spread(cnt) <= tol);
 	count_by_numa(p, ROUTER_SENDER, cnt);
-	CHECK(spread(cnt) <= 1);
+	CHECK(spread(cnt) <= tol);
 }
 
 /*
@@ -559,8 +576,6 @@ int main(int argc, char **argv)
 	MPI_Comm_size(MPI_COMM_WORLD, &g_nodes);
 	RouterArgs a;
 	router_parse(argc, argv, a);
-	if (a.opts.dests_per_node != 0)
-		errx(1, "router_test: --dests is for the bench, the checks assume real destinations");
 	a.opts.verbose = a.opts.verbose && g_rank == 0;
 	bool all = a.test == "all";
 
@@ -583,7 +598,6 @@ int main(int argc, char **argv)
 		c.opts.swc_linesize = 4;
 		c.opts.n_recv = 2;
 		c.opts.inbox_blocks = 4;
-		c.opts.sweep_blocks = 2;
 		c.points = a.points / 5;
 		run_config(c, "tiny");
 	}
@@ -629,6 +643,17 @@ int main(int argc, char **argv)
 		c.slow_recv = true;
 		c.points = a.points / 20;
 		run_config(c, "slow_recv");
+	}
+	if (all || a.test == "limits") {  /* tiny blocks exhaust the pool and dawdling receivers hold them: the senders wait */
+		RouterArgs c = a;
+		c.opts.block_points = 8;
+		c.opts.swc_linesize = 4;
+		c.opts.n_recv = 2;
+		c.opts.inbox_blocks = 4;
+		c.points = a.points / 5;
+		c.slow_recv = true;
+		c.check_limit = true;
+		run_config(c, "limits");
 	}
 	if (all || a.test == "groups") {
 		RouterArgs c = a;

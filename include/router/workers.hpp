@@ -75,15 +75,21 @@ inline u32 Router_node::free_pop_many(u32 k, u32 *out, u32 floor)
 
 /*
  * A sender's cache filled off the free ring, a batch in one CAS, every block zeroed here rather than at its
- * install: it waits for at least one block, holding nothing meanwhile, so that no point is ever lost.
+ * install: it waits for at least one block, holding nothing meanwhile, so that no point is ever lost.  The wait
+ * is timed into WAIT_SEND: a sender starved of blocks is the one way the Router holds a producer back.
  * Reached from Router_Init (the sender's constructor) and Router_Push, by the sealer whose install emptied it.
  */
 inline void Router_node::refill(Router_thread &s)
 {
 	u32 n = free_pop_many(ROUTER_BATCH, s.cache, n_nodes > 1 ? (u32) opt.n_recv : 0);
-	while (n == 0) {
-		cpu_relax();
-		n = free_pop_many(ROUTER_BATCH, s.cache, n_nodes > 1 ? (u32) opt.n_recv : 0);
+	if (n == 0) {
+		s.wait_since = (u64) (wtime() * 1e9);
+		while (n == 0) {
+			cpu_relax();
+			n = free_pop_many(ROUTER_BATCH, s.cache, n_nodes > 1 ? (u32) opt.n_recv : 0);
+		}
+		s.ctr[ROUTER_WAIT_SEND] += (u64) (wtime() * 1e9) - s.wait_since;
+		s.wait_since = 0;
 	}
 	for (u32 i = 0; i < n; i++)
 		zero_valid(s.cache[i]);
@@ -174,6 +180,8 @@ inline void Router_Push(u64 a, u64 b, int d, Router_thread &rt)
  * Sender.  Append every partial line's points to its destination's closing buffer, contiguous with the other
  * senders' thanks to the offset a fetch_add hands out, then announce; nothing more from this sender until
  * Router_Reset.  Nothing partial ever enters a block before the F-scan copies the closing buffers into blocks.
+ * From here to the round's end the sender is idle, and that is its wait too: a round that goes on once every
+ * sender has closed is the receivers' to finish.
  */
 inline void Router_Close(Router_thread &rt)
 {
@@ -188,6 +196,7 @@ inline void Router_Close(Router_thread &rt)
 		count = 0;
 	}
 	rt.closed.store_release(1);
+	rt.wait_since = (u64) (wtime() * 1e9);   /* closed while the round goes on: Router_Stats counts it up to its call */
 }
 
 
@@ -195,8 +204,9 @@ inline void Router_Close(Router_thread &rt)
 
 /*
  * Receiver.  The next block the inbox names, to be read in place: where its points are, two u64 each (key then
- * val), and how many; 0 and NULL when nothing is there.  One block out at a time -- Router_Release gives it back,
- * and a second Grab before that is a bug, not a queue.  Grab/Release and Router_Pop do not mix on one receiver.
+ * val), and how many; 0 and NULL when nothing is there, and the time from that to the next block is the
+ * receiver's wait, WAIT_RECV.  One block out at a time -- Router_Release gives it back, and a second Grab before
+ * that is a bug, not a queue.  Grab/Release and Router_Pop do not mix on one receiver.
  */
 inline size_t Router_Grab(const u64 **pts, Router_thread &rt)
 {
@@ -204,8 +214,14 @@ inline size_t Router_Grab(const u64 **pts, Router_thread &rt)
 		errx(1, "Router_Grab: a block is out already");
 	RouterBlockMsg e;
 	if (not rt.inbox.pop(e)) {
+		if (rt.wait_since == 0)
+			rt.wait_since = (u64) (wtime() * 1e9);
 		*pts = NULL;
 		return 0;
+	}
+	if (rt.wait_since != 0) {
+		rt.ctr[ROUTER_WAIT_RECV] += (u64) (wtime() * 1e9) - rt.wait_since;
+		rt.wait_since = 0;
 	}
 	Router_node &rn = rt.node;
 	rt.cur_blk = e.blk;
@@ -247,12 +263,19 @@ inline bool Router_Pop(u64 *a, u64 *b, Router_thread &rt)
 }
 
 /* Receiver.  Nothing can arrive any more and nothing is left to read, a block out included: the flag first, then
- * emptiness, so that a block pushed between the two reads is still popped. */
+ * emptiness, so that a block pushed between the two reads is still popped.  The round's last wait ends here, no
+ * block coming to end it. */
 inline bool Router_Test_drained(Router_thread &rt)
 {
 	if (rt.node.input_closed.load_acquire() == 0)
 		return false;
-	return rt.cur_blk == ROUTER_NONE && rt.inbox.empty();
+	if (rt.cur_blk != ROUTER_NONE || not rt.inbox.empty())
+		return false;
+	if (rt.wait_since != 0) {
+		rt.ctr[ROUTER_WAIT_RECV] += (u64) (wtime() * 1e9) - rt.wait_since;
+		rt.wait_since = 0;
+	}
+	return true;
 }
 
 }

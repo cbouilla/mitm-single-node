@@ -63,7 +63,8 @@ static void banner(const Wrapper &wrapper, const Params &params, u64 seed)
 	fflush(stdout);
 }
 
-/* the live one-line refresh, from the progress reports so far: rank 0's, and approximate on purpose */
+/* the live one-line refresh, from the progress reports so far: rank 0's, and approximate on purpose; it ends
+   with the Router's verdict on what limits the round, from the same reports */
 static void display(const Router_thread &rt, const Params &params, const u64 reported[], double delta, u64 nround)
 {
 	u64 ndp = reported[N_DP];
@@ -71,13 +72,19 @@ static void display(const Router_thread &rt, const Params &params, const u64 rep
 	const int walkers = Router_size(rt, ROUTER_SENDER, ROUTER_GLOBAL);
 	const int dicts = Router_size(rt, ROUTER_RECEIVER, ROUTER_GLOBAL);
 	const int nodes = Router_size(rt, ROUTER_SERVICE, ROUTER_GLOBAL);
+	double send_wait;                      /* share of the round the walkers waited for a block */
+	double recv_wait;                      /* share the dict threads had nothing to pop */
+	double busy;                           /* share the service spent in turns that moved something */
+	const char *limit = Router_Bottleneck(reported + REC_ROUTER, rt, &send_wait, &recv_wait, &busy);
 	print("\rRound {}:  {:.1f}s ({:.1f}%, ETA {:.1f}s).  {:.2f}*w #DP.  {} #f/s per walker.  "
-	      "{} probe/s per dict thread.  node-->{}B/s   ", nround + 1, delta, 100. * completion,
+	      "{} probe/s per dict thread.  node-->{}B/s.  wait: senders {:5.1f}% receivers {:5.1f}%, "
+	      "service {:5.1f}% busy --> {:<15}   ", nround + 1, delta, 100. * completion,
 	      (completion > 0) ? delta * (1 - completion) / completion : 0.,
 	      (double) ndp / params.w,
 	      human_format((double) ndp / params.theta / walkers / delta),
 	      human_format((double) reported[N_PROBE] / dicts / delta),
-	      human_format((double) reported[REC_ROUTER + ROUTER_BYTES_SENT] / nodes / delta));
+	      human_format((double) reported[REC_ROUTER + ROUTER_BYTES_SENT] / nodes / delta),
+	      100. * send_wait, 100. * recv_wait, 100. * busy, limit);
 	fflush(stdout);
 }
 
@@ -102,6 +109,12 @@ static void round_report(const Router_thread &rt, const Params &params, const u6
 	      std::log2((double) (total[N_EVAL] ? total[N_EVAL] : 1)),
 	      human_format((double) r[N_EVAL] / walkers / delta),
 	      human_format((double) r[REC_ROUTER + ROUTER_BYTES_SENT] / nodes / delta));
+	double send_wait;                      /* share of the round the walkers waited for a block */
+	double recv_wait;                      /* share the dict threads had nothing to pop */
+	double busy;                           /* share the service spent in turns that moved something */
+	const char *limit = Router_Bottleneck(r + REC_ROUTER, rt, &send_wait, &recv_wait, &busy);
+	print("            LIMITED BY {}:  senders waited {:.1f}% of the round, receivers {:.1f}%, the service was "
+	      "busy {:.1f}%\n", limit, 100. * send_wait, 100. * recv_wait, 100. * busy);
 
 	if (ndp > 0) {
 		double avglen = (double) r[N_POINTS_TRAILS] / ndp;

@@ -54,7 +54,6 @@ static void usage(const char *argv0)
 	printf("  --swc N          points a producer accumulates per destination.  0 == auto\n");
 	printf("  --n-recv N       MPI receives the Router keeps posted.  Default: 32\n");
 	printf("  --inbox N        blocks that may wait for one dict thread.  Default: 64\n");
-	printf("  --sweep N        blocks the service thread ships per turn.  Default: 256\n");
 	printf("  --credit N       blocks in flight to one peer node at most.  Default: 4\n");
 	printf("\n");
 	printf("  --difficulty T   PCS: proportion of distinguished points, in (0, 1).  Default: auto\n");
@@ -69,7 +68,7 @@ static void usage(const char *argv0)
 /* the Router's and the engine's knobs go into `opts`, the driver's own into `drv` */
 static void process_command_line_options(int argc, char **argv, Options &opts, Driver &drv)
 {
-	enum {OPT_ENGINE = 998, OPT_FILL = 999, OPT_BLOCK = 1000, OPT_SWC, OPT_NRECV, OPT_INBOX, OPT_SWEEP,
+	enum {OPT_ENGINE = 998, OPT_FILL = 999, OPT_BLOCK = 1000, OPT_SWC, OPT_NRECV, OPT_INBOX,
 	      OPT_CREDIT, OPT_GROUP, OPT_CHUNK, OPT_CACHE_LEVEL, OPT_NO_BIND, OPT_DP_LEN_BITS, OPT_BENCHMARK,
 	      OPT_QUIET, OPT_PREFETCH, OPT_HELP};
 
@@ -91,7 +90,6 @@ static void process_command_line_options(int argc, char **argv, Options &opts, D
 		{"swc",                required_argument, NULL, OPT_SWC},
 		{"n-recv",             required_argument, NULL, OPT_NRECV},
 		{"inbox",              required_argument, NULL, OPT_INBOX},
-		{"sweep",              required_argument, NULL, OPT_SWEEP},
 		{"credit",             required_argument, NULL, OPT_CREDIT},
 		{"group",              required_argument, NULL, OPT_GROUP},
 		{"chunk",              required_argument, NULL, OPT_CHUNK},
@@ -123,7 +121,6 @@ static void process_command_line_options(int argc, char **argv, Options &opts, D
 		case OPT_SWC:            opts.router.swc_linesize = human_parse(optarg);  break;
 		case OPT_NRECV:          opts.router.n_recv = std::stoi(optarg);      break;
 		case OPT_INBOX:          opts.router.inbox_blocks = std::stoi(optarg); break;
-		case OPT_SWEEP:          opts.router.sweep_blocks = std::stoi(optarg); break;
 		case OPT_CREDIT:         opts.router.credit = std::stoi(optarg);      break;
 		case OPT_GROUP:          opts.router.group_size = std::stoi(optarg);  break;
 		case OPT_CHUNK:          opts.chunk_size = std::stoull(optarg);       break;
