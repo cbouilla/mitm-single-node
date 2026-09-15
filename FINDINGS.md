@@ -3674,3 +3674,254 @@ python3 build/session18/summ18.py s159_352L ...     # the rate table (light: fin
 python3 build/session18/stat18.py s159_352P         # the per-role counters; percpu18.py TAG [fill] per thread
 bash build/session18/report18.sh s159_352P          # perf report by symbol and source line per role -- ON THE NODE
 ```
+
+# Session 20 -- four grdix nodes over HDR200: PROBE is the wire at 16 bytes a point, FILL loses a quarter to the pool
+
+2026-09-15, **grdix-4, -5, -6, -7** (each 2 x EPYC 9754, 256 cores / 512 PU, 2 NUMA nodes, 1003 GB; one
+Mellanox HDR200 port `ibp66s0`, 4X HDR = 200 Gb/s = 25 GB/s a direction, MTU 4096, fw 20.43.2566), job 6927307,
+`oarsub -l {cluster='grdix'}/nodes=4,walltime=3:0:0 -q production`.  Commit `b13c3db` on `bench-grdix` =
+`fe7ae49` of `omp_reboot` plus session 18's FINDINGS; the same release binary as session 18 (2026-09-14 22:40).
+debian13, `module load openmpi/4.1.6 hwloc/2.13.0 ucx/1.20.0` (Guix Open MPI 4.1.6, UCX 1.20.0, transports
+`rc_mlx5`/`dc_mlx5`), `perf_event_paranoid = -1` on grdix-5, the profiled node.
+
+**The question**: the direct engine on several nodes for the first time on grdix.  Starting from session 18's
+best team on the cores alone, 95 producers and 160 dict threads a node, what does a 4-node run deliver per node
+against a node alone, and what binds it -- the wire, the service thread, the dict threads, the Router's flow
+control?
+
+**The run**: `double_speck64_demo --n 42 --ram 900G --producers-per-node 95 --dicts-per-node 160 --prefetch 8
+--nrounds 1`, one rank per host, `--nrounds 1` so that the run ends by itself after round 0's PROBE with the
+exact round report.  Session 18's problem-size hygiene keeps `fill * w / 2^m` at 5 %: four nodes hold four
+times the slots, so n goes from 40 to 42 (FILL 2.25e11 inserts = 2^37.71, PROBE 2^42, a 10-minute round).  The
+sweeps run at 225G a node with n = 38 / 39 / 40 for 1 / 2 / 4 nodes (5.1 % everywhere, a 3-minute round).
+Open MPI over UCX on the HDR port:
+
+```
+mpirun -np 4 --npernode 1 -H grdix-4,grdix-5,grdix-6,grdix-7 --bind-to none -x LD_LIBRARY_PATH -x PATH \
+    --mca pml ucx -x UCX_NET_DEVICES=ibp66s0:1 --mca btl ^openib --mca oob_tcp_if_include br0 ...
+```
+
+with `LD_LIBRARY_PATH` set to the Guix Open MPI's `lib` by hand: **the module leaves it empty and the demo has no
+RUNPATH for `libmpi`, so without it the binary built against 4.1.6 loads debian13's `libopenmpi40` 5.0.7** (it
+happens to run at np 1, which is how session 18 never saw it).  Scripts and logs in `build/session20/`: `run20.sh`
+(one run over the first NP hosts of `nodes`, a memory-and-liveness guard on every host before it, a per-second
+sample of every host's `port_xmit_data` / `port_rcv_data` / `port_xmit_wait` through `ibsample.sh`), `batch20.sh`
+(the series), `summ20.py` (the exact round reports), `live20.py` (the plateau rates), `ib20.py` (the wire),
+`roles20.sh` / `waitprof20.sh` / `waitprofF20.sh` (perf per role on one node, in PROBE or in FILL).
+
+**Metric**: three, and they differ on purpose.  The **exact round report** gives the phase's time and its
+2^k evaluations, ramp and drain included.  The **plateau** is the live line's completed fraction over 5-second
+windows, the median over the middle 60 % of the phase (`live20.py`; the fraction has one decimal, so a 5 s window
+of an n = 42 phase is quantised to +-11 % and the median over 60 windows is what one reads, +-3 % at n = 40).
+The **wire** is the HDR port's own counters in 10-second bins, the plateau being the median of the bins above half
+the peak: what actually crossed the link, IB headers included (about 1 % over the MPI payload, which the engine
+prints as `node-->`).
+
+## Summary
+
+| run (225G a node unless said) | np | FILL exact, G inserts/s (a node) | FILL plateau a node | PROBE exact, G points/s (a node) | PROBE plateau a node | wire, GB/s a node, each way |
+| --- | --- | --- | --- | --- | --- | --- |
+| **900G, 95/160, n 42** | 4 | 5.10 (1.27) | 1.82 | **7.65 (1.91)** | **1.98** | **24.3** |
+| 900G, 95/160, n 42, the first run | 4 | 5.4 (1.35) | -- | 8.0 (live line) | -- | 24.3 |
+| 900G, 95/160, n 40, a node alone | 1 | 1.85 | 2.37 | 2.47 | 2.64 | -- |
+| 95/160, n 38 | 1 | 1.85 | 2.32 | 2.52 | 2.58 | -- |
+| 95/160, n 39 | 2 | 2.05 (1.03) | 1.07 | 4.16 (2.08) | 2.25 | 18.3 |
+| 95/160, n 40 | 4 | 4.32 (1.08) | 1.53 | 7.53 (1.88) | 2.03 | 24.2 |
+| 95/160, n 40, repeat | 4 | 4.04 (1.01) | 1.52 | 7.67 (1.92) | 2.03 | 24.5 |
+| 63/192 | 4 | 4.43 (1.11) | 1.69 | 7.56 (1.89) | 2.03 | 24.5 |
+| 159/352 (SMT) | 4 | 2.48 (0.62) | 0.60 | 6.94 (1.74) | 1.92 | 23.0 |
+| 95/160 `--block 65536` (1 MB messages) | 4 | 3.58 (0.89) | 0.98 | 7.38 (1.85) | 2.03 | 23.3 |
+| 95/160 `--block 4096` (64 KB messages) | 4 | 2.76 (0.69) | 1.01 | 3.69 (0.92) | 0.99 | 12.7 |
+| 95/160 `--credit 16` | 4 | 3.51 (0.88) | 1.29 | 7.21 (1.80) | 1.92 | 23.8 |
+| 95/160 `--n-recv 128` | 4 | 4.23 (1.06) | 1.53 | 7.51 (1.88) | 1.98 | 23.8 |
+| 900G, 95/160, n 42, `--inbox 256` (pool 93663 blocks) | 4 | 5.02 (1.25) | 1.50 | 7.58 (1.89) | 1.98 | 24.3 |
+| 900G, 95/160, n 42, `--n-recv 128 --credit 8` | 4 | 5.38 (1.34) | 1.81 | 7.68 (1.92) | 1.98 | 24.4 |
+| 95/160, n 39, `--credit 16` | 2 | 1.97 (0.98) | 1.24 | 4.25 (2.12) | 2.31 | 18.4 |
+| 95/160, n 39, `--block 65536` | 2 | 1.43 (0.72) | 0.69 | 4.20 (2.10) | 2.31 | 17.3 |
+| 900G, 95/160, n 42, `--credit 2` | 4 | 5.40 (1.35) | 1.79 | 6.78 (1.69) | 1.76 | 21.4 |
+| 900G, 95/160, n 42, **diagnostic binary: the senders leave 8192 blocks in the free ring** instead of 32 | 4 | 5.39 (1.35) | 1.81 | -- (killed after FILL) | -- | 24.3 |
+| 900G, 95/160, n 42, `--inbox 8` | 4 | 5.42 (1.35) | 1.80 | 7.64 (1.91) | 1.98 | 24.1 |
+
+**Four nodes run PROBE at 7.7 G points/s, 1.9-2.0 a node against 2.6 for a node alone (75 %), and the wire is
+the reason: every node sends 24.3 GB/s and receives 24.3 GB/s for the whole phase, 97 % of the port's 25 GB/s.**
+A point is 16 bytes on the wire and three quarters of them leave the node, so the port caps a node at
+24.3e9 / (16 x 3/4) = 2.03 G points/s -- the plateau measured.  Nothing else moves it: 63/192 gives the same
+24.5 GB/s, messages of 1 MB the same, more credit or more posted receives the same, and the 512-thread team is
+slower, not faster.  **FILL runs at 1.8 G inserts/s a node against 2.4 alone (77 %), with the wire at 15 GB/s: it
+is not the wire but the Router's pool**, which sits in sealed blocks waiting for the peers' credit while the dict
+threads wait for points half of the time.
+
+## 1. PROBE is the wire, at 16 bytes a point
+
+The port counters of the four hosts over the 900G run's PROBE (580 s of plateau, 10-s bins): 24.3 GB/s out and
+24.3 GB/s in on every host, bins within 0.2 GB/s, 13.6 TB moved each way per host, `port_xmit_wait` flat on
+grdix-4/-5 and rising on grdix-6/-7 in the first run only.  HDR 4X is 200 Gb/s = 25.0 GB/s a direction: the
+link is at 97 %, and the 1 % between the counters and the engine's 24.1 GB/s of MPI payload is the IB headers
+at MTU 4096 and the rendezvous control traffic.  A link that full is the ceiling, and the arithmetic closes:
+
+| | a node alone | 4 nodes | N nodes |
+| --- | --- | --- | --- |
+| points leaving the node | 0 | 3/4 | (N - 1) / N |
+| wire cap, G points/s a node, at 16 B a point and 24.3 GB/s | -- | **2.03** | 24.3 / (16 (N - 1) / N): 1.62 at 16 nodes, **1.52 at N -> inf** |
+| measured PROBE plateau a node | 2.64 | **1.98-2.03** | |
+
+So a 64-node grdix job would run PROBE at 1.55 G points/s a node, 59 % of what the node does alone, whatever
+the team, and **the only lever is the number of bytes a point costs on the wire**: 12 bytes lifts the cap to 2.7 a
+node at 4 nodes (then the dict threads bind again at 2.6), 8 bytes to 4.05; at N -> inf, 2.0 and 3.0 against
+today's 1.52.  The wire point is `Point {key, val}`, two u64: the key's top bits pick the destination and are
+known to the receiver, the check bits are what the shard stores, and `val` is a preimage of n <= 42 bits.
+
+**What does not move it** (all at 225G, 4 nodes, PROBE plateau a node / wire):
+- **the team**: 95/160 and 63/192 both 2.03 / 24.5 GB/s -- the 4-node rate is team-independent where the
+  1-node rate is not (session 18: 2.61 vs 2.35);
+- **the message size**: `--block 65536` (1 MB messages, 66 GB of pool) 2.03 / 23.3;
+- **the window**: `--credit 16` 1.92 / 23.8, `--n-recv 128` 1.98 / 23.8, within the run-to-run scatter (the
+  two identical 95/160 runs differ by 2 %);
+- **the 512-thread team**, 159/352: **1.92 / 23.0, 5 % under the 256-thread teams**.  The placer gives the
+  service thread's core a dict thread as its SMT sibling (session 18), and the service thread is the one thread
+  that must not lose cycles here: see 2.
+
+**What halves it**: `--block 4096`, the 65600-byte message, 0.99 / 12.7 GB/s.  Four times the messages for the
+same bytes, and the service thread stops at about 190 K messages/s each way: at 262 KB the same count would be
+50 GB/s, so at the default block it has a factor two of slack and the wire binds first.
+
+## 2. The service thread: zero-copy, 92 K messages a second each way, half loaded
+
+`perf record -t` on grdix-5's main thread during PROBE (900G and 225G runs alike; IPC 1.3-1.5, 3.1 GHz):
+
+| share | where |
+| --- | --- |
+| 35 % | `Router_Progress` itself: 17 % scanning the 163 parked lists (`retry_parked` over R + n_nodes targets, every turn), 5 % `complete()` over a block's 256 line counters, the rest the turn's own loop |
+| 15 % | `MPI_Testsome` (`PMPI_Testsome` + `ompi_request_default_test_some`), two calls a turn over 32 slots each |
+| 7.5 % | `uct_ib_mlx5_devx_mkey_pack` + 2 % `ucp_rkey_pack_memh` + 1.4 % `ucs_pgtable_lookup`: the memory key of each rendezvous, per message |
+| 6.5 % | `ucp_tag_recv_nbx`, 5 % `ucp_tag_rndv_rts_progress`, 1.3 % `uct_rc_mlx5_base_ep_get_zcopy`: the receiver side of the rendezvous, an RDMA read per message |
+| 0.13 % | `memmove` |
+
+Every 262 KB message is one rendezvous: the sender posts an RTS, the receiver reads the block by RDMA into the
+posted receive's block, and the service thread touches no byte of it.  Its cost is per message, and at 92 K
+messages/s each way (24.3 GB/s / 262208 B) it is about half loaded, by the `--block 4096` run's 190 K/s wall.
+Everything below 16 % of it is Open MPI's and UCX's own bookkeeping; the Router's own 35 % is mostly scanning
+empty parked lists, a cost that grows with R and would be worth a non-empty list instead when the service thread
+becomes the bound -- which it does at 65 KB messages, or on a faster wire, or with a dict thread on its sibling.
+
+## 3. The dict threads and the producers wait for the wire
+
+`perf record -C` over the 160 dict CPUs and the 95 producer CPUs of grdix-5, 8 s each, by source line (the
+engine's functions are all inlined into `run`, so symbols say nothing):
+
+| role, PROBE at 4 nodes | waiting | working |
+| --- | --- | --- |
+| dict thread | **55 %** (37 % `Router_Pop` finding the inbox empty, 18 % the `cpu_relax` behind it) | 45 %: the probe loop 19 %, `is_good_pair`'s Speck 9 %, the rest hashing and the ring |
+| producer | **22 %** (15 % `refill`'s `cpu_relax` for a free block, 7 % the free ring's head) | 78 %: Speck 45 %, the push 10 %, the rest |
+
+Both roles idle on the transport: the dict threads for want of points, the producers for want of blocks -- the
+pool's blocks are sealed and parked for the peers' credit (194 M parkings in the 900G PROBE, 0 receives left
+unposted), which is the healthy shape of a wire-bound run: the outbound queue is never empty and the inbound
+side never lacks a block.
+
+## 4. FILL: not the wire, and no transport knob moves it
+
+FILL at 4 nodes runs at 1.82 G inserts/s a node on the plateau (1.27 exact, the 44 s phase carrying a ramp and a
+drain of several seconds) against 2.37 alone: **77 %, with the wire at 15.3 GB/s, 61 % of the port**.  On
+grdix-5 during the 900G FILL (roles at 30-46 s of the phase):
+
+| role, FILL at 4 nodes | waiting | working |
+| --- | --- | --- |
+| dict thread | **51 %** (34 % `Router_Pop` on an empty inbox, 17 % `cpu_relax`) | 49 %: the insert's linear probing 34 %, the rest |
+| producer | **26 %** (15 % `refill`'s `cpu_relax`, 7 % the ring's head, 4 % `free_pop_many`) | 74 % |
+
+Both roles are idle a quarter to a half of the time, the wire is at 61 %, and the Router counts **10.5 M blocks
+parked for a full destination and 1.34 M receives left unposted for want of a free block** (0 in every PROBE, 0
+in the 1-node FILL).  A dict thread that waits half of the time inserts at 23 M/s when it works -- faster than
+the 14.8 M/s of the 1-node FILL, where all 160 sit at the random-write wall together: the wall is not reached,
+the points do not arrive.
+
+Where the pool is: a node holds 62943 blocks of 262 KB; its producers cache 32 each (3040), its 160 inboxes hold
+up to 64 each (10240), 32 are posted receives and 12 in flight, and the rest is sealed blocks parked because
+their peer has its 4 credits in flight.  A send completes when the peer's matching receive does, and the peer
+posts receives from its stash off the free ring; the senders leave a floor of `n_recv` = 32 blocks in that ring
+and the service takes the last one.  The first reading was that the outbound side starves the inbound one: every
+node's pool gone into blocks that wait for credit, no node with a block to receive with, no send completing.
+**The intervention refutes it as stated**: a binary whose senders leave 8192 blocks in the ring (2.1 GB, 13 % of
+the pool) runs FILL at exactly the same rate and still leaves receives unposted 2.6 M times.  A reserve that
+large can only be eaten by the inbound path itself -- received blocks dispatched into inboxes and not yet given
+back -- and the inboxes can hold 10240.  So the picture is **a burst regime**: the inflow to a node exceeds what
+its dict threads take at moments (they are then at the random-write wall together), the inboxes fill, the ring
+empties, receives go unposted, the peers' sends stall and their producers with them; then the inboxes drain and
+the dict threads idle.  The averages -- dict threads idle 51 %, producers 26 %, wire at 61 % -- are what the
+oscillation leaves.  How the knobs move it:
+
+| FILL, 4 nodes, plateau a node | |
+| --- | --- |
+| 95/160 (225G) | 1.53 (1.52 on the repeat) |
+| 63/192, fewer producers (225G) | **1.69** |
+| 159/352, more producers (225G) | 0.60 |
+| `--block 65536`, 4x the bytes a block (225G) | 0.98 |
+| `--credit 16`, 4x the blocks in flight a peer (225G) | 1.29 |
+| `--n-recv 128`, 4x the posted receives (225G) | 1.53 |
+| 95/160 (900G) | 1.82 |
+| `--inbox 256`, 4x the blocks a receiver may hold (900G) | 1.50 plateau, 1.25 exact against 1.82 / 1.27: nothing, and 2.1 M receives left unposted against 1.3 M |
+| `--n-recv 128 --credit 8` (900G) | 1.81 plateau, 1.34 exact: nothing, 2.9 M receives left unposted |
+| `--credit 2`, half the blocks in flight a peer (900G) | 1.79 plateau, 1.35 exact: nothing for FILL; PROBE loses 11 % (1.76 a node, the wire at 21.4 GB/s: 6 blocks in flight no longer cover the round trip) |
+| **the senders' floor raised from 32 to 8192 blocks** (a one-line diagnostic build, `build-floor/`, not committed) | 1.81 plateau, 1.35 exact: **nothing**, and still 2.6 M receives left unposted |
+| `--inbox 8`, an eighth of the blocks a receiver may hold (900G) | 1.80 plateau, 1.35 exact: nothing, 3.0 M receives left unposted; PROBE unchanged (24.1 GB/s) |
+
+**Every flow-control knob is flat**: inboxes of 8, 64 or 256 blocks, credit 2, 4, 8 or 16 a peer, 32 or 128
+posted receives, a 32- or 8192-block reserve -- FILL stays at 1.80 +- 0.02 a node at 900G, and the receives left
+unposted stay in the millions whatever the reserve or the inbox, which says the blocks are neither only parked
+outbound nor only sitting in inboxes: the pool is short at both ends by turns.  What FILL does respond to is the
+team (63 producers 1.69, 95 producers 1.53, 159 producers 0.60, at 225G) and the block size (both 65 KB and 1 MB
+blocks lose a third against 262 KB).  PROBE never enters the regime: its receivers take a block faster than the
+wire fills one, and no PROBE ever left a receive unposted.  The 2-node FILL is the worst case, 1.07 a node.  **The
+mechanism is open**; the burst picture above is the reading that fits, not a measurement, and the two things
+still to look at are the service thread's turn in FILL (163 parked lists to retry, most of them full inboxes
+whose head is a remote cache line, plus 62 K messages/s each way) and a per-destination flow control that
+would keep a slow inbox from taking the node's inbound blocks.
+
+## 5. Two nodes: 2.25 a node at 73 % of the wire
+
+At 2 nodes half the points leave, so the wire would allow 24.3 / 8 = 3.0 G points/s a node, and the node alone
+does 2.6; the run does 2.25 (4.16 exact), the wire at 18.3 GB/s.  One peer means 4 x 262 KB = 1 MB in flight
+at most: at 18 GB/s that is 57 us, about a rendezvous's round trip, so the credit window and not the wire is the
+2-node bound (at 4 nodes the three peers' windows add up).  It is not: `--credit 16` (4 MB in flight) gives 2.31 a node and 18.4 GB/s, `--block 65536` (16 MB) 2.31 and 17.3.
+Whatever caps one peer pair at about 18.4 GB/s each way is below the Router: session 14's pure `router_bench` at
+np 2 stopped at 85 % of `ucx_perftest`'s 23.5 GB/s on the same port, and this is 78 % of it with the dictionary
+behind.  Open; the UCX side (`UCX_RNDV_SCHEME`, `UCX_TLS=dc_x`, one QP a peer) is where to look, and it stops
+mattering from 4 nodes up, where the peers' shares add up to the port.
+
+## What to change
+
+1. **Fewer bytes a point on the wire.**  PROBE's ceiling on any grdix job is 24.3 GB/s / (16 B x (N - 1) / N);
+   the destination's bits in the key are redundant once the block is addressed, and `val` is an n-bit preimage.
+   Packing a point into 12 bytes (or 8, with the check bits cut to what the shard keeps) is the one change that
+   raises the 4-node PROBE, up to the dict threads' 2.6 a node -- and it is what makes a 64-node run worth having.
+2. **FILL's quarter is not a knob.**  Do not sweep `--inbox`, `--credit` or `--n-recv` for it again: 900G runs
+   at every setting, and a build with a 256x larger reserve, all give 1.80 a node.  The next measurement is the
+   service thread's own turn during FILL (its FILL profile was missed twice here: the profiler fired on PROBE),
+   and the Router's idle-turn counter in the round report, which would say whether the service thread has slack
+   in FILL as it has in PROBE; the next intervention is per-destination credit, so that a full inbox costs its own
+   destination and not the node's inbound path.
+3. **The service thread's core to itself** on the 512-thread team: the placer's SMT sibling costs the 4-node
+   PROBE 5 %, and any faster wire or smaller message makes the service thread the bound.  Its own 35 % is
+   scanning 163 parked lists a turn, most of them empty.
+4. **Keep `--block` at 16384 points** (the auto choice here); 4096 halves the multi-node PROBE.
+5. **Set `LD_LIBRARY_PATH` to the Guix Open MPI's lib** in every grdix run script, or give the demo a RUNPATH:
+   the module does not, and the system 5.0.7 `libmpi.so.40` is what loads otherwise.
+
+## Reproducing
+
+```bash
+oarsub -l {cluster='grdix'}/nodes=4,walltime=3:0:0 -q production -r ...          # 4 hosts, one rank each
+ssh grdix-4; cd ~/mitm-grdix/build/session20
+NP=4 N=42 P=95 R=160 RAM=900G TAG=np4_95_160 ./run20.sh                          # the reference, 10 min
+python3 summ20.py np4_95_160; python3 live20.py 5 np4_95_160; python3 ib20.py np4_95_160 10
+./batch20.sh                                                                     # the whole series, 90 min
+# on grdix-5 while a run's PROBE (or FILL) is on: the per-role profiles
+./waitprof20.sh TAG 160 95    # or waitprofF20.sh for FILL
+```
+
+Two lessons on the way.  **Never overwrite a running shell script** (bash reads it incrementally: an `scp` over
+`run20.sh` while its `mpirun` ran made bash resume mid-word in the new file, run the demo a second time without
+`mpirun`, and truncate the reference's log -- copy to a new name and `mv`).  And **`pkill -f` matches the shell
+that runs it** when the pattern's text is on that shell's command line: `pkill -f '[i]bsample[.]sh'` in one ssh,
+the `nohup bash ibsample.sh` in another.
