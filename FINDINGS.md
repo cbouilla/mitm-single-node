@@ -4225,3 +4225,84 @@ mpirun -np 32 --hostfile hosts.16 --map-by ppr:2:node:pe=9 --bind-to core --repo
     --mca oob_tcp_if_include br0 --mca plm_rsh_no_tree_spawn 1 --mca plm_rsh_agent "ssh -o StrictHostKeyChecking=no" \
     build/examples/double_speck64_demo --n 39 --ram 16G --producers-per-node 2 --dicts-per-node 6 --nrounds 1 --prefetch 8 --n-recv 256
 ```
+
+# Session 23 -- gros, 16 nodes: the service thread alone on its core, and the hyperthreads at two ranks a host
+
+2026-09-16, 00:14-00:39, the same 16 gros hosts as session 22 (job 6928191, its last 70 minutes).  Commit `aa8f051`
+on `bench-gros` = `0bff8a2` of `omp_reboot` ("Router: the service thread keeps a whole core; nothing is ever placed
+on its SMT siblings") plus the FINDINGS, release build on gros-1, Open MPI 4.1.6 over TCP on the 25 GbE as before.
+
+**The change.**  The placer marks the service thread's core full as soon as it is placed: the emptiest-core rule
+never puts a worker on its SMT siblings, and a team that then no longer fits the mask is refused with the counts
+(`Router: rank 17: 18 CPUs in the affinity mask, 2 of them the service thread's core, 16 left for 17 workers; use
+fewer threads, a larger mask (--bind-to none, --map-by slot:PE=n) or pin = false`).  The reason is session 21's:
+at 64 nodes the 11/24 team, a dict thread on the service's sibling, ran 31 % below 5/12, and one service thread is
+the node's ceiling wherever the transport copies through the kernel.  `router.3` and the placement test follow
+(a team filling every CPU is 31 threads on 32 hardware threads now, and its role spread over the NUMA nodes may
+be off by one more).
+
+**The question.**  With the sibling kept free, do the hyperthreads pay at two ranks a host -- session 22's +56 %
+team, which had the port at 89 % -- and does the one-rank team with the hyperthreads recover from session 21?
+
+**The run.**  As session 22 (`--n 39`, 16 hosts, `--prefetch 8 --n-recv 256 --nrounds 1`, 5.8 % collision rate):
+two ranks a host on 9 cores each (`--map-by ppr:2:node:pe=9 --bind-to core`), `--ram 16G` a rank, teams of 17
+threads a rank -- the service on a whole core, 16 workers on the other 8 cores' 16 hardware threads -- 5/11, 4/12
+and 6/10, session 22's 9-thread 2/6 as the night's control; one rank a host, `--ram 32G`, 11/23 (35 threads: the
+service alone on its core, the workers on the other 17 cores' 34 hardware threads).  5/12 a rank, 18 threads on
+9 cores, is what the rule refuses, run once to see it.  Scripts in `build/session23/`: session 22's, renamed
+(`run23.sh`, `batch23.sh`, `summ23.py`, `eth23.py`, `ethsample.sh`).
+
+**Placement, measured** (gros-11, `ps -L`, the 5/11 run): rank 0's service on CPU 0 with CPU 18, its sibling,
+idle, and its 16 workers on CPUs 1-8 and 19-26; rank 1's service on CPU 9 with CPU 27 idle, its workers on 10-17
+and 28-35.  The banner: `Router: 18 CPUs over 1 NUMA node(s), 1 L3 domain(s); 1 group(s) of 5..5 senders and
+11..11 receivers, threads pinned, the service alone on its core`.
+
+## Summary
+
+| team per host | ranks | threads a rank | FILL G inserts/s | PROBE G points/s, a host | PROBE: senders waited, receivers waited, service busy | port a host, tx / rx GB/s | blocks held back, PROBE |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 2 ranks, 5 / 11 each | 32 | 17 | 2.59 | 2.65, 0.166 | 54 %, 48 %, 84 % | 2.78 / 2.78 | 17.4 M |
+| 2 ranks, 4 / 12 each | 32 | 17 | 2.56 | 2.64, 0.165 | 43 %, 52 %, 85 % | 2.78 / 2.76 | 18.1 M |
+| 2 ranks, 6 / 10 each | 32 | 17 | 2.61 | 2.71, 0.169 | 60 %, 41 %, 86 % | 2.78 / 2.77 | 17.1 M |
+| 2 ranks, 2 / 6 each (session 22's team, the control) | 32 | 9 | 2.63 | 2.63, 0.164 | 14 %, 23 %, 81 % | 2.78 / 2.79 | 12.1 M |
+| 1 rank, 11 / 23 | 16 | 35 | 1.70 | 1.73, 0.108 | 74 %, 70 %, 92 % | 1.83 / 1.82 | 31.2 M |
+| 1 rank, 5 / 12 (session 22, twice) | 16 | 18 | 1.70, 1.66 | 1.68, 1.68 | 59 %, 54 %, 89 % | 1.80-1.88 / 1.82-1.86 | 30.6 M |
+| 2 ranks, 5 / 12 each | 32 | 18 | refused: 16 CPUs left for 17 workers | | | | |
+
+## 1. At two ranks a host the port is the ceiling, and the team no longer matters
+
+- Every two-rank run, 9 or 17 threads a rank, puts the port at 2.78 GB/s out (2.70-2.95 over the hosts) and
+  2.76-2.79 GB/s in: session 22's plateau to the hundredth.  PROBE 2.63-2.71 G points/s, a 3 % spread that is the
+  run-to-run scatter (session 22 had 2.59 and 2.65 for the same 2/6 team).
+- What the 8 extra threads a rank buy is waiting: the senders wait 43-60 % of PROBE instead of 14 %, the receivers
+  41-52 % instead of 23 %, and the blocks held back for a full destination go from 12 M to 17-18 M.  The producers
+  were near their own ceiling at 2/6 (40 M points/s each with the push); at 5/11 there are five and they wait for
+  the wire.
+- The verdict stays `service/network` with the service busy 81-86 %, the port at 89 %: **on the 25 GbE the lever
+  left is bytes a point**, not the team, and not the hyperthreads.
+
+## 2. One rank a host: the free sibling removes the SMT penalty, and buys nothing more
+
+- 11/23 with the service alone on its core: PROBE 1.73 against 5/12's 1.68 (+3 %), FILL 1.70, the same; port
+  1.83 GB/s = 59 %.  Session 21 measured 11/24 at 64 nodes **31 % below** 5/12: that penalty was the dict thread
+  on the service's sibling, and it is gone.
+- But the service thread is busy 92-94 % and remains the ceiling, so the 17 extra threads only wait: senders 74 %
+  of PROBE, receivers 70 %.  Where the service thread is the ceiling, a team with the hyperthreads is no longer a
+  loss, and is not a gain either.
+
+## What to change
+
+- The rule stays.  **The grdix reference team 159/352 fills the 512 hardware threads and is refused now**: one
+  worker fewer (159/351 or 158/352) -- and, given session 18's split sweep, no loss expected.
+- On gros in a multi-node job, two ranks a host at 2/6 with 16G each remains the team; more threads a rank buy
+  nothing on this wire.  Bytes a point is next.
+
+## Reproducing
+
+```bash
+cd ~/mitm-gros/build/session23          # `nodes` = the job's hosts, one a line; the mpirun line is session 22's
+NH=16 PPN=2 PE=9 N=39 P=5 R=11 RAM=16G TAG=m16x2_5_11_nrecv256 EXTRA="--prefetch 8 --n-recv 256" ./run23.sh
+NH=16 PPN=1 N=39 P=11 R=23 RAM=32G TAG=m16x1_11_23_nrecv256 EXTRA="--prefetch 8 --n-recv 256" ./run23.sh
+NH=16 PPN=2 PE=9 N=30 P=5 R=12 RAM=1G TAG=s23_refused_5_12 TMO=120 ./run23.sh    # 18 threads on 9 cores: refused
+python3 summ23.py m16x2_5_11_nrecv256 m16x1_11_23_nrecv256; python3 eth23.py m16x2_5_11_nrecv256 10 1
+```
