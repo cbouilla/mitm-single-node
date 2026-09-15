@@ -156,9 +156,10 @@ static inline int cores_by_domain(const cpu_set_t &mask, int cache_level, const 
 
 /*
  * The group's emptiest core that still has a free CPU, or -1.  Handing every thread the emptiest core
- * is what puts the comm thread and the dict threads on cores of their own, and then fills the siblings
- * they left with producers: a producer is compute-bound and fills the issue slots a thread waiting on
- * memory leaves idle, whereas two waiting threads on one core would only slow each other down.
+ * is what puts the dict threads on cores of their own, and then fills the siblings they left with
+ * producers: a producer is compute-bound and fills the issue slots a thread waiting on memory leaves idle,
+ * whereas two waiting threads on one core would only slow each other down.  The service thread's core is
+ * marked full as soon as it is placed, so it is never refilled.
  */
 static int emptiest_core(const std::vector<int> &cores, const std::vector<std::vector<int>> &core_cpus,
                          const std::vector<size_t> &next_cpu)
