@@ -4096,3 +4096,132 @@ oarstat -f -j JOB | grep assigned_hostnames | sed "s/.*= //" | tr "+" "\n" | sed
 ssh gros-2 'cd ~/mitm-gros/build/session21 && ./batch21m.sh'    # mpirun runs from a reserved host
 python3 summ21.py TAG...; python3 live21.py 5 TAG...; python3 eth21.py TAG 10 4
 ```
+
+# Session 22 -- gros, 16 nodes: two ranks a host on 9 cores each beat one rank on 18 by 56 %, and the 25 GbE port is the ceiling
+
+2026-09-15 (evening), **gros** (Nancy), 16 hosts in one MPI job (gros-1, 11, 20, 25, 27, 28, 29, 101, 104, 107, 108,
+110, 111, 119, 121, 122; job 6928191, `oarsub -p gros --queue default -l nodes=16,walltime=2:00:00 "sleep 7200"`,
+driven from gros-1).  The node as in session 21: 1 x Xeon Gold 5220, 18 cores / 36 PU, one NUMA node, one L3, 93 GB,
+one 25 GbE port `eno1` (3.1 GB/s a direction).  Commit `a26949f` on `bench-gros` (= `b5c69bb` of `omp_reboot`,
+"introspection": the Router's wait counters and its `LIMITED BY` verdict, plus sessions 14-21's FINDINGS), release
+build on gros-1, `module load openmpi/4.1.6 hwloc/2.13.0 ucx/1.20.0`, `LD_LIBRARY_PATH` set to the Guix Open MPI.
+
+**The question.**  Session 21 found a 64-node gros job bound by the one service thread of each host: its kernel TCP
+copies held the wire at 58 %, and "a second service thread" was the first lever listed.  The cheapest second
+service thread is a second MPI rank on the host: `--map-by ppr:2:node:pe=9 --bind-to core` hands each rank 9
+disjoint cores, and the Router pins inside the mask it inherits, without `--no-bind`, since the two masks do not
+overlap.  Does it take the wire further, and what does the Router make of a 9-core mask?
+
+**The run.**  `double_speck64_demo --n 39 --prefetch 8 --nrounds 1` on 16 hosts (2^35.9 slots over the job, 2^34.9
+inserts a round, `fill * w / 2^m` = 5.8 %, 2^39 probes), Open MPI 4.1.6 over TCP as in session 21.  One rank a host:
+`--ram 32G --producers-per-node 5 --dicts-per-node 12 --n-recv 256` (session 21's 16-node team, 18 threads on the 18
+cores).  Two ranks a host: `--ram 16G --producers-per-node 2 --dicts-per-node 6` per rank (the host keeps 32G of
+dictionary in 12 shards of 2.67 GB, the same shard as before; 9 threads on the rank's 9 cores), `--n-recv 256` (8
+posted receives for 31 peers) and once at the default 32.  Each team twice, interleaved.  Scripts and logs in
+`build/session22/`: `run22.sh` (NH hosts, PPN ranks a host, PE cores a rank; PPN > 1 adds `--map-by
+ppr:PPN:node:pe=PE --bind-to core --report-bindings`, PPN = 1 keeps `--map-by ppr:1:node --bind-to none`; the
+liveness-and-memory guard waits for PPN x RAM + 8 GB on every host), `batch22.sh`, `summ22.py` (per host, not per
+rank), `eth22.py`, `ethsample.sh`.
+
+**Metric.**  The exact round report (ramp and drain in), and the port counters sampled every second on every host
+(10-second bins, plateau = median of the bins above half the peak, then the median / min / max over the 16 hosts).
+
+## Summary
+
+| team per host | ranks | FILL: s, G inserts/s, a host | PROBE: s, G points/s, a host | PROBE: senders waited, receivers waited, service busy | port a host, tx / rx, of 3.1 GB/s | blocks held back, PROBE |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1 rank, 5 / 12, `--n-recv 256` | 16 | 18.9, 1.70, 0.106 | 327.1, **1.68**, 0.105 | 59 %, 54 %, 89 % | 1.80 / 1.82 GB/s, **58 %** | 30.6 M |
+| the same, repeat | 16 | 19.3, 1.66, 0.104 | 327.9, 1.68, 0.105 | 59 %, 54 %, 87 % | 1.88 / 1.86 | 30.5 M |
+| **2 ranks on 9 cores each, 2 / 6 each, `--n-recv 256`** | 32 | 12.1, **2.65**, 0.166 | 212.3, **2.59**, 0.162 | 16 %, 24 %, 82 % | 2.77 / 2.79 GB/s, **89 %** | 12.2 M |
+| the same, repeat | 32 | 12.0, 2.67, 0.167 | 207.3, **2.65**, 0.166 | 14 %, 22 %, 83 % | 2.78 / 2.79 GB/s | 12.9 M |
+| 2 ranks, 2 / 6 each, `--n-recv` at its default 32 | 32 | 19.1, **1.68**, 0.105 | 220.0, 2.50, 0.156 | 20 %, 28 %, 79 % | 2.77 / 2.73 GB/s | 29.8 M |
+
+The one-rank baseline is session 21's 16-node number to the digit (1.68 there too) and repeats within 1 %.  **Two
+ranks a host: PROBE +56 % (2.59 and 2.65 against 1.68 twice), FILL +57 % (2.65 and 2.67 against 1.70 and 1.66)**, from the same 18 cores, the same 12 shards of the same size, and one
+producer fewer a host (4 against 5).
+
+## 1. Two service threads a host: the port is the ceiling now
+
+- **The wire says so.**  Every host's port sits at 2.74-2.92 GB/s out and 2.78-2.79 GB/s in, a plateau flat over the
+  16 hosts and over the run (2.77 +- 0.02 GB/s per 10 s bin for 200 s).  A host emits 0.162 G points/s x 16 B =
+  2.59 GB/s of payload, 30/31 of it over the wire (the co-hosted rank's share goes through `vader`), so the port
+  carries the payload plus 8 % of framing at 89 % of its rate.  One rank a host left it at 58 %.
+- **The Router says so.**  Its verdict is still `service/network` -- the senders and the receivers both wait -- but
+  the service thread is busy 82 % of the round, no longer the 100 % of a thread that is the ceiling itself (session
+  21 measured it 84 % kernel + 8 % softirq at 58 % of the wire).  The service has idle turns; the port has none.
+- **The team is better fed.**  The senders waited 16 % of PROBE against 59 %, the receivers 24 % against 54 %, and the
+  blocks held back for a full destination fell from 30.6 M to 12.2 M.  Per host, the 12 dict threads retire 13.5 M
+  probes/s each against 8.8 M (session 21: 19-20 M/s alone on a core), and the 4 producers push 40 M points/s each
+  against 21 M for the 5 -- at the top of session 21's 31-46 M/s with the push: **the producers are close to their
+  own ceiling too**, which a 3 / 5 split would relieve, at the price of a shard.
+- The two ranks talk to each other over `vader`, 1/31 of each one's traffic: not a factor at 16 hosts.
+
+## 2. The launcher and the Router at two ranks a host
+
+- `--map-by ppr:2:node:pe=9 --bind-to core --report-bindings`: Open MPI 4.1.6 binds rank 2k to cores 0-8 of its host
+  and rank 2k+1 to cores 9-17, both hardware threads of each core (`MCW rank 0 bound to socket 0[core 0[hwt 0-1]],
+  ...`).  The hostfile is the bare host names, one a line; `-np` is 2 x hosts.
+- **The Router reads the mask it inherits and pins inside it**: `Router: 18 CPUs over 1 NUMA node(s), 1 L3
+  domain(s); 1 group(s) of 2..2 senders and 6..6 receivers, threads pinned`, `Router: 32 nodes, 2 senders and 6
+  receivers per node, 192 destinations`.  The 18 CPUs are the 9 cores' hardware threads; measured on gros-11 with
+  `ps -L`, the 9 threads of rank 2k spin on CPUs 0-8 and those of rank 2k+1 on CPUs 9-17, one a core, the siblings
+  18-35 idle -- the emptiest-core rule.  The overlap check passes, since the masks are disjoint, so no `--no-bind`.
+  The same command on the laptop (`ppr:2:node:pe=4`, SMT pairs) does the same: 8 CPUs reported for 4 cores, the 4
+  threads on CPUs 0, 2, 4, 6.  The count is hardware threads, not cores, which reads as "too many CPUs" until one
+  knows; the banner could print both.
+- A `--nrounds 1` run exits nonzero (it gave up), so mpirun prints "Per user-direction, the job has been aborted":
+  expected, not a failure.
+
+## 3. `--n-recv` with 31 peers
+
+With 31 peers a rank, the default `--n-recv 32` posts one receive a peer.  **PROBE loses 4 %** (2.50 against 2.59 and
+2.65) with the port still at 2.77 / 2.73 GB/s, but **FILL loses 37 %** (1.68 against 2.65 and 2.67 G inserts/s; the
+network line reads 0.81 GB/s a rank against 1.3), and FILL's picture changes: the service thread is busy 44 % of the
+phase instead of 78 %, the senders wait 47 % instead of 15 %, **434 K turns found a receive slot free and no block
+in the pool for it** (`receives left unposted for want of a free block`; 421 such turns at 256), and 1.9 M blocks
+were held back for want of credit.  PROBE at 32 shows the same in miniature: 1.3 M unposted receives against 0,
+29.8 M blocks held back against 12.9 M.
+
+*Hypothesis, not measured*: every Router message here is a rendezvous (262 208 bytes against the TCP BTL's 65 536-byte
+eager limit), so a peer's block moves only once a receive is posted for it; with one posted receive a peer the
+inbound side is one message deep, a peer's credit comes back late, the sealed blocks park for it, and the pool drains
+into the parked queues until the service itself finds no block to post with -- the loop session 8 met as a deadlock,
+here as a 37 % slowdown.  FILL shows it and PROBE hardly does because FILL's receivers are the slower ones (random
+writes) and hold more of the pool in their inboxes.  Session 21's rule stands and gains a reason: **`--n-recv` about
+four a peer** (256 for 31 peers), or make `n_recv = 4 * n_nodes` the default.
+
+## What to change
+
+- **On gros in a multi-node job, run two ranks a host on disjoint cores**: `--map-by ppr:2:node:pe=9 --bind-to core`,
+  2 / 6 a rank, half the RAM a rank, `--n-recv 256`.  +56 % over the best one-rank team, and the 25 GbE port is then
+  89 % full: the next lever there is bytes a point (16 today), not the team or the Router's knobs.
+- The service thread's CPU is a per-rank ceiling, so **ranks a host is a knob** wherever the service thread binds
+  (session 21's TCP copies here, session 19's SDMA on grvingt's Omni-Path).  Three ranks a host (6 cores each) could
+  be tried, but the port has 11 % left: it would show only where the wire has headroom.
+- A second service thread inside the Router would buy the same without splitting the dictionary; two ranks a host
+  buys it today for free, with the same shard size when RAM is halved.
+- `RouterPlacement::report` could print the core count beside the CPU count.
+
+## Reproducing
+
+```bash
+oarsub -p gros --queue default --project cryptanalyse -l nodes=16,walltime=2:00:00 "sleep 7200"
+# on the first host, in a login shell:
+module load openmpi/4.1.6 hwloc/2.13.0 ucx/1.20.0
+export HWLOC_ROOT=/gnu/store/hl3isj962ghsvvxig6ls84mw54nfc917-hwloc-2.13.0-lib
+cmake -S . -B build -DCMAKE_BUILD_TYPE=release && make -C build -j 18 double_speck64_demo
+cd build/session22          # `nodes` = the job's hosts, one a line
+NH=16 PPN=1 N=39 P=5 R=12 RAM=32G TAG=m16x1_5_12_nrecv256 EXTRA="--prefetch 8 --n-recv 256" ./run22.sh
+NH=16 PPN=2 PE=9 N=39 P=2 R=6 RAM=16G TAG=m16x2_2_6_nrecv256 EXTRA="--prefetch 8 --n-recv 256" ./run22.sh
+python3 summ22.py m16x1_5_12_nrecv256 m16x2_2_6_nrecv256; python3 eth22.py m16x2_2_6_nrecv256 10 1
+```
+
+The two-rank mpirun line `run22.sh` builds:
+
+```bash
+export LD_LIBRARY_PATH=/gnu/store/y3d8x8jaz66df4a2rh0vrj15l7msn2ic-openmpi-4.1.6/lib
+mpirun -np 32 --hostfile hosts.16 --map-by ppr:2:node:pe=9 --bind-to core --report-bindings -x LD_LIBRARY_PATH -x PATH \
+    --mca pml ob1 --mca btl tcp,self,vader --mca btl_tcp_if_include 172.16.64.0/20 --mca btl_tcp_disable_family 6 \
+    --mca oob_tcp_if_include br0 --mca plm_rsh_no_tree_spawn 1 --mca plm_rsh_agent "ssh -o StrictHostKeyChecking=no" \
+    build/examples/double_speck64_demo --n 39 --ram 16G --producers-per-node 2 --dicts-per-node 6 --nrounds 1 --prefetch 8 --n-recv 256
+```
