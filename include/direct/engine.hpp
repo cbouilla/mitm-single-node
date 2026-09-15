@@ -91,7 +91,8 @@ static void shard_report(const Shared &shared)
 }
 
 /* the live one-line refresh: rank 0's own node, read from its tallies without synchronisation, scaled to
-   every node -- the points its dict threads retired are the points the Router delivered to them */
+   every node -- the points its dict threads retired are the points the Router delivered to them -- and the
+   Router's verdict on what limits the phase */
 static void display(const Router_thread &rt, const Params &params, const Shared &shared, const u64 *stats,
                     double delta, u64 round, int phase)
 {
@@ -106,11 +107,17 @@ static void display(const Router_thread &rt, const Params &params, const Shared 
 	if (phase == FILL)
 		span = std::min(params.per_round, params.domain - round * params.per_round);
 	double completion = (double) eval * nodes / (double) span;
-	print("\rRound {}/{} {}:  {:.1f}s ({:.1f}%, ETA {:.1f}s).  {} points routed/s.  node-->{}B/s   ",
+	double send_wait;                      /* share of the phase the producers waited for a block */
+	double recv_wait;                      /* share the dict threads had nothing to pop */
+	double busy;                           /* share the service spent in turns that moved something */
+	const char *limit = Router_Bottleneck(stats, rt, &send_wait, &recv_wait, &busy);
+	print("\rRound {}/{} {}:  {:.1f}s ({:.1f}%, ETA {:.1f}s).  {} points routed/s.  node-->{}B/s.  "
+	      "wait: senders {:5.1f}% receivers {:5.1f}%, service {:5.1f}% busy --> {:<15}   ",
 	      round, params.n_rounds, (phase == FILL) ? "FILL" : "PROBE", delta, 100. * completion,
 	      (completion > 0) ? delta * (1 - completion) / completion : 0.,
 	      human_format((double) retired * nodes / delta),
-	      human_format((double) stats[ROUTER_BYTES_SENT] / delta));
+	      human_format((double) stats[ROUTER_BYTES_SENT] / delta),
+	      100. * send_wait, 100. * recv_wait, 100. * busy, limit);
 	fflush(stdout);
 }
 
@@ -126,6 +133,12 @@ static void round_report(const Router_thread &rt, const Params &params, const u6
 	      std::log2((double) (total[N_EVAL] ? total[N_EVAL] : 1)),
 	      human_format((double) (r[N_INSERT] + r[N_PROBE]) / delta),
 	      human_format((double) r[REC_ROUTER + ROUTER_BYTES_SENT] / nodes / delta));
+	double send_wait;                      /* share of the phase the producers waited for a block */
+	double recv_wait;                      /* share the dict threads had nothing to pop */
+	double busy;                           /* share the service spent in turns that moved something */
+	const char *limit = Router_Bottleneck(r + REC_ROUTER, rt, &send_wait, &recv_wait, &busy);
+	print("            LIMITED BY {}:  senders waited {:.1f}% of the phase, receivers {:.1f}%, the service was "
+	      "busy {:.1f}%\n", limit, 100. * send_wait, 100. * recv_wait, 100. * busy);
 	if (r[N_INSERT] > 0)
 		print("            {} inserted, load {:.2f}/slot\n", r[N_INSERT], (double) r[N_INSERT] / params.w);
 	if (r[N_PROBE] > 0)
@@ -305,8 +318,7 @@ optional<pair<u64, u64>> run(const Wrapper &wrapper, u64 nbytes_memory, const Op
 			Router_Reset(rt);      /* its own team barriers and MPI_Barrier: every tally is written by now */
 
 			if (role == ROUTER_SERVICE)
-				epilogue(rt, params, shared, stats.data(), records.data(), total.data(), round, phase,
-				         wtime() - t0);
+				epilogue(rt, params, shared, stats.data(), records.data(), total.data(), round, phase, wtime() - t0);
 
 			#pragma omp barrier    /* the verdict, and every thread's next tally, are thread 0's to publish */
 			if (shared.stop)

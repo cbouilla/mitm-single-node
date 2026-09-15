@@ -163,8 +163,10 @@ mutex and an `std::atomic` flag, because any dict thread of the node may find on
 
 **Counters.**  `N_EVAL` (producers: evaluations, one point pushed each); `N_INSERT`, `N_PROBE`,
 `N_COLLISIONS` (dict threads).  Everything about the communication -- points pushed and delivered,
-bytes and messages on the wire, blocks stalled, the service thread's turns -- is the Router's own
-tallies, in the same record; the engine keeps no counter of its own for it.
+bytes and messages on the wire, blocks stalled, the service thread's turns, the time the producers
+spent waiting for a free block or closed, the dict threads without a block to read and the service
+moving them --
+is the Router's own tallies, in the same record; the engine keeps no counter of its own for it.
 
 **Lossless.**  The Router loses nothing: a `Router_Push` may block, but no point is ever dropped.
 A dropped point would be a missing entry or a missing probe, and "no solution" is a proof only when
@@ -174,6 +176,17 @@ and complains if the points pushed and the points delivered do not agree.
 **The live line** is rank 0's own node, read from its tallies without synchronisation while the
 phase runs, and scaled by the number of nodes: approximate on purpose.  The round report comes from
 the `MPI_Allgather` and is exact.  Do not expect the two to agree to the unit.
+
+**What limits the phase** is the Router's verdict, `Router_Bottleneck` over its stats (`router.3`):
+the share of the phase the senders spent waiting for a free block or closed, the receivers with
+nothing to pop and the service in turns that moved something, and one word -- `senders` when only
+the receivers waited (the points are produced too slowly), `receivers` the other way round, `service/network`
+when both waited (the blocks are in flight or in the service's hands; the busy share says which),
+`balanced` when neither did -- by a 5 % threshold.  The live line ends with it, from rank 0's node;
+the round report's `LIMITED BY` line has it from the summed records, exact.  The waits are timed at
+their ends only, never per point, and the drain tail is receiver wait, so the verdict means something
+for phases long against their closure; round 0's `FILL` says `receivers` while the dict threads still
+touch their shards, which is true.
 
 ### 1.6 Answer
 
@@ -446,8 +459,9 @@ dict thread's `done`.
 `COLLIDING_LEN_MIN`, `COLLIDING_LEN_MAX`, `N_MEASURE`, `BAD_DP`, `BAD_COLLISION`,
 `BAD_WALK_ROBINHOOD`, `BAD_WALK_NONCOLLIDING`.  Dict threads: `N_PROBE`, `BAD_PROBE`,
 `DROP_COLL`.  Everything about the communication is the Router's own tallies, in the same
-record, and the engine keeps no counter of its own for it: the previous core's three drop
-counters have no meaning on a transport that drops nothing.
+record -- the walkers' and the dict threads' waits and the service's busy time included -- and
+the engine keeps no counter of its own for it: the previous core's three drop counters have no
+meaning on a transport that drops nothing.
 
 **Loss.**  The Router loses nothing, and the round report says so -- it prints the Router's two
 stall counters when they are nonzero, and complains if the points pushed and the points
@@ -455,6 +469,12 @@ delivered disagree.  A round closes on points **found**, not on points inserted,
 whose collision queues overflow burns rounds against a nearly empty dictionary and still
 reports them complete: the report's `ROUTED` line -- how many of the points found reached a
 shard -- is the number to read.
+
+**What limits the round** is the same verdict as the direct engine's (§1.5), `Router_Bottleneck`
+over the Router's stats: on the live line from the reports, so over every node but lagging them;
+on the round report's `LIMITED BY` line from the summed records, exact.  A walker's wait is its
+`Router_Push` and its time closed -- the time it spends resolving collisions is its own work, not a
+wait -- so a round whose walkers resolve more than they walk reads as `senders`, which is right.
 
 ### 2.7 Answer
 

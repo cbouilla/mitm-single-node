@@ -97,28 +97,21 @@ inline void Router_node::connect()
 	if (S < 1 || R < 1)
 		errx(1, "Router: a node needs at least one sender and one receiver (S=%d, R=%d)", S, R);
 
-	/* every node must agree: S or R differing is fatal, an option differing means the defaults */
-	const int N_AGREE = 12;
+	/* every node must agree on the team's shape and on the options: a difference is fatal, and named */
+	const int N_AGREE = 10;
+	const char *name[N_AGREE] = {"senders", "receivers", "block_points", "swc_linesize", "n_recv", "inbox_blocks",
+	                             "credit", "pin", "cache_level", "group_size"};
 	double mine[N_AGREE] = {(double) S, (double) R, (double) opt.block_points,
 							(double) opt.swc_linesize, (double) opt.n_recv, (double) opt.inbox_blocks,
-							(double) opt.sweep_blocks, (double) opt.credit, (double) opt.dests_per_node,
-							(double) opt.pin, (double) opt.cache_level, (double) opt.group_size};
+							(double) opt.credit, (double) opt.pin, (double) opt.cache_level, (double) opt.group_size};
 	double lo[N_AGREE], hi[N_AGREE];
 	MPI_Allreduce(mine, lo, N_AGREE, MPI_DOUBLE, MPI_MIN, comm);
 	MPI_Allreduce(mine, hi, N_AGREE, MPI_DOUBLE, MPI_MAX, comm);
-	if (lo[0] != hi[0] || lo[1] != hi[1]) {
-		if (rank == 0)
-			warnx("Router: the nodes have different numbers of senders or receivers");
-		MPI_Abort(comm, 1);
-	}
-	for (int k = 2; k < N_AGREE; k++)
+	for (int k = 0; k < N_AGREE; k++)
 		if (lo[k] != hi[k]) {
 			if (rank == 0)
-				warnx("Router: the nodes disagree on the options; using the defaults everywhere");
-			bool verbose = opt.verbose;
-			opt = Router_Opts();
-			opt.verbose = verbose;
-			break;
+				warnx("Router: the nodes disagree on %s (from %g to %g); every node must pass the same", name[k], lo[k], hi[k]);
+			MPI_Abort(comm, 1);
 		}
 
 	if (not router_pow2(opt.block_points) || opt.block_points < 4)
@@ -128,10 +121,8 @@ inline void Router_node::connect()
 		errx(1, "Router: swc_linesize must be 0 or a power of two, 4 <= swc_linesize <= block_points");
 	if (opt.swc_linesize != 0 && opt.block_points / opt.swc_linesize > ROUTER_MAX_L)
 		errx(1, "Router: block_points / swc_linesize must be <= %u", ROUTER_MAX_L);
-	if (opt.n_recv < 1 || opt.inbox_blocks < 1 || opt.sweep_blocks < 1 || opt.credit < 1)
-		errx(1, "Router: n_recv, inbox_blocks, sweep_blocks and credit must be >= 1");
-	if (opt.dests_per_node < 0)
-		errx(1, "Router: dests_per_node must be >= 0");
+	if (opt.n_recv < 1 || opt.inbox_blocks < 1 || opt.credit < 1)
+		errx(1, "Router: n_recv, inbox_blocks and credit must be >= 1");
 	if (opt.group_size < 1)
 		errx(1, "Router: group_size must be >= 1");
 	if (opt.cache_level < 0)
@@ -188,10 +179,7 @@ inline void Router_node::connect()
 	n_data_recv.assign(P, 0);
 	end_seq.assign(P, -1);
 
-	per_node = opt.dests_per_node ? opt.dests_per_node : R;
-	if (per_node < R)
-		errx(1, "Router: dests_per_node (%d) must be at least the receivers per node (%d)", per_node, R);
-	F = per_node * n_nodes;
+	F = R * n_nodes;
 
 	size_t swc = opt.swc_linesize;
 	if (swc == 0) {                       /* the lines fit L2, and a block switch is at most one line in 8 */
@@ -278,16 +266,15 @@ inline void Router_node::banner() const
 	double lines = (double) S * F * swc_linesize * sizeof(Point);
 	double inboxes = (double) R * opt.inbox_blocks * sizeof(RouterBlockMsg);
 	double closing = (double) F * partial_cap * sizeof(Point);
-	printf("Router: %d node%s, %d sender%s and %d receiver%s per node, %d destinations (%d per node)\n",
-	       n_nodes, n_nodes > 1 ? "s" : "", S, S > 1 ? "s" : "", R, R > 1 ? "s" : "", F, per_node);
+	printf("Router: %d node%s, %d sender%s and %d receiver%s per node, %d destinations\n",
+	       n_nodes, n_nodes > 1 ? "s" : "", S, S > 1 ? "s" : "", R, R > 1 ? "s" : "", F);
 	printf("Router: blocks of %zu points, lines of %zu (%u lines per block), %u blocks (%.1f MB, %u cached per"
 	       " sender), messages of %zu bytes\n", opt.block_points, swc_linesize, L, n_blocks, blocks / 1e6,
 	       ROUTER_BATCH, block_bytes);
 	printf("Router: private lines %.1f MB (%.1f MB per sender), closing buffers %.1f MB (%zu points per destination)\n",
 	       lines / 1e6, lines / 1e6 / S, closing / 1e6, partial_cap);
 	printf("Router: inboxes of %d blocks (%.1f MB), %d receive and %d send slots, credit %d per peer, stash batches"
-	       " of %u, %d sealed blocks per turn\n", opt.inbox_blocks, inboxes / 1e6, opt.n_recv, opt.n_recv, opt.credit,
-	       ROUTER_BATCH, opt.sweep_blocks);
+	       " of %u\n", opt.inbox_blocks, inboxes / 1e6, opt.n_recv, opt.n_recv, opt.credit, ROUTER_BATCH);
 }
 
 /*
