@@ -34,6 +34,11 @@ threads across MPI ranks
 .nf
 .BI "void   Router_Reset(Router_thread &" rt );
 .fi
+.SS "Any thread"
+.nf
+.BI "const char *Router_Bottleneck(const u64 *" stats ", const Router_thread &" rt ,
+.BI "                              double *" send_wait ", double *" recv_wait ", double *" busy );
+.fi
 .SS Queries
 Any thread; all return
 .B int
@@ -100,13 +105,17 @@ built its role (see
 .BR EXAMPLE ).
 Delivery is batched: a pushed point may reach its receiver much later, and
 possibly not before the sender closes.
-The call may block until the Router has room, and the point is delivered
-exactly once.
+The call may block until the Router has room -- that time is the sender's wait,
+see
+.BR STATISTICS
+-- and the point is delivered exactly once.
 .SS Router_Pop()
 Takes one point delivered to this receiver: stores it in
 .RI * a ", *" b
 and returns true, or returns false when no point is available now.
-Never waits.
+Never waits: the time from a false to the next block is the receiver's wait,
+see
+.BR STATISTICS .
 A false means "try again", not "nothing more will come": the receiver loops on
 .BR Router_Pop ()
 until
@@ -116,6 +125,9 @@ returns true.
 Declares that this sender pushes nothing more in this round.
 A closed sender must not push again before
 .BR Router_Reset ().
+From the close to the end of the round the sender counts as waiting (see
+.BR STATISTICS ):
+a round that outlives its senders is the receivers' to finish.
 The round cannot end until every sender of every node has closed.
 .SS Router_Test_drained()
 Returns true once nothing more can be delivered to this receiver in this round
@@ -164,7 +176,7 @@ Destroying the handles while a round is in progress aborts.
 .SS Router_Progress(), Router_Test_quiescent()
 Service thread only.
 .BR Router_Progress ()
-does one bounded, non-blocking turn of the service thread's work: it moves
+does one non-blocking turn of the service thread's work: it moves
 points from the senders to the network and to the receivers, and brings the
 round to its end once every sender has closed.
 The service thread calls it in a loop; nothing moves between two calls.
@@ -182,10 +194,44 @@ u64 indexed by
 .BR "enum router_stat" ,
 with the node's tallies for the round, all threads summed (see
 .BR STATISTICS ).
-Exact once quiescent, a snapshot before.
+Exact once quiescent, a snapshot before; a wait still under way counts up to
+the call.
 Read it before
 .BR Router_Reset (),
 which clears it.
+.SS Router_Bottleneck()
+Any thread.
+Reads a
+.BR Router_Stats ()
+array -- one node's, or the sum of several nodes' -- and stores in
+.RI * send_wait ", *" recv_wait " and *" busy
+the share of the round, in [0, 1], the senders spent without pushing -- waiting
+for a free block, or closed --, the receivers with nothing to pop, and the
+service thread in turns that moved something.
+The senders' and the receivers' shares are per thread: the sums are divided by
+the number of senders or receivers
+.I per node
+(the handle's), so an array summed over several nodes divides right,
+.B ROUTER_ELAPSED
+being summed as many times.
+Returns the verdict:
+.B senders
+when they never waited and the receivers did (the points are produced too
+slowly),
+.B receivers
+the other way round (they are consumed too slowly),
+.B service/network
+when both waited for the Router (the blocks are in flight or in the service
+thread's hands;
+.RI * busy
+near 1 says the service thread's CPU is the limit, well below it the network or
+the credit), and
+.B balanced
+when neither did.
+Waited means more than
+.B ROUTER_WAIT_THRESHOLD
+(5 %) of the round.
+Meaningful for a round long against its closure: the drain is receiver wait.
 .SS Router_Reset()
 Collective over every thread of the team on every node.
 Back to a fresh round: once every thread of the node has entered the call, the
@@ -372,7 +418,7 @@ not both.
 Every field has a working default and every node must supply the same values:
 the nodes compare them at
 .BR Router_Init (),
-and on a disagreement the defaults are used everywhere, with a warning.
+and a disagreement aborts, naming the field.
 Pass
 .B ROUTER_DEFAULT_OPTS
 for the defaults.
@@ -398,18 +444,9 @@ MPI receives kept posted, and as many sends in flight at most.
 Blocks that may wait for one receiver at once.
 >= 1.
 .TP
-.BI "int    " sweep_blocks " = 256"
-Blocks the service thread ships per
-.BR Router_Progress ()
-at most: the bound on one turn.
->= 1.
-.TP
 .BI "int    " credit " = 4"
 Blocks in flight to one peer node at most.
 >= 1.
-.TP
-.BI "int    " dests_per_node " = 0"
-For the benchmark only; leave at 0.
 .TP
 .BI "bool   " pin " = true"
 The Router pins the threads and forms the groups (see
@@ -456,7 +493,26 @@ Receives the service thread could not keep posted for want of a free block.
 .B ROUTER_TURNS, ROUTER_IDLE_TURNS
 Calls to
 .BR Router_Progress ();
-of which those that moved nothing.
+of which those that moved nothing: no block handed over, parked, delivered or
+recycled, no message either way.
+.TP
+.B ROUTER_WAIT_SEND, ROUTER_WAIT_RECV
+Nanoseconds this node's senders spent waiting for a free block inside
+.BR Router_Push (),
+or closed while the round went on, summed over the senders; nanoseconds its receivers spent with nothing to pop,
+from a
+.BR Router_Grab ()
+or
+.BR Router_Pop ()
+that found nothing to the next that found a block, or to
+.BR Router_Test_drained ()
+returning true, summed over the receivers.
+.TP
+.B ROUTER_BUSY, ROUTER_ELAPSED
+Nanoseconds the service thread spent in turns that moved something -- a turn's
+time is what passed since the previous one ended, so what the caller does
+between two turns is the service thread's --; nanoseconds since the round's first
+.BR Router_Progress ().
 .SH THE ROUND
 .IP 1. 4
 Senders call
@@ -533,6 +589,9 @@ The Router sends nothing on
 .I comm
 outside a round and the barrier of
 .BR Router_Reset ().
+.PP
+The waits are timed with the wall clock at their beginning and their end only,
+and the service thread reads the clock once a turn: nothing is timed per point.
 .SH SEE ALSO
 .I include/router/router.hpp
 is the umbrella include; this page is the interface's specification.

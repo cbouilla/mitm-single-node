@@ -5,6 +5,7 @@
 #include <omp.h>
 #include <atomic>
 #include <vector>
+#include <algorithm>
 #include <cstddef>
 #include <cstdlib>
 #include <cstring>
@@ -29,11 +30,12 @@ namespace mitm {
 /* Router_size's and Router_rank's `scope`: over every node of the team, or this node alone */
 enum router_scope { ROUTER_GLOBAL = 0, ROUTER_NODE = 1 };
 
-/* Router_Stats layout */
+/* Router_Stats layout: counts, then four times in nanoseconds, what Router_Bottleneck reads */
 enum router_stat {
 	ROUTER_PUSHED, ROUTER_POPPED, ROUTER_SENT, ROUTER_RECV, ROUTER_LOCAL,
 	ROUTER_MSGS_SENT, ROUTER_MSGS_RECV, ROUTER_BYTES_SENT, ROUTER_BYTES_RECV, ROUTER_BLOCKS,
 	ROUTER_STALL_OUT, ROUTER_STALL_IN, ROUTER_TURNS, ROUTER_IDLE_TURNS,
+	ROUTER_WAIT_SEND, ROUTER_WAIT_RECV, ROUTER_BUSY, ROUTER_ELAPSED,
 	ROUTER_STATS_SIZE
 };
 
@@ -43,9 +45,7 @@ struct Router_Opts {
 	size_t swc_linesize = 0;            /* points per private write-combining line, 4..block_points; 0 == auto */
 	int n_recv = 32;                    /* always-posted MPI_Irecv(ANY_SOURCE) slots, and as many send slots */
 	int inbox_blocks = 64;              /* a receiver's inbox, in blocks */
-	int sweep_blocks = 256;             /* sealed blocks the service handles per Router_Progress: the turn's bound */
 	int credit = 4;                     /* blocks in flight to one peer at most: a stalled peer hogs no send slot */
-	int dests_per_node = 0;             /* destinations per node, the bench's virtual fan-out; 0 == the receivers */
 	bool pin = true;                    /* pin the threads and form the groups, or leave the CPUs to the caller */
 	int cache_level = 0;                /* the cache level a group sits in; 0 == the lowest shared by several cores */
 	int group_size = 16;                /* cores per group at most: the AUTO knob that splits a cache domain */
@@ -63,6 +63,7 @@ static constexpr size_t ROUTER_HDR_BYTES = 64;    /* a block's header slot: the 
 static constexpr size_t ROUTER_DEST_WORDS = 8;    /* u64 words per destination: its two words fill one cache line */
 static constexpr u32 ROUTER_MAX_L = 4096;         /* lines per block at most */
 static constexpr u32 ROUTER_BATCH = 32;           /* blocks off the free ring at a time: a sender's cache, the stash */
+static constexpr double ROUTER_WAIT_THRESHOLD = 0.05;   /* Router_Bottleneck: a role waiting less of the round is not waiting */
 
 enum router_kind { ROUTER_DATA = 0, ROUTER_END = 1 };
 
@@ -139,7 +140,7 @@ struct alignas(64) Router_thread {
 	/* the push's fast path */
 	Point *swc;                          /* a sender's F private lines of swc_linesize points, 64-byte aligned */
 	const size_t swc_linesize;           /* the node's, copied: a push that does not stage never reads the node */
-	u64 ctr[ROUTER_STATS_SIZE] = {};     /* a sender's PUSHED, a receiver's POPPED and BLOCKS; plain */
+	u64 ctr[ROUTER_STATS_SIZE] = {};     /* a sender's PUSHED and WAIT_SEND, a receiver's POPPED, BLOCKS and WAIT_RECV; plain */
 	/* identity */
 	const int role;                      /* ROUTER_SERVICE, ROUTER_SENDER or ROUTER_RECEIVER */
 	const int index;                     /* among the threads of its role: a sender's or receiver's local rank */
@@ -157,6 +158,8 @@ struct alignas(64) Router_thread {
 	const u64 *cur_pts = NULL;           /* its points, in block memory, two words each: key then val */
 	u32 cur_count = 0;                   /* how many */
 	u32 cur_off = 0;                     /* Router_Pop's cursor into it */
+	/* both workers': the wait under way, which Router_Stats adds to a snapshot before its owner tallies it */
+	u64 wait_since = 0;                  /* wtime() in ns when the wait for the Router began, or the sender closed; 0 == none */
 
 	Router_thread(int role, int index, int group, int cpu, Router_node &rn);
 	~Router_thread();
@@ -182,8 +185,7 @@ public:
 	/* fixed at connection */
 	int S = 0;                           /* senders per node */
 	int R = 0;                           /* receivers per node */
-	int per_node = 0;                    /* destinations per node: R, or opt.dests_per_node */
-	int F = 0;                           /* destinations: per_node * n_nodes */
+	int F = 0;                           /* destinations: R * n_nodes, a destination being a receiver's global id */
 	size_t swc_linesize = 0;             /* points per private line, resolved from the fan-out */
 	u32 L = 0;                           /* lines per block */
 	u32 nv_stride = 0;                   /* bytes of n_valid per block: L rounded up to a cache line */
@@ -219,9 +221,10 @@ public:
 	u32 sealed_pad[15] = {};             /* the rest of that line */
 
 	/* the service thread's own */
-	u64 ctr[ROUTER_STATS_SIZE] = {};     /* its share of the tallies: the network, the blocks, the turns */
+	u64 ctr[ROUTER_STATS_SIZE] = {};     /* its share of the tallies: the network, the blocks, the turns, its time */
+	u64 t_round = 0;                     /* wtime() in ns at the round's first turn: what ROUTER_ELAPSED counts from */
+	u64 t_turn = 0;                      /* when the last turn ended: what the next turn's time counts from */
 	std::vector<u32> free_list;          /* its stash: its own frees, for its own needs; a batch to or from the ring */
-	u32 todo = ROUTER_NONE;              /* the service's take off the sealed stack, what is left to handle of it */
 	std::vector<u64> pending;            /* popped blocks with a line still being written: dest << 32 | blk */
 	std::vector<u32> blk_count;          /* per block: its points, while parked */
 	std::vector<u32> park_head;          /* per receiver, then per peer: the parked FIFOs */

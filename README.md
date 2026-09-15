@@ -75,7 +75,7 @@ mpirun -np 4 --bind-to none build/examples/double_speck64_demo \
   planned and the measured layout.  `--no-bind` turns pinning off, which is what two
   ranks sharing a host need (the Router refuses to pin overlapping masks);
   `--cache-level` and `--group` are its group knobs
-- `--block`, `--swc`, `--n-recv`, `--inbox`, `--sweep`, `--credit` tune the transport;
+- `--block`, `--swc`, `--n-recv`, `--inbox`, `--credit` tune the transport;
   `router.3` documents each of them
 
 A smoke test that runs in well under a second:

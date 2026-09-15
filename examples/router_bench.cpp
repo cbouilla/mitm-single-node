@@ -15,10 +15,11 @@
  * destinations picked by a multiply-high fan-out (no PRNG, no modulo: nothing but the router's own cost sits on
  * the sender's critical path); receivers pop the points one at a time and fold each with an add and a XOR; the
  * service thread runs until quiescent.  Prints, per round, the aggregate rate of points routed (delivered to a
- * receiver), then per node the push and pop rates, the network traffic, the service thread's duty cycle, the
- * cost of a point on a sender (the destination pick included) and the XOR of every fold over the receivers and
- * the nodes: it keeps the computation from being optimised away, and it depends on the points alone, not on
- * their order or their route.  Before the rounds, the raw benchmark: the senders
+ * receiver), then per node the push and pop rates, the network traffic, the cost of a point on a sender (the
+ * destination pick included), who waited -- the senders' and the receivers' shares of the round, the service
+ * thread's busy share and the Router's verdict -- and the XOR of every fold over the receivers and the nodes: it
+ * keeps the computation from being optimised away, and it depends on the points alone, not on their order or
+ * their route.  Before the rounds, the raw benchmark: the senders
  * run that same loop for a second with Router_Push taken out of it, so the difference between the raw rate and
  * the routed rate is the router and nothing else.
  */
@@ -39,13 +40,14 @@ static constexpr u64 FIB_MULT = 0x9e3779b97f4a7c15ull;
  * [0, 2^32) onto [0, F) the way a 64-bit divq would but for one multiply and a shift (cf. Lemire's range
  * reduction) -- the same trick direct/producer.hpp uses on a hash's low word to pick a dict thread. */
 struct Fanout {
-	int F;                      /* destinations: the receivers, or --dests' virtual fan-out */
+	int F;                      /* destinations: the receivers over every node */
 	int per;                    /* local-only: destinations on this node, [base, base + per) */
-	int base;
-	bool local_only;
+	int base;                   /* the first of them */
+	bool local_only;            /* every point stays on the sender's node */
 
 	Fanout(const Router_thread &rt, const RouterArgs &a)
-	    : F(rt.node.F), per(rt.node.per_node), base(rt.node.rank * rt.node.per_node), local_only(a.local_only)
+	    : F(Router_size(rt, ROUTER_RECEIVER, ROUTER_GLOBAL)), per(Router_size(rt, ROUTER_RECEIVER, ROUTER_NODE)),
+	      base(rt.node.rank * Router_size(rt, ROUTER_RECEIVER, ROUTER_NODE)), local_only(a.local_only)
 	{
 	}
 
@@ -136,34 +138,38 @@ static void bench_report(const Router_thread &rt, const RouterArgs &a, int round
 {
 	u64 st[ROUTER_STATS_SIZE];
 	Router_Stats(st, rt);
-	double mine[4] = {(double) st[ROUTER_PUSHED] / elapsed, 0, 0, elapsed};
+	double mine[3] = {(double) st[ROUTER_PUSHED] / elapsed, 0, elapsed};
 	for (int s = 0; s < a.senders; s++)
 		mine[1] += ns_per_point[s] / a.senders;
-	mine[2] = (double) (st[ROUTER_TURNS] - st[ROUTER_IDLE_TURNS]) / (double) (st[ROUTER_TURNS] ? st[ROUTER_TURNS] : 1);
 	u64 tot[ROUTER_STATS_SIZE];
 	u64 folded;                         /* the nodes' xor_hash, folded */
-	double lo[4];
-	double hi[4];
-	double sum[4];
+	double lo[3];
+	double hi[3];
+	double sum[3];
 	MPI_Reduce(st, tot, ROUTER_STATS_SIZE, MPI_UINT64_T, MPI_SUM, 0, MPI_COMM_WORLD);
 	MPI_Reduce(&xor_hash, &folded, 1, MPI_UINT64_T, MPI_BXOR, 0, MPI_COMM_WORLD);
-	MPI_Reduce(mine, lo, 4, MPI_DOUBLE, MPI_MIN, 0, MPI_COMM_WORLD);
-	MPI_Reduce(mine, hi, 4, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
-	MPI_Reduce(mine, sum, 4, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+	MPI_Reduce(mine, lo, 3, MPI_DOUBLE, MPI_MIN, 0, MPI_COMM_WORLD);
+	MPI_Reduce(mine, hi, 3, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
+	MPI_Reduce(mine, sum, 3, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
 	if (rt.node.rank != 0)
 		return;
 	int P = Router_size(rt, ROUTER_SERVICE, ROUTER_GLOBAL);
-	double t = hi[3];
+	double t = hi[2];
+	double send_wait;                   /* share of the round the senders waited for a block, over the nodes */
+	double recv_wait;                   /* share the receivers had nothing to pop */
+	double busy;                        /* share the service threads spent in turns that moved something */
+	const char *limit = Router_Bottleneck(tot, rt, &send_wait, &recv_wait, &busy);
 	fmt::print("round {}: {:.2f}s | routed {} pts/s | per node: push {}/s ({:.0f}-{:.0f} M/s) pop {}/s "
-	           "net {} pts/s {:.2f} GB/s {} msgs/s {} blocks/s | {:.1f} ns/point | service {:.0f}% busy "
-	           "({} turns/s) | xor {:016x}\n",
+	           "net {} pts/s {:.2f} GB/s {} msgs/s {} blocks/s | {:.1f} ns/point | senders wait {:.0f}% "
+	           "receivers {:.0f}% service {:.0f}% busy --> {} ({} turns/s) | xor {:016x}\n",
 	           round, t, human_format((u64) (tot[ROUTER_POPPED] / t)),
 	           human_format((u64) (tot[ROUTER_PUSHED] / t / P)), lo[0] / 1e6, hi[0] / 1e6,
 	           human_format((u64) (tot[ROUTER_POPPED] / t / P)),
 	           human_format((u64) (tot[ROUTER_SENT] / t / P)),
 	           (double) tot[ROUTER_BYTES_SENT] / t / P / 1e9,
 	           human_format((u64) (tot[ROUTER_MSGS_SENT] / t / P)),
-	           human_format((u64) (tot[ROUTER_BLOCKS] / t / P)), sum[1] / P, 100. * sum[2] / P,
+	           human_format((u64) (tot[ROUTER_BLOCKS] / t / P)), sum[1] / P, 100. * send_wait,
+	           100. * recv_wait, 100. * busy, limit,
 	           human_format((u64) (tot[ROUTER_TURNS] / t / P)), folded);
 	if (tot[ROUTER_PUSHED] != tot[ROUTER_POPPED])
 		fmt::print("  ACCOUNTING BROKEN: pushed {} != popped {}\n", tot[ROUTER_PUSHED], tot[ROUTER_POPPED]);
