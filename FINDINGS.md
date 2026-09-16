@@ -3116,3 +3116,206 @@ P=10 R=21 N=38 RAM=40G KNOBS="cache4g|;cache4g_blk64k|--block 65536" bash -l bui
 python3 build/session19/summ19d.py d10_21 k10_21_cache4g ...
 ssh root@grvingt-2 bash build/session19/perf19.sh   # per-role counters and profile of the newest run, on the node
 ```
+
+# Session 24 -- 16 grvingt hosts on Omni-Path: the wire at 12.2 GB/s, the engine at 0.30 G points/s a host with one rank, 0.45 with a rank per socket
+
+2026-09-16, **grvingt-1, 2, 3, 4, 5, 7, 8, 25, 27, 28, 30, 31, 32, 34, 35, 52** (2 x Xeon Gold 6130, 32 cores / 64 PU, 187 GB,
+Omni-Path 100 Gb/s), `oarsub -t deploy -p grvingt --project cryptanalyse -l nodes=16,walltime=3:00` (job 6928266),
+**kadeploy of `debian13-big-iommupt`** (`~/debian13-big-iommupt.yaml`: `debian13-big` with `iommu.passthrough=1` in its
+kernel parameters, sessions 12-13's finding in its durable form), kernel 6.12.107, `module load openmpi/4.1.6
+hwloc/2.13.0 ucx/1.20.0 gcc-toolchain` (Guix Open MPI 4.1.6, PSM2), hfi1 `cache_size` 4096 MB and
+`kernel.numa_balancing = 0` on every node.  Commit `922ca44` on `bench-grvingt` = `0bff8a2` of `omp_reboot` (the placer
+keeps the service thread alone on its core) plus the FINDINGS of sessions 17 and 19.  Release build on grvingt-1.
+Scripts in `build/session24/`.
+
+**The questions** (the user): the 16-host double_speck64 benchmark on the IOMMU-free kernel, after a check that the
+wire is near its 12.5 GB/s; and two ranks a node, one pinned to each socket.
+
+**The run**: `double_speck64_demo --n 39 --ram 40G --prefetch 8 --nrounds 1`, 16 hosts: 80 G slots (2^36.22), 40 G
+entries a round, `fill * w / 2^m` = 7.3 % (the 8-host setting of session 19 at twice the range, same rate), 14 rounds
+for an exhaustive search, one run.  FILL is 2^35.22 inserts, PROBE 2^39 probes; the rate is the exact round report's
+evaluations over its time, `summ24.py`.  One rank a host is `--map-by ppr:1:node --bind-to none`; two ranks a host is
+**`--map-by ppr:1:socket --bind-to socket`**, 20G a rank, the Router pinning inside the socket's 16 cores (32 hardware
+threads) with the service alone on its core: 15 cores for the workers, so 5/10 one a core or 10/20 two a core.  Four
+ranks a host is `--map-by ppr:2:socket:pe=8 --bind-to core`, 10G a rank, 7 cores for the workers.  `run24.sh` takes
+P, R, N, RAM, PPN, EXTRA; `batch24.sh` a list of configs; the batches were chained (`chain24*.sh`).
+
+## Summary
+
+| ranks a host | team a rank (P / R) | knobs | FILL, G inserts/s | PROBE, G points/s | PROBE a host | wire a host in PROBE, GB/s |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1 | 10 / 21 (the session 19 reference) | -- | 4.00, 4.08, 4.13 | 4.48, 4.52, 4.84 | 0.28-0.30 | 4.2-4.5 |
+| 1 | 10 / 21 | `--n-recv 64` / `128` | 4.71 / 4.55 | 4.82 / 4.50 | 0.30 / 0.28 | 4.5 / 4.2 |
+| 1 | 24 / 38 (SMT) | -- | 3.85 | 4.37 | 0.27 | 4.1 |
+| 2 | 5 / 10 | -- | 6.45, 6.45 | 3.51, 3.53 | 0.22 | 3.4 |
+| 2 | 5 / 10 | `--n-recv 128` / `128` / `256` | 6.45 / 6.16 / 6.56 | 3.52 / 3.58 / 3.52 | 0.22 | 3.4 |
+| 2 | 6 / 9 | -- / `--n-recv 128` | 5.07 / 5.07 | 3.75 / 3.87 | 0.23-0.24 | 3.6-3.8 |
+| 2 | 10 / 20 (SMT) | -- | 4.71, 4.71 | 6.42, 6.29 | 0.39-0.40 | 6.0-6.2 |
+| 2 | 10 / 20 (SMT) | `--n-recv 128` | 6.35, 6.56, 6.67 | 6.14, 6.85, 6.33 | 0.38-0.43 | 6.0-6.6 |
+| 2 | 10 / 20 (SMT) | `--n-recv 128 --credit 8` | 4.88 | 6.58 | 0.41 | 6.4 |
+| **2** | **8 / 22 (SMT)** | **`--n-recv 128`** | **6.45, 6.25, 6.35** | **7.07, 7.23, 7.14** | **0.44-0.45** | **7.0** |
+| 2 | 7 / 23 (SMT) | `--n-recv 128` | 5.80 | 6.60 | 0.41 | 6.4 |
+| 2 | 9 / 21 (SMT) | `--n-recv 128` | 6.45 | 7.32 | 0.46 | 7.0 |
+| 4 | 5 / 9 (SMT) | `--n-recv 256` | 6.78, 6.78 | 5.72, 5.53 | 0.35 | 5.6 |
+| 4 | 2 / 5 | `--n-recv 256` | 5.72 | 3.08 | 0.19 | 3.0 |
+
+**The wire is at 12.1-12.2 GB/s** (`flood.c`'s 400 MB ping-pong over PSM2, two disjoint pairs, Open MPI's own choice
+included; 97 % of the 12.5 GB/s of 100 Gb/s, and above session 19's 11.6-11.7 on the same environment).  **One rank a
+host, the session 19 team, runs 16 hosts at 4.5-4.8 G points/s in PROBE and 4.0-4.1 G inserts/s in FILL: 0.28-0.30 and
+0.25-0.26 a host, against 0.30-0.33 and 0.31 on 8 hosts** -- the scaling from 8 to 16 is linear within 10 %, and the
+posted receives (`--n-recv 64`, 4 a peer for 15 peers) recover FILL's share (4.7, +15 %, robust: 4.55 at 128) without
+touching PROBE.  The service thread is 90 % busy in PROBE, 72 % in FILL, the Router's verdict `service/network` in
+every run: the limit of session 19, per byte the one MPI thread of the node hands to the kernel's SDMA path.  **Two
+ranks a host, one bound to each socket, give each host two service threads and the engine 7.1-7.3 G points/s in PROBE
+(+50 %) and 6.3-6.5 G inserts/s in FILL (+55 %) with the 8/22 team a rank and `--n-recv 128`** (three runs within
+2 %): **0.45 a host, the same rate as one grvingt node alone at 10/21 (session 17's 0.46)**, the wire at 7.0 GB/s a
+host (57 % of it), the service 85 % busy in PROBE and 70 % in FILL.  9/21 is 7.32 on one run, 10/20 6.1-6.9 and 7/23
+6.6 (producer-bound: its senders wait 6 % of the phase): 8 or 9 producers a socket feed 21-22 dict threads there.  The one-a-core team (5/10 a rank) is
+the FILL winner at 6.45-6.56 but loses a quarter of PROBE to a pool starvation the posted receives do not cure (below).
+The SMT team on one rank (24/38) loses 5-10 % on both phases, as on gros (session 23).
+
+## 1. Getting 16 nodes up
+
+Nothing new in the recipe (session 19's `post19.sh` became `post24.sh`, one pass a node as root: host key forgotten,
+`iommu.passthrough=1` in the cmdline, `Default domain type: Passthrough`, `rdma dev set opap94s0 name hfi1_0`, link
+`ACTIVE` at 100 Gb/s, `cache_size` 4096, `numa_balancing` 0), and one thing to know: **the kadeploy3 client lost its
+server connection after 855 s** (`Invalid request on kadeploy.nancy.grid5000.fr:25300 (Net::ReadTimeout)`, exit 1, an
+empty log) **while the deployment itself had succeeded on all 16 nodes** -- every node answered as root on the new
+kernel with 9 minutes of uptime.  Check the nodes, not the client's exit status.  The job's nodes were up 5 minutes
+after `oarsub`, deployed 15 minutes after, benchmarking 18 minutes after.  The merge of `omp_reboot` (`0bff8a2`) into
+`bench-grvingt` was clean and the release build of the demo took 20 s on the node.
+
+## 2. The wire
+
+`flood24.sh` (session 19's, `mpicc -O2 flood.c`, `mpiexec -n 2 --map-by ppr:1:node`, three runs a transport):
+
+| pair | `--mca pml cm --mca mtl psm2` | Open MPI's choice |
+| --- | --- | --- |
+| grvingt-1 <-> grvingt-2 | 12.23, 12.10, 12.09 GB/s | 12.23, 11.75, 12.23 |
+| grvingt-25 <-> grvingt-27 | 12.20, 11.05, 12.21 | 12.06, 11.94, 12.21 |
+
+12.1-12.2 GB/s, 97 % of the line rate, on both pairs and with both selections (Open MPI picks PSM2 by itself once the
+device is named `hfi1_0`).  Session 19 measured 11.6-11.7 on the same environment and the same program: the
+difference is within what the two odd runs (11.05, 11.75) show, and the number to keep is **12.2 GB/s a direction**.
+
+## 3. One rank a host: 16 hosts against 8
+
+| P / R | knobs | FILL s | FILL G/s | PROBE s | PROBE G/s | wire a host, FILL / PROBE | service busy, FILL / PROBE | receives left unposted, FILL / PROBE |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 10 / 21 | -- | 9.8 | 4.08 | 113.5 | 4.84 | 3.8 / 4.5 GB/s | 72 / 90 % | 7.9 M / 12.0 M |
+| 10 / 21 | -- | 9.7 | 4.13 | 121.5 | 4.52 | 3.9 / 4.2 | | |
+| 10 / 21 | -- | 10.0 | 4.00 | 122.7 | 4.48 | 3.7 / 4.2 | | |
+| 10 / 21 | `--n-recv 64` | 8.5 | 4.71 | 114.1 | 4.82 | 4.4 / 4.5 | | |
+| 10 / 21 | `--n-recv 128` | 8.8 | 4.55 | 122.2 | 4.50 | 4.3 / 4.2 | | |
+| 24 / 38 | -- | 10.4 | 3.85 | 125.7 | 4.37 | 3.6 / 4.1 | | |
+
+Session 19's 8 hosts did 2.40-2.64 G points/s in PROBE and 2.50 in FILL with the same team and the same collision
+rate.  Twice the hosts give 1.7-2.0x on PROBE (the 8 % run-to-run scatter of the fabric is in both) and 1.6x on FILL --
+1.9x with the posted receives at 4 a peer.  The Router's verdict is `service/network` in every phase of every run, the
+service thread 72 % busy in FILL and 90 % in PROBE, the senders waiting 28-38 % of the phase and the receivers 22-50 %:
+the node's one MPI thread is the ceiling, as in session 19, and the wire idles at 4.5 of its 12.2 GB/s.  The posted
+receives matter to FILL only (every host sends every point off-node, and the default 32 slots are two a peer for
+15 peers), by 12-15 %, and the SMT team on one rank loses: the second hardware thread of each core has nothing to
+feed when the service does not keep up.
+
+## 4. Two ranks a host, one a socket
+
+| P / R a rank | knobs | FILL s | FILL G/s | PROBE s | PROBE G/s | wire a host in PROBE | service busy, FILL / PROBE | senders / receivers waited in PROBE | receives left unposted in PROBE |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 5 / 10 | -- | 6.2 | 6.45 | 156.5 | 3.51 | 3.4 GB/s | 64 / 29 % | 51 / 41 % | 188 M |
+| 5 / 10 | -- | 6.2 | 6.45 | 155.6 | 3.53 | 3.4 | 64 / 29 | 51 / 41 | 438 M |
+| 5 / 10 | `--n-recv 128` | 6.2 | 6.45 | 156.2 | 3.52 | 3.4 | 70 / 31 | 51 / 41 | 95 M |
+| 5 / 10 | `--n-recv 128` | 6.5 | 6.16 | 153.7 | 3.58 | 3.4 | | | |
+| 5 / 10 | `--n-recv 256` | 6.1 | 6.56 | 156.4 | 3.52 | 3.4 | 72 / 32 | 51 / 41 | 118 M |
+| 6 / 9 | -- | 7.9 | 5.07 | 146.6 | 3.75 | 3.6 | 53 / 30 | 57 / 30 | 1071 M |
+| 6 / 9 | `--n-recv 128` | 7.9 | 5.07 | 141.9 | 3.87 | 3.8 | | | |
+| 10 / 20 | -- | 8.5 | 4.71 | 85.6 | 6.42 | 6.2 | 44 / 74 | 33 / 26 | 30 M |
+| 10 / 20 | -- | 8.5 | 4.71 | 87.4 | 6.29 | 6.0 | 45 / 72 | 35 / 28 | 44 M |
+| **10 / 20** | **`--n-recv 128`** | **6.3** | **6.35** | **89.5** | **6.14** | 6.0 | 70 / 71 | 36 / 29 | 19 M |
+| 10 / 20 | `--n-recv 128` | 6.1 | 6.56 | 80.3 | 6.85 | 6.6 | 73 / 80 | 28 / 21 | 5 M |
+| 10 / 20 | `--n-recv 128` | 6.0 | 6.67 | 86.9 | 6.33 | 6.2 | 73 / 73 | 34 / 27 | 14 M |
+| 10 / 20 | `--n-recv 128 --credit 8` | 8.2 | 4.88 | 83.5 | 6.58 | 6.4 | 50 / 75 | 31 / 25 | 36 M |
+| 8 / 22 | `--n-recv 128` | 6.2 | 6.45 | 77.8 | 7.07 | 6.8 | 71 / 84 | 9 / 26 | 0.2 M |
+| 8 / 22 | `--n-recv 128` | 6.4 | 6.25 | 76.0 | 7.23 | 7.0 | 69 / 85 | 7 / 25 | 0.3 M |
+| 8 / 22 | `--n-recv 128` | 6.3 | 6.35 | 77.0 | 7.14 | 7.0 | 70 / 85 | 8 / 25 | 0.3 M |
+| 7 / 23 | `--n-recv 128` | 6.9 | 5.80 | 83.3 | 6.60 | 6.4 | 66 / 74 | 6 / 36 | 0 |
+| 9 / 21 | `--n-recv 128` | 6.2 | 6.45 | 75.1 | 7.32 | 7.0 | 71 / 86 | 15 / 19 | 0.5 M |
+
+Two things happen at once.  **With two service threads a host, FILL runs at 6.4-6.6 G inserts/s on the one-a-core
+team** (+58 % over one rank; the service 64-72 % busy, the senders waiting 10-17 %) -- FILL was the phase session 19
+found service-bound, and doubling the thread that binds it pays in full.  **PROBE on the same team collapses to 3.5**,
+and the counters say why it is not the service: it is 29-32 % busy, the senders wait 51 % of the phase, the receivers
+41 %, and the receiving side reports 95-438 M receives left unposted for want of a free block -- a starved pool, with
+15-19 M sealed blocks parked for credit on the sending side.  More posted receives (128, 256 for 31 peers) cut the
+unposted count by 2-4x and move PROBE not at all: the phase is pool-bound, not slot-bound.  **The SMT team a rank,
+10/20, does not starve**: 6.1-6.4 G points/s in PROBE (+35 % over one rank, 0.38-0.40 a host, the wire at 6.0-6.2 GB/s
+a host), the service 70-74 % busy, 19-44 M unposted.  Its FILL at the default receive count is 4.7, below one rank's
+`--n-recv 64`; **with `--n-recv 128` FILL is 6.35-6.67 and PROBE 6.14-6.85** (three runs; the fabric's scatter is
+11 % on PROBE here).  `--credit 8` on top gives FILL back to 4.88 (the senders wait 47 % of FILL for a free block: more
+credit is more of the pool parked) and leaves PROBE alone.  **Shifting two producers to the dict side, 8/22 a rank,
+is the best PROBE of the session and the tightest: 7.07, 7.23, 7.14** (77 s for 2^39), FILL 6.25-6.45, the service
+85 % busy, the senders waiting 7-8 % of PROBE and the receivers 25 %, 0.3 M receives unposted; 9/21 gives 7.32 and
+7/23 6.60 with its producers saturated (5.6 % wait).  PROBE follows the dict-thread count a host as long as the
+producers keep up: 40 threads 6.1-6.9, 42 threads 7.3, 44 threads 7.1-7.2, 46 threads 6.6 (producer-bound).
+**Hypothesis** (labelled): the 5/10 rank has 10 inboxes of 64 blocks and 10 receivers draining them; the 10/20 rank has
+20 of each with the same pool (6383 blocks a rank); when 31 peers each park blocks for credit, the rank with fewer,
+slower-drained inboxes latches into the exhausted-pool state session 8 saw across hosts, and the one with twice the
+drain does not.  `--credit`, `--inbox` and the pool's size (`--block`, `--swc`) are the knobs to price; not measured
+here beyond `--credit 8` (below).
+
+## 5. Four ranks a host, two a socket
+
+`--map-by ppr:2:socket:pe=8 --bind-to core`, 10G a rank, 63 peers so `--n-recv 256`; each Router sees 16 CPUs (8
+cores), keeps the service alone on one and has 7 cores for the workers: 2/5 one a core, 5/9 two a core.
+
+| P / R a rank | FILL s | FILL G/s | PROBE s | PROBE G/s | wire a host in PROBE | service busy, FILL / PROBE | senders / receivers waited in PROBE | receives left unposted in PROBE |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 5 / 9 | 5.9 | 6.78 | 96.1 | 5.72 | 5.6 GB/s | 48 / 28 % | 41 / 29 % | 12 M |
+| 5 / 9 | 5.9 | 6.78 | 99.4 | 5.53 | 5.6 | 47 / 27 | 43 / 31 | 19 M |
+| 2 / 5 | 7.0 | 5.72 | 178.6 | 3.08 | 3.0 | 28 / 10 | 47 / 47 | 90 M |
+
+Four service threads a host make **FILL the fastest of the session, 6.78 G inserts/s** (+65 % over one rank), with
+zero receives left unposted in that phase and the services 48 % busy.  **PROBE is 5.5-5.7**, below the two-rank 10/20
+team's 6.1-6.4 with fewer dict threads a host (36 against 40) and the four services at 28 % busy while the senders wait
+41-43 % and the receivers 29-31 %: the same pool-bound state as the two-rank 5/10 team, milder.  The one-a-core team
+(2/5 a rank, 20 dict threads a host) is the worst PROBE of the session at 3.08 with the services 10 % busy and 90 M
+receives unposted.  The pattern over the three rank counts is one pattern: **PROBE follows the dict-thread count a
+host (20-21 threads: 3.1-4.8; 36: 5.5-5.7; 40: 6.1-6.4) once each host has at least two service threads, and a
+rank with few receivers under many peers starves its pool**; FILL follows the service-thread count a host (1: 4.0-4.7,
+2: 6.3-6.6, 4: 6.8) until the wire or the pool takes over.
+
+## What to change
+
+1. **The 16-host grvingt reference is two ranks a host, one bound to each socket** (`--map-by ppr:1:socket --bind-to
+   socket`, `-x HFI_NO_CPUAFFINITY=1`), **8 producers + 22 dict threads a rank on the socket's 15 free cores,
+   `--ram 20G` a rank, `--n 39`, `--prefetch 8 --n-recv 128`: FILL 6.3-6.5 G inserts/s, PROBE 7.1-7.3 G points/s**,
+   0.45 a host = one node's own rate, 57 % of the wire.  One rank a host with the session 19 team is 4.0-4.1 / 4.5-4.8,
+   and its posted receives want `--n-recv 64` (4 a peer) for FILL.
+2. **Ranks a host is the lever wherever the service thread binds**, on Omni-Path as on 25 GbE (session 22): a second
+   service thread a host is worth +50 % in PROBE and +55 % in FILL here, for no code, and brings the per-host rate
+   back to the single node's.  The Router's one-service-thread
+   design is what makes the socket the unit; the alternative is a second service thread inside the Router.
+3. **The exhausted-pool latch is back**, in the 5/10-a-rank configuration under 31 peers: PROBE at 3.5 with everyone
+   waiting and the service idle.  It is the class of failure session 8 fixed across 4 hosts and session 22 relieved
+   with `--n-recv`; here the receive slots do not cure it.  Price `--credit`, `--inbox` and the pool before trusting
+   any small team over many peers.
+4. **Posted receives scale with the peers**: 4 a peer (`--n-recv 64` for 15, 128 for 31) is worth 12-35 % of FILL and
+   nothing on PROBE.  The default of 32 should become `4 * (n_nodes - 1)`, floored at 32.
+5. **The kadeploy client's exit status is not the deployment's**: it timed out on the server after 855 s with all 16
+   nodes deployed.  Check the nodes.
+
+## Reproducing
+
+```bash
+# frontend: reserve, deploy (the client may time out; check the nodes), per-node setup, wire check
+oarsub -t deploy -p grvingt --project cryptanalyse -l nodes=16,walltime=3:00 "sleep 10800"
+bash build/session24/deploy24.sh        # waits for the job, writes nodes.txt, kadeploy3 -a ~/debian13-big-iommupt.yaml -f nodes.txt -k
+bash build/session24/post24.sh          # per node as root: cmdline, Passthrough, OPA rename, link, hfi1 cache_size 4096, numa_balancing 0
+bash build/session24/flood24.sh         # 12.1-12.2 GB/s over PSM2 between the first two nodes
+# grvingt-1, login shell: build, one run, the batches
+ssh grvingt-1 bash -l build/session24/setup24.sh
+P=10 R=21 bash -l build/session24/run24.sh                                   # one rank a host, --n 39 --ram 40G
+PPN=2 P=8 R=22 EXTRA="--prefetch 8 --n-recv 128" bash -l build/session24/run24.sh    # the reference, a rank a socket, 20G a rank
+PPN=2 RAM=20G CONFIGS="a|10|20|--n-recv 128;b|5|10|" bash -l build/session24/batch24.sh
+python3 build/session24/summ24.py ref1 recv64 p2_10_20_r128 p2_8_22_r128 ...
+```
