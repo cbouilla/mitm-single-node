@@ -3373,8 +3373,8 @@ domain, and `k` (evaluations over pure walking) is the resolver's overhead.
 
 ## 1. The difficulty against the split, at a fixed dictionary
 
-`--n 36 --ram 4G` (w = 500.0 M slots = 2^28.90), `--alpha` swept, 2 rounds each, 2-3 splits per alpha, the best
-of each below.  `1/theta` is what alpha buys at this w; the round is `beta * w` distinguished points either way.
+`--n 36 --ram 4G` (w = 500.0 M slots = 2^28.90), `--alpha` swept, 2 rounds each, **2-3 splits per alpha and not
+an exhaustive search of them** -- three around the bottom of the U, two at its ends, the best of each below.  `1/theta` is what alpha buys at this w; the round is `beta * w` distinguished points either way.
 
 | alpha | 1/theta | P/R | round | ev/coll | node eval/s | DP/s | dist/w | **ns/coll** |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -3403,6 +3403,9 @@ regime a bigger dictionary at a fixed alpha would walk into, and it costs 2x.
 `--n 42`, alpha at its 2.5 default, each size at the best of 2-3 splits.  This is the user's question in its
 own terms: 160 GB is what the node holds, and the alternative is a smaller dictionary and a harder function.
 
+(160 GB and 40 GB are one round each, so their times carry the shard's first touch; 10 GB and 2.5 GB are the
+second of two.  The first touch is parallel over the dict threads, seconds against a round of minutes.)
+
 | RAM | w | 1/theta | P/R | round | ev/coll | node eval/s | **ns/coll** | vs 160 GB |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | **160 G** | 20.0 G | 5.93 | 39/22 | 1125.3 s | 62.3 | 1.19 G | **52.6** | 1.00 |
@@ -3415,9 +3418,11 @@ round count falls exactly as w rises, while `ev/coll` doubles with every 4x cut 
 the `1/sqrt(w)` of the theory, to 3 %).  The rate does climb, 1.19 -> 2.27 G/s, and it pays for a third of the
 loss at the first step and less after: net 1.36x, 2.12x, 3.87x.  There is no size at which stopping short wins.
 
-The other reading of the same table: at 160 GB the node is **balanced** (senders wait 5.3 % of the round,
-receivers 5.4 %), and that is where one wants to be.  Below it the walkers idle against the dictionary or the
-dictionary idles against the walkers, and the split is what recovers most of the difference -- 40 GB at the
+The other reading of the same table: at 160 GB neither side of the node is starved.  Its walkers wait 5.3 % of
+the round and its dict threads 5.4 %, both under `Router_Bottleneck`'s 5 % threshold -- which is why the verdict
+line falls through to `service/network`, a meaningless label at np 1 -- and the neighbouring split, 36/25, leaves
+the dict threads idle 18 % and is slower (53.3 ns/coll).  Near-balance is an inference from those two numbers,
+not something the Router says.  Below 160 GB the split is what recovers most of the difference: 40 GB at the
 predicted 50/11 was 88.7 ns/coll, at 46/15 it is 71.4.
 
 ## 3. A big dictionary costs nothing per evaluation
@@ -3460,12 +3465,17 @@ The other half of `#rounds * t_round` is not visible in any single round, so: 12
 statistic is the coverage at the find, whose mean is `U/2 = 2^n` with a standard error of `U/(2*sqrt(3*12))`:
 measured **1.387 G distinct pairs against 1.074 G predicted, a ratio of 1.29 +- 0.17**.
 
-So the model is confirmed with a 30 % margin, and `#rounds = 2^(n+1) / E_i` is the right form.  It also says a
+So `#rounds = 2^(n+1) / E_i` is the right form and **the model holds to within 30 %** -- but both statistics
+land high (+1.2 and +1.75 sigma), which is more likely a small systematic than noise: a planted pair slightly
+harder than a random collision, or located collisions favouring long trails.  Read every absolute below with
+that margin.  One line so that the exponent is not re-litigated: `U` is `2^(n+1)` rather than `2^n` because f
+and g are **random functions** (Speck under a key, truncated), not permutations; a problem built from two
+permutations would record `2^(n-1)` pairs, all of them claws.  The n=30 run is what settled it.  It also says a
 search is *half the problem's collisions* long: every PCS run ends deep in the regime where rounds re-find pairs
 earlier rounds already had, and the geometric above is what accounts for it.
 
 **Absolute wall times on this node** (`total = 2^(n+1) * ns/coll`): n=36 with 4 GB, 1.8 h.  n=42 with 160 GB at
-39/22, **5.3 days**.  n=48 against that same 160 GB would be 2^9 times it -- the domain grows by 2^6 and
+39/22, **5.3 days** -- 5 to 7 with the margin above.  n=48 against that same 160 GB would be 2^9 times it -- the domain grows by 2^6 and
 `1/theta` with it by 2^3 -- i.e. 7.4 years on one node, which is what distributing w is for.
 
 ## 6. The split, as a rule
