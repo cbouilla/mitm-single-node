@@ -3319,3 +3319,199 @@ PPN=2 P=8 R=22 EXTRA="--prefetch 8 --n-recv 128" bash -l build/session24/run24.s
 PPN=2 RAM=20G CONFIGS="a|10|20|--n-recv 128;b|5|10|" bash -l build/session24/batch24.sh
 python3 build/session24/summ24.py ref1 recv64 p2_10_20_r128 p2_8_22_r128 ...
 ```
+
+# Session 26 -- grvingt, PCS: what makes a search finish, not what makes a round fast
+
+2026-09-16/17, **grvingt-12** (2 x Xeon Gold 6130, 32 cores / 64 PU, 187 GB), `oarsub -p grvingt --project
+cryptanalyse -l host=1,walltime=6:00:00` (job 6929764), standard `debian13` environment, kernel 6.12.107,
+`module load openmpi/4.1.6 hwloc/2.13.0 ucx/1.20.0 gcc-toolchain`, `kernel.numa_balancing = 0`,
+transparent huge pages `[always]`.  Commit `0f8a000` on `bench-grvingt` (= `0bff8a2` of `omp_reboot`, the placer
+keeping the service thread alone on its core), release build, the one session 25 used.  One rank, `--engine pcs`,
+`double_speck64_demo`, seed 1 everywhere, 61 workers + 1 service in every run.  Scripts and logs in
+`build/session26/`; `summ26.py` is the table below.
+
+**The question** (the user): get the *result* as fast as possible, i.e. minimise `#rounds * t_round`, over the
+dictionary size w (up to 160 GB) and the team split -- all the RAM need not be used, and a harder function might
+pay by cutting the memory traffic.
+
+## The figure of merit
+
+A round is worth the **distinct collisions it finds**, `E_i` (the engine prints it, `#distinct coll (this i)`,
+from the walkers' merged HyperLogLog over the problem-level pairs).  For a claw problem whose f and g are random
+functions of an n-bit domain, the pairs a run can ever record -- f-f, g-g and f-g -- number `U = 2^(n+1)`, a
+round's located set is a uniform sample of those active under its version of the mixing, and the golden pair is
+one of them, so
+
+    P(found in a round) = E_i / 2^(n+1)     #rounds = 2^(n+1) / E_i     total = 2^(n+1) * (t_round / E_i)
+
+**`t_round / E_i`, the wall-clock per distinct collision, is therefore the whole objective**, and it is what the
+`ns/coll` column below is.  w drops out of it: a dictionary twice the size makes a round twice as long and worth
+twice as many collisions.  Two rounds of a configuration measure it; nothing has to run to completion.
+
+It splits into two factors that move in opposite directions, which is the whole story of this session:
+
+    ns/coll  =  ev/coll / rate       ev/coll = k * beta / (theta * C)      C = E_i / w
+
+`ev/coll`, the evaluations per distinct collision, is **algorithmic and machine-independent**; `rate` is the
+node's evaluations per second.  `C` depends on **alpha alone** (1.04 at alpha 2.5 whether n is 30, 36 or 42 and
+whether w is 12.5 M or 20 G slots), `1/theta = alpha^-1 sqrt(2^n / w)` depends on the dictionary's share of the
+domain, and `k` (evaluations over pure walking) is the resolver's overhead.
+
+## Summary
+
+| | |
+| --- | --- |
+| Best on the node, 160 GB, n=42 | `--ram 160G --producers-per-node 39 --dicts-per-node 22`, 52.6 ns/coll |
+| Difficulty: optimum | alpha 1.8-2.5 (`1/theta` 4.7-6.5), flat to 1 %; the shipped default is in it |
+| Difficulty: alpha 5 (twice the dictionary's worth) | 2.0x worse -- `C` collapses from 1.04 to 0.38 |
+| Difficulty: alpha 0.35 | 3.2x worse -- 262 evaluations a collision against 51 |
+| RAM: 160 GB vs 40 / 10 / 2.5 GB, n=42 | 1.00 : 1.36 : 2.12 : 3.87.  **Use every byte** |
+| RAM: cost of a big dictionary per evaluation | none: 30.4 M f/s a walker at 160 GB, 30.2 at 4 GB |
+| beta | 8 is the optimum; 4 and 16 cost 8 %, 2 costs 40 %, 32 costs 26 % |
+| Split | `R` dict threads follow the DP rate: `R ~ 220 * theta / (1 + 3.6 * theta)`, `P = 61 - R` |
+| Round count | `2^(n+1) / E_i` confirmed over 12 full searches at n=30 (1.29x the model, SE 0.17) |
+
+## 1. The difficulty against the split, at a fixed dictionary
+
+`--n 36 --ram 4G` (w = 500.0 M slots = 2^28.90), `--alpha` swept, 2 rounds each, 2-3 splits per alpha, the best
+of each below.  `1/theta` is what alpha buys at this w; the round is `beta * w` distinguished points either way.
+
+| alpha | 1/theta | P/R | round | ev/coll | node eval/s | DP/s | dist/w | **ns/coll** |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 5.00 | 2.34 | 31/30 | 18.1 s | 57.8 | 0.61 G | 221.8 M | 0.38 | 95.1 |
+| 3.50 | 3.35 | 31/30 | 19.1 s | 51.0 | 0.90 G | 209.7 M | 0.67 | 56.9 |
+| 2.50 | 4.69 | 36/25 | 24.5 s | 51.0 | 1.08 G | 163.7 M | 1.04 | 47.0 |
+| **1.80** | **6.51** | **41/20** | 33.8 s | 56.5 | 1.21 G | 118.5 M | 1.45 | **46.5** |
+| 1.30 | 9.02 | 46/15 | 47.3 s | 68.1 | 1.33 G | 84.7 M | 1.85 | 51.0 |
+| 0.90 | 13.03 | 50/11 | 68.5 s | 91.0 | 1.47 G | 58.4 M | 2.21 | 61.9 |
+| 0.60 | 19.54 | 55/6 | 102.0 s | 135.5 | 1.62 G | 39.2 M | 2.43 | 83.8 |
+| 0.35 | 33.50 | 57/4 | 178.4 s | 262.1 | 1.74 G | 22.4 M | 2.37 | 150.3 |
+
+**A harder function does buy throughput, and it is not enough.**  The node's rate climbs monotonically with the
+difficulty, 0.61 -> 1.74 G evaluations/s, exactly as hoped: fewer distinguished points per evaluation, less
+dictionary traffic, dict threads turned into walkers.  But the walking itself grows faster: `ev/coll` bottoms out
+at 51 around alpha 2.5-3.5 and is 5x that at alpha 0.35.  The product is flat over alpha 1.8-2.5 and rises on
+both sides.
+
+**The easy side is a cliff, the hard side a slope.**  At alpha 5 the round is 26 % shorter than the default's
+but finds 0.38 *w* distinct collisions instead of 1.04 *w*: the trails are too short for the dictionary to be
+worth filling (`1/theta` = 2.34, `beta * w` points arriving at w slots off trails of 2.3 steps).  That is the
+regime a bigger dictionary at a fixed alpha would walk into, and it costs 2x.
+
+## 2. The RAM question: one problem, four dictionaries
+
+`--n 42`, alpha at its 2.5 default, each size at the best of 2-3 splits.  This is the user's question in its
+own terms: 160 GB is what the node holds, and the alternative is a smaller dictionary and a harder function.
+
+| RAM | w | 1/theta | P/R | round | ev/coll | node eval/s | **ns/coll** | vs 160 GB |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| **160 G** | 20.0 G | 5.93 | 39/22 | 1125.3 s | 62.3 | 1.19 G | **52.6** | 1.00 |
+| 40 G | 5.0 G | 11.86 | 46/15 | 407.2 s | 115.6 | 1.62 G | 71.4 | 1.36 |
+| 10 G | 1.25 G | 23.73 | 52/9 | 161.7 s | 226.6 | 2.03 G | 111.5 | 2.12 |
+| 2.5 G | 312.5 M | 47.45 | 56/5 | 75.1 s | 461.7 | 2.27 G | 203.6 | 3.87 |
+
+**Every byte earns its place.**  Distinct collisions per round stay at 1.07-1.18 *w* across the four, so the
+round count falls exactly as w rises, while `ev/coll` doubles with every 4x cut (62.3, 115.6, 226.6, 461.7 --
+the `1/sqrt(w)` of the theory, to 3 %).  The rate does climb, 1.19 -> 2.27 G/s, and it pays for a third of the
+loss at the first step and less after: net 1.36x, 2.12x, 3.87x.  There is no size at which stopping short wins.
+
+The other reading of the same table: at 160 GB the node is **balanced** (senders wait 5.3 % of the round,
+receivers 5.4 %), and that is where one wants to be.  Below it the walkers idle against the dictionary or the
+dictionary idles against the walkers, and the split is what recovers most of the difference -- 40 GB at the
+predicted 50/11 was 88.7 ns/coll, at 46/15 it is 71.4.
+
+## 3. A big dictionary costs nothing per evaluation
+
+The control: the same difficulty as the 4 GB baseline with 16x the dictionary, `--n 40 --ram 64G`, split 36/25.
+
+| | round | ev/coll | node eval/s | f/s a walker | probe/s a dict thread | ns/coll |
+| --- | --- | --- | --- | --- | --- | --- |
+| 4 GB, n=36 | 24.4 s | 51.1 | 1.09 G | 30.2 M | 6.6 M | 46.8 |
+| 64 GB, n=40 | 403.4 s | 50.9 | 1.05 G | 30.0 M | 6.3 M | 48.4 |
+| 160 GB, n=42 (1/theta 5.93) | 1125.3 s | 62.3 | 1.19 G | 30.4 M | 6.5 M | 52.6 |
+
+16x the dictionary costs 3.7 % of the rate, 40x costs nothing measurable: a dict thread does 6.3-6.6 M probes/s
+and a walker 30 M evaluations/s whatever the shard's size.  Transparent huge pages are `[always]` on this image
+and `PcsDict`'s `vector<u64>` gets 2 MB pages at every size, so the TLB reach does not change with w.  **Every
+cheap 4 GB measurement therefore transfers to the full-RAM scale**, which is what makes section 1 usable.
+
+## 4. beta, the round's length
+
+`--n 36 --ram 4G`, alpha 2.5, split 36/25 throughout (tuned for beta 8, not re-tuned per beta).
+
+| beta | round | ev/coll | dist/w | ns/coll |
+| --- | --- | --- | --- | --- |
+| 2 | 5.6 s | 67.0 | 0.17 | 65.8 |
+| 4 | 11.4 s | 54.8 | 0.45 | 50.6 |
+| **8** | 24.5 s | 51.0 | 1.04 | **47.0** |
+| 16 | 52.5 s | 54.1 | 2.07 | 50.6 |
+| 32 | 110.3 s | 62.7 | 3.73 | 59.0 |
+
+The default is the optimum and the curve is shallow around it.  Short rounds waste the dictionary (at beta 2 it
+is 18 % full when the round ends); long ones waste the arrivals, since a slot keeps one trail and `PcsDict`'s
+most-recent-wins policy throws the rest away.
+
+## 5. The round count itself
+
+The other half of `#rounds * t_round` is not visible in any single round, so: 12 full searches, `--n 30
+--ram 100M` (w = 12.5 M slots, `1/theta` 3.71, `E_i` = 1.00 *w* every round), 36/25, no `--nrounds` cap, seeds
+1-12.  Rounds to the golden pair: 10, 57, 81, 168, 184, 221, 227, 313, 356, 361, 471, 635 -- **mean 257** against
+`2^31 / E_i` = 172 predicted (a geometric, so the 12-seed standard error is 74: +1.2 sigma).  The sharper
+statistic is the coverage at the find, whose mean is `U/2 = 2^n` with a standard error of `U/(2*sqrt(3*12))`:
+measured **1.387 G distinct pairs against 1.074 G predicted, a ratio of 1.29 +- 0.17**.
+
+So the model is confirmed with a 30 % margin, and `#rounds = 2^(n+1) / E_i` is the right form.  It also says a
+search is *half the problem's collisions* long: every PCS run ends deep in the regime where rounds re-find pairs
+earlier rounds already had, and the geometric above is what accounts for it.
+
+**Absolute wall times on this node** (`total = 2^(n+1) * ns/coll`): n=36 with 4 GB, 1.8 h.  n=42 with 160 GB at
+39/22, **5.3 days**.  n=48 against that same 160 GB would be 2^9 times it -- the domain grows by 2^6 and
+`1/theta` with it by 2^3 -- i.e. 7.4 years on one node, which is what distributing w is for.
+
+## 6. The split, as a rule
+
+A dict thread retires 5.3-7.5 M probes/s and the optimum leaves it a little headroom, so the dict thread count
+follows the node's distinguished-point rate, not the difficulty as such:
+
+    R ~ 220 * theta / (1 + 3.6 * theta)     P = (workers) - R
+
+which gives 26, 22, 17, 14, 13 at `1/theta` = 4.69, 6.51, 9.02, 11.86, 13.03 against the 25, 20, 15, 15, 11
+measured -- close enough to seed a two-point sweep.  The operational version is simpler: **add dict threads until
+the senders stop waiting**, which the round report's `LIMITED BY` line names outright.  Getting it wrong is
+expensive: 40 GB at n=42 costs 24 % between 46/15 and 50/11, and 71 % between 46/15 and 53/8.
+
+## Where this sits against earlier sessions
+
+Session 25's baseline reproduces exactly: 4 GB, n=36, 36/25 in 24.4 s here against 24.5 s there, 164.6 M DP/s,
+1.04 *w*.  Its "the real difficulty is dictionary-bound, the easy one walker-bound" stands, and this session
+says what to do about it: nothing -- the point where the dictionary starts to bind is also where the algorithm
+is cheapest, and the two optima coincide to within 1 %.  Session 25's own entry was never written into this file
+(its reservation ended first); its numbers survive in `build/session25/` and in the project memory.
+
+Nothing here contradicts the direct engine's sessions.  One prediction this session does *not* measure: at
+alpha 1.8 the node ships 118 M DP/s instead of 164 M for the same work, **28 % less wire traffic per evaluation**,
+which is free on one node and should not be on the 8-16 host runs where the wire or the service thread was the
+limit (sessions 20, 24).  That wants a multi-node A/B before it is believed.
+
+## What to change
+
+- **Nothing in the code.**  `--alpha 2.5` and `--beta 8` are both at their optimum, and `--ram` should be
+  everything the node has.
+- On one grvingt node, the PCS reference is `--ram 160G --producers-per-node 39 --dicts-per-node 22` at n=42,
+  or `R` from the rule of section 6 at another size.
+- `--alpha 1.8` is worth trying on a multi-node run, where its 28 % less wire traffic per evaluation is not free.
+
+## Reproducing
+
+```bash
+oarsub -p grvingt --project cryptanalyse -l host=1,walltime=6:00:00 'sleep infinity'
+# on the node
+sudo-g5k sysctl -w kernel.numa_balancing=0
+cd ~/mitm-grvingt/build/session26
+bash sweepA.sh          # difficulty x split, 4 GB, n=36          ~40 min
+bash rest.sh            # the RAM question, the control, the round count, beta   ~2 h 30
+python3 summ26.py a_*.log        # one line per run, sorted by ns/coll
+```
+
+One run alone is `P=39 R=22 N=42 RAM=160G ROUNDS=1 bash run26.sh` (`EXTRA="--alpha 1.8 --beta 8"` for the rest).
+The figure of merit is `secs / (dist/w * w)`; `summ26.py` does it, and `w` is the banner's "slots in all".
