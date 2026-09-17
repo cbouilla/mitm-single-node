@@ -106,28 +106,15 @@ static void receiver_round(Router_thread &rt, const RouterArgs &a, Shared &sh, i
 	u64 *seen = sh.seen.data() + (size_t) r * ((g_nodes * S * sh.max_points + 63) / 64);
 	u64 got = 0;
 	for (;;) {
-		size_t k = 0;
-		if (a.pop_one) {
-			u64 x, y;
-			if (Router_Pop(&x, &y, rt)) {
-				check_point(x, y, me, S, sh, seen, round);
-				k = 1;
-			}
-		} else {
-			const u64 *pts;
-			k = Router_Grab(&pts, rt);
-			for (size_t j = 0; j < k; j++)
-				check_point(pts[2 * j], pts[2 * j + 1], me, S, sh, seen, round);
-			if (k > 0)
-				Router_Release(rt);       /* after the checks: they read block memory */
-		}
-		if (k == 0) {
+		u64 x, y;
+		if (not Router_Pop(&x, &y, rt)) {
 			if (Router_Test_drained(rt))
 				break;
 			cpu_relax();
 			continue;
 		}
-		got += k;
+		check_point(x, y, me, S, sh, seen, round);
+		got += 1;
 		if (a.slow_recv)
 			for (int t = 0; t < 2000; t++)
 				cpu_relax();
@@ -621,11 +608,6 @@ int main(int argc, char **argv)
 		c.partial = true;
 		c.opts.swc_linesize = 32;
 		run_config(c, "partial_lines");
-	}
-	if (all || a.test == "pop_one") {
-		RouterArgs c = a;
-		c.pop_one = true;
-		run_config(c, "pop_one");
 	}
 	if (all || a.test == "swc_is_block") {
 		RouterArgs c = a;

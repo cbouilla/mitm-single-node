@@ -11,7 +11,7 @@ namespace mitm {
  * Put n blocks onto the free ring, a run of tickets then their cells, each once the popper of its previous
  * element has stored it free -- at most that popper's last stores away, the ring being never full.  The cell's
  * store releases everything the pusher did to the block.
- * Reached from Router_Release (one block) and from spill, in Router_Init and Router_Progress (a batch).
+ * Reached from Router_Pop (the block it read through) and from spill, in Router_Init and Router_Progress (a batch).
  */
 inline void Router_node::free_push(const u32 *blks, u32 n)
 {
@@ -203,68 +203,59 @@ inline void Router_Close(Router_thread &rt)
 /******************************** the receiver's calls ********************************/
 
 /*
- * Receiver.  The next block the inbox names, to be read in place: where its points are, two u64 each (key then
- * val), and how many; 0 and NULL when nothing is there, and the time from that to the next block is the
- * receiver's wait, WAIT_RECV.  One block out at a time -- Router_Release gives it back, and a second Grab before
- * that is a bug, not a queue.  Grab/Release and Router_Pop do not mix on one receiver.
+ * The next block the receiver's inbox names becomes the one it reads, in place: where its points are and how
+ * many.  False when nothing is there, and the time from that to the next block is the receiver's wait,
+ * WAIT_RECV.  Reached from Router_Pop, with no block being read.
  */
-inline size_t Router_Grab(const u64 **pts, Router_thread &rt)
+inline bool Router_node::grab(Router_thread &r)
 {
-	if (rt.cur_blk != ROUTER_NONE)
-		errx(1, "Router_Grab: a block is out already");
 	RouterBlockMsg e;
-	if (not rt.inbox.pop(e)) {
-		if (rt.wait_since == 0)
-			rt.wait_since = (u64) (wtime() * 1e9);
-		*pts = NULL;
-		return 0;
+	if (not r.inbox.pop(e)) {
+		if (r.wait_since == 0)
+			r.wait_since = (u64) (wtime() * 1e9);
+		return false;
 	}
-	if (rt.wait_since != 0) {
-		rt.ctr[ROUTER_WAIT_RECV] += (u64) (wtime() * 1e9) - rt.wait_since;
-		rt.wait_since = 0;
+	if (r.wait_since != 0) {
+		r.ctr[ROUTER_WAIT_RECV] += (u64) (wtime() * 1e9) - r.wait_since;
+		r.wait_since = 0;
 	}
-	Router_node &rn = rt.node;
-	rt.cur_blk = e.blk;
-	rt.cur_count = e.count;
-	rt.cur_pts = (const u64 *) (rn.pool + (size_t) rt.cur_blk * rn.block_bytes + ROUTER_HDR_BYTES);
-	rt.cur_off = 0;
-	rt.ctr[ROUTER_POPPED] += rt.cur_count;
-	*pts = rt.cur_pts;
-	return rt.cur_count;
+	r.cur_blk = e.blk;
+	r.cur_count = e.count;
+	r.cur_pts = (const u64 *) (pool + (size_t) r.cur_blk * block_bytes + ROUTER_HDR_BYTES);
+	r.cur_off = 0;
+	r.ctr[ROUTER_POPPED] += r.cur_count;
+	return true;
 }
 
-/* Receiver.  The block out is read through: onto the free ring, where a sender may install it at once, so the
- * caller reads nothing of it past this call.  The push orders those reads before the block's reuse; the count
- * comes after the push so that it never runs ahead of it: the service compares it with what it handed out. */
-inline void Router_Release(Router_thread &rt)
+/* The block being read is read through: onto the free ring, where a sender may install it at once, so nothing
+ * of it is read past this call.  The push orders those reads before the block's reuse; the count comes after
+ * the push so that it never runs ahead of it: the service compares it with what it handed out.  Reached from
+ * Router_Pop, by the pop that takes the block's last point. */
+inline void Router_node::release(Router_thread &r)
 {
-	if (rt.cur_blk == ROUTER_NONE)
-		errx(1, "Router_Release: no block is out");
-	rt.node.free_push(&rt.cur_blk, 1);
-	rt.ctr[ROUTER_BLOCKS] += 1;
-	rt.cur_blk = ROUTER_NONE;
+	free_push(&r.cur_blk, 1);
+	r.ctr[ROUTER_BLOCKS] += 1;
+	r.cur_blk = ROUTER_NONE;
 }
 
-/* Receiver.  One point, out of the block out or the next one; false when nothing is there now.  The last point
- * of a block is copied out before the release it triggers: the block may be someone else's right after. */
+/* Receiver.  One point, out of the block being read or the next one; false when nothing is there now.  The
+ * last point of a block is copied out before the release it triggers: the block may be someone else's right
+ * after. */
 inline bool Router_Pop(u64 *a, u64 *b, Router_thread &rt)
 {
-	if (rt.cur_blk == ROUTER_NONE) {
-		const u64 *pts;
-		if (Router_Grab(&pts, rt) == 0)
-			return false;
-	}
+	if (rt.cur_blk == ROUTER_NONE && not rt.node.grab(rt))
+		return false;
 	*a = rt.cur_pts[2 * rt.cur_off];
 	*b = rt.cur_pts[2 * rt.cur_off + 1];
 	rt.cur_off += 1;
 	if (rt.cur_off == rt.cur_count)
-		Router_Release(rt);
+		rt.node.release(rt);
 	return true;
 }
 
-/* Receiver.  Nothing can arrive any more and nothing is left to read, a block out included: the flag first, then
- * emptiness, so that a block pushed between the two reads is still popped.  The round's last wait ends here, no
- * block coming to end it. */
+/* Receiver.  Nothing can arrive any more and nothing is left to read, the block being read included: the flag
+ * first, then emptiness, so that a block pushed between the two reads is still popped.  The round's last wait
+ * ends here, no block coming to end it. */
 inline bool Router_Test_drained(Router_thread &rt)
 {
 	if (rt.node.input_closed.load_acquire() == 0)

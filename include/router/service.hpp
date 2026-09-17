@@ -637,7 +637,7 @@ inline void Router_Reset(Router_thread &rt)
 {
 	Router_node &rn = rt.node;
 	if (rt.role == ROUTER_RECEIVER && rt.cur_blk != ROUTER_NONE)
-		errx(1, "Router_Reset: a block is out");
+		errx(1, "Router_Reset: a receiver stopped popping before it was drained");
 	#pragma omp barrier                   /* every worker is out of the round: nothing cleared below is read */
 	if (rt.role != ROUTER_SERVICE) {
 		for (int k = 0; k < ROUTER_STATS_SIZE; k++)

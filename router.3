@@ -1,10 +1,9 @@
 .\" Man page of the Router's interface (include/router/).  Render with: man -l router.3
-.TH ROUTER 3 2026-09-13 "MITM (omp_reboot)" "MITM Library Functions"
+.TH ROUTER 3 2026-09-16 "MITM (omp_reboot)" "MITM Library Functions"
 .SH NAME
 Router_Push, Router_Pop, Router_Close, Router_Test_drained, Router_Init,
-Router_Progress, Router_Test_quiescent, Router_Stats, Router_Reset,
-Router_Grab, Router_Release \- route points from sender threads to receiver
-threads across MPI ranks
+Router_Progress, Router_Test_quiescent, Router_Stats, Router_Reset \- route
+points from sender threads to receiver threads across MPI ranks
 .SH SYNOPSIS
 .nf
 \fB#include "router/router.hpp"\fP
@@ -21,8 +20,6 @@ threads across MPI ranks
 .nf
 .BI "bool   Router_Pop(u64 *" a ", u64 *" b ", Router_thread &" rt );
 .BI "bool   Router_Test_drained(Router_thread &" rt );
-.BI "size_t Router_Grab(const u64 **" pts ", Router_thread &" rt );
-.BI "void   Router_Release(Router_thread &" rt );
 .fi
 .SS "Service thread (thread 0)"
 .nf
@@ -58,7 +55,13 @@ pairs of u64, from
 threads to globally numbered
 .I receiver
 threads across the ranks of an MPI communicator.
-It runs one rank per node, a node's threads being one OpenMP team.
+A
+.IR node ,
+throughout this page, is one MPI rank and the OpenMP team it runs; the Router
+knows nothing of hosts.
+A host runs one rank, or several on disjoint CPUs -- one per socket, say --
+when one service thread cannot drive its network port alone (see
+.BR NOTES ).
 Every thread of the team holds one handle, its own
 .BR Router_thread ,
 returned by
@@ -131,8 +134,7 @@ a round that outlives its senders is the receivers' to finish.
 The round cannot end until every sender of every node has closed.
 .SS Router_Test_drained()
 Returns true once nothing more can be delivered to this receiver in this round
-and it holds nothing: nothing delivered and unread, no block out (see
-.BR "ADVANCED API" ).
+and nothing delivered to it is left unread.
 .SS Router_Init()
 Collective over every thread of the team on every node, called once per thread
 inside one OpenMP parallel region.
@@ -151,7 +153,7 @@ or the group this thread belongs to, in 0..G\-1 (see
 .BR PLACEMENT ).
 .TP
 .I comm
-The MPI communicator, used as is; one rank per node.
+The MPI communicator, used as is; every rank of it is one node of the Router.
 .TP
 .I tag
 The tag of every Router message.
@@ -243,8 +245,7 @@ guarantees that no node starts the next round before every node has left this
 one.
 The call returns, on every thread, only after that: nothing is pushed or popped
 before the Router is fresh everywhere.
-The service thread must be quiescent and a receiver must hold no block (see
-.BR "ADVANCED API" ).
+The service thread must be quiescent and every receiver drained.
 .SH QUERIES
 Any thread, once
 .BR Router_Init ()
@@ -304,10 +305,15 @@ is true the Router must own that set: it refuses a set with fewer CPUs than the
 team needs -- one per thread, plus the SMT siblings of the service thread's
 core, which stay empty -- and a set that overlaps another rank's on the same
 host.
-Run with
-.BR "\-\-bind\-to none" ,
-give each rank disjoint CPUs
-.RB ( "\-\-map\-by numa \-\-bind\-to numa" ", " "\-\-map\-by slot:PE=n" ),
+Run one rank per host with
+.BR "\-\-bind\-to none" ;
+or give each of several ranks its own CPUs, as
+.B "\-\-map\-by ppr:1:socket \-\-bind\-to socket"
+does for a rank per socket and
+.B "\-\-map\-by ppr:2:node:pe=9 \-\-bind\-to core"
+for two ranks of 9 cores each (in
+.BR mpirun 's
+vocabulary a node is a host);
 or set
 .I pin
 = false.
@@ -386,38 +392,6 @@ Automatic groups fall out of the worker index: G = max(ceil(S / group_size),
 ceil(R / group_size), 1), the receivers and the senders each dealt over them
 round-robin.
 Caller's groups apply as above.
-.SH ADVANCED API
-Points are delivered in
-.I blocks
-of
-.I opts->block_points
-points.
-A receiver may read a block where it lies instead of popping its points one by
-one.
-.SS Router_Grab(), Router_Release()
-.BR Router_Grab ()
-returns the number of points in the next block delivered to this receiver and
-sets
-.RI * pts
-to its memory: point k is
-.RI ( pts "[2k], " pts [2k+1]).
-It returns 0, with
-.RI * pts
-= NULL, when no block is available now, and never waits.
-One block is out at a time:
-.BR Router_Release ()
-gives it back to the Router, after which none of its memory may be read.
-A second
-.BR Router_Grab ()
-before the release, or a
-.BR Router_Release ()
-with no block out, aborts.
-.PP
-A receiver uses either
-.BR Router_Grab ()/ Router_Release ()
-or
-.BR Router_Pop (),
-not both.
 .SH OPTIONS
 .BR "struct Router_Opts" .
 Every field has a working default and every node must supply the same values:
@@ -506,8 +480,6 @@ Nanoseconds this node's senders spent waiting for a free block inside
 .BR Router_Push (),
 or closed while the round went on, summed over the senders; nanoseconds its receivers spent with nothing to pop,
 from a
-.BR Router_Grab ()
-or
 .BR Router_Pop ()
 that found nothing to the next that found a block, or to
 .BR Router_Test_drained ()
@@ -527,8 +499,6 @@ until they have nothing more, then
 .IP 2. 4
 Receivers call
 .BR Router_Pop ()
-(or
-.BR Router_Grab ()/ Router_Release ())
 until
 .BR Router_Test_drained ().
 .IP 3. 4
@@ -576,19 +546,29 @@ The next round may begin.
 .SH ERRORS
 No function returns an error code.
 An invalid argument, a call on a thread of the wrong role, a broken
-precondition (a second grab, a release with nothing out, a reset before
-quiescence or with a block out) or an MPI library initialised below
+precondition (a reset before quiescence, or by a receiver that stopped popping
+before
+.BR Router_Test_drained ()
+returned true) or an MPI library initialised below
 .B MPI_THREAD_FUNNELED
 aborts the process through
 .BR errx (3).
 A thread the kernel did not pin where planned aborts the run through
 .BR MPI_Abort ().
 .SH NOTES
-Two ranks on one host cannot both pin (see
+Several ranks on one host is a normal configuration, and sometimes the fastest:
+the service thread is one per rank and does all the MPI, so a host whose one
+service thread is the limit (a busy share near 1 from
+.BR Router_Bottleneck ())
+gains a second by running two ranks, each with its own team and CPUs.
+Measured on 16 hosts, two ranks of 9 cores each over TCP and a rank per socket
+over Omni-Path both routed half again as many points per second as one rank per
+host, the same cores split in two teams.
+The ranks cannot both pin over the same CPUs (see
 .BR PLACEMENT ):
-run them with
+give each its own, or run them with
 .I pin
-= false, or give each its own CPUs.
+= false.
 .PP
 The Router sends nothing on
 .I comm

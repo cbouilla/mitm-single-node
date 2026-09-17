@@ -133,8 +133,8 @@ class Router_node;
  * A sender also holds a cache of free blocks, zeroed in advance: the block it installs when it seals comes out
  * of it, so the install the other senders of that destination wait on is one load and one store, and the free
  * ring sees the sender once in ROUTER_BATCH seals, after the seal, when nobody waits on it.
- * A receiver holds whole blocks: its inbox names them, Router_Grab hands it the next one to read in place, and
- * Router_Release pushes it onto the node's free ring.
+ * A receiver holds whole blocks: its inbox names them, Router_Pop reads them in place one after the other and
+ * pushes each onto the node's free ring once read through.
  */
 struct alignas(64) Router_thread {
 	/* the push's fast path */
@@ -154,7 +154,7 @@ struct alignas(64) Router_thread {
 	alignas(64) Atomic<u32> closed; /* release-stored by Router_Close, acquired by the service */
 	/* a receiver's */
 	RouterRing inbox;                    /* from the service: (block, count), blocks it now holds */
-	u32 cur_blk = ROUTER_NONE;           /* the block out: grabbed, not yet released; NONE when none */
+	u32 cur_blk = ROUTER_NONE;           /* the block being read: taken off the inbox, not yet read through; NONE when none */
 	const u64 *cur_pts = NULL;           /* its points, in block memory, two words each: key then val */
 	u32 cur_count = 0;                   /* how many */
 	u32 cur_off = 0;                     /* Router_Pop's cursor into it */
@@ -271,8 +271,8 @@ public:
 	void touch_pool(int tid, int n_threads);
 	void banner() const;
 
-	/* the free ring: any thread.  Router_Release pushes the block a receiver read through, a sender's cache takes a
-	 * batch, the stash trades them */
+	/* the free ring: any thread.  A receiver pushes the block it read through, a sender's cache takes a batch,
+	 * the stash trades them */
 	void free_push(const u32 *blks, u32 n);
 	u32 free_pop_many(u32 k, u32 *out, u32 floor);
 
@@ -281,6 +281,10 @@ public:
 	void refill(Router_thread &s);
 	void zero_valid(u32 blk);
 	void seal(int d, u32 blk);
+
+	/* the receiver path: Router_Pop, by the pop that finds no block being read and by the one that reads its last point */
+	bool grab(Router_thread &r);
+	void release(Router_thread &r);
 
 	/* the service loop: Router_Progress; Router_Init and Router_Reset for the stash and the receive slots */
 	u32 stash_pop();
