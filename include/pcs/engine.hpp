@@ -219,8 +219,10 @@ static void service_round(Router_thread &rt, const Params &params, Shared &share
 /*
  * Thread 0's end of round, once the Router is reset: the node's record -- its tallies, its Router stats
  * and the golden pair it may hold -- goes into one Allgather, and every node reads the same verdict out
- * of it.  The lowest rank that found a pair provides the answer.  Then the next round's function, drawn
- * from the PRNG every rank holds a copy of, so it travels on no wire.
+ * of it.  The lowest rank that found a pair provides the answer, written over the node's own golden pair:
+ * after the epilogue, found and golden[] are the verdict, the same on every node.  Control never reports
+ * that flip as a solution of this node's, because no control turn follows an epilogue that sets found.
+ * Then the next round's function, drawn from the PRNG every rank holds a copy of, so it travels on no wire.
  */
 static void epilogue(const Router_thread &rt, const Params &params, Shared &shared, Control &control,
                      const u64 *stats, u64 *records, PRNG &prng, u64 out_mask)
@@ -239,23 +241,27 @@ static void epilogue(const Router_thread &rt, const Params &params, Shared &shar
 	MPI_Allgather(rec, REC_WORDS, MPI_UINT64_T, records, REC_WORDS, MPI_UINT64_T, params.mpi_comm);
 
 	u64 sum[REC_WORDS] = {};
+	int winner = -1;                               /* the lowest rank with a pair: its pair becomes everyone's */
 	for (int d = 0; d < nodes; d++) {
 		const u64 *q = records + (size_t) d * REC_WORDS;
 		for (int k = 0; k < REC_FOUND; k++)
 			sum[k] += q[k];
-		if (q[REC_FOUND] && not shared.solved) {
-			shared.solved = true;
-			shared.solution[0] = q[REC_I];
-			shared.solution[1] = q[REC_X0];
-			shared.solution[2] = q[REC_X1];
-		}
+		if (q[REC_FOUND] && winner < 0)
+			winner = d;
+	}
+	if (winner >= 0) {
+		const u64 *q = records + (size_t) winner * REC_WORDS;
+		shared.golden[0] = q[REC_I];
+		shared.golden[1] = q[REC_X0];
+		shared.golden[2] = q[REC_X1];
+		shared.found = 1;
 	}
 
 	control.round.collect(shared.hll);             /* every walker's registers, merged and zeroed */
 	control.round.reduce(params.mpi_comm, rank);
 
 	shared.nround += 1;
-	shared.stop = shared.solved || shared.nround >= params.max_versions;
+	bool stop = shared.found || shared.nround >= params.max_versions;
 	if (rank == 0) {
 		for (int k = 0; k < REC_FOUND; k++)
 			control.total[k] += sum[k];
@@ -268,7 +274,7 @@ static void epilogue(const Router_thread &rt, const Params &params, Shared &shar
 	shared.round_over = 0;
 	for (size_t r = 0; r < shared.chan.size(); r++)
 		shared.chan[r].done = 0;
-	if (shared.stop)
+	if (stop)
 		return;
 	shared.header.i = prng.rand() & out_mask;
 	shared.header.root_seed = prng.rand();
@@ -398,7 +404,7 @@ optional<tuple<u64,u64,u64>> run(const Wrapper &wrapper, u64 nbytes_memory, cons
 				epilogue(rt, params, shared, *control, stats.data(), records.data(), prng, wrapper.out_mask);
 
 			#pragma omp barrier    /* the verdict and the next round's header are thread 0's to publish */
-			if (shared.stop)
+			if (shared.found || shared.nround >= params.max_versions)
 				break;
 		}
 		if (role == ROUTER_SERVICE)
@@ -406,10 +412,10 @@ optional<tuple<u64,u64,u64>> run(const Wrapper &wrapper, u64 nbytes_memory, cons
 	}
 
 	if (params.verbose)
-		done(params, shared.nround, shared.solved, wtime() - t_start);
-	if (not shared.solved)
+		done(params, shared.nround, shared.found, wtime() - t_start);
+	if (not shared.found)
 		return nullopt;
-	return optional(tuple(shared.solution[0], shared.solution[1], shared.solution[2]));
+	return optional(tuple(shared.golden[0], shared.golden[1], shared.golden[2]));
 }
 
 

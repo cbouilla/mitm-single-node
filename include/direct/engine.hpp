@@ -206,7 +206,8 @@ static void service_round(Router_thread &rt, const Params &params, const Shared 
 /*
  * Thread 0's end of phase, once the Router is reset: the node's record -- its tallies, its Router stats and
  * the golden pair it may hold -- goes into one Allgather, and every node reads the same verdict out of it.
- * The lowest rank that found a pair provides the answer.
+ * The lowest rank that found a pair provides the answer, written over the node's own golden pair: after the
+ * epilogue, found and golden[] are the verdict, the same on every node.
  */
 static void epilogue(const Router_thread &rt, const Params &params, Shared &shared, const u64 *stats,
                      u64 *records, u64 *total, u64 round, int phase, double delta)
@@ -226,20 +227,23 @@ static void epilogue(const Router_thread &rt, const Params &params, Shared &shar
 	MPI_Allgather(rec, REC_WORDS, MPI_UINT64_T, records, REC_WORDS, MPI_UINT64_T, params.mpi_comm);
 
 	u64 sum[REC_WORDS] = {};
+	int winner = -1;                       /* the lowest rank with a pair: its pair becomes everyone's */
 	for (int r = 0; r < nodes; r++) {
 		const u64 *q = records + (size_t) r * REC_WORDS;
 		for (int k = 0; k < REC_FOUND; k++)
 			sum[k] += q[k];
-		if (q[REC_FOUND] && not shared.solved) {
-			shared.solved = true;
-			shared.solution[0] = q[REC_X];
-			shared.solution[1] = q[REC_Y];
-		}
+		if (q[REC_FOUND] && winner < 0)
+			winner = r;
+	}
+	if (winner >= 0) {
+		const u64 *q = records + (size_t) winner * REC_WORDS;
+		shared.golden[0] = q[REC_X];
+		shared.golden[1] = q[REC_Y];
+		shared.found = 1;
 	}
 	for (int k = 0; k < REC_FOUND; k++)
 		total[k] += sum[k];
 	shared.phases += 1;
-	shared.stop = shared.solved || (phase == PROBE && round + 1 >= params.n_rounds);
 	if (params.verbose)
 		round_report(rt, params, sum, total, delta, round, phase);
 }
@@ -321,16 +325,16 @@ optional<pair<u64, u64>> run(const Wrapper &wrapper, u64 nbytes_memory, const Op
 				epilogue(rt, params, shared, stats.data(), records.data(), total.data(), round, phase, wtime() - t0);
 
 			#pragma omp barrier    /* the verdict, and every thread's next tally, are thread 0's to publish */
-			if (shared.stop)
+			if (shared.found || (phase == PROBE && round + 1 >= params.n_rounds))
 				break;
 		}
 	}
 
 	if (params.verbose)
-		done(params, shared.phases, shared.solved, wtime() - t_start);
-	if (not shared.solved)
+		done(params, shared.phases, shared.found, wtime() - t_start);
+	if (not shared.found)
 		return nullopt;
-	return optional(pair(shared.solution[0], shared.solution[1]));
+	return optional(pair(shared.golden[0], shared.golden[1]));
 }
 
 

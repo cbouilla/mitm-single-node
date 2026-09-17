@@ -28,16 +28,13 @@ struct alignas(64) Tally {
 	u64 ctr[N_COUNTERS];                   /* indexed by enum counter */
 };
 
-/* what a rank's threads share: the tallies, the golden pair a dict thread found, the epilogue's verdict */
+/* what a rank's threads share: the tallies, and the golden pair a dict thread found, which the epilogue overwrites with the verdict */
 struct Shared {
 	std::vector<Tally> tally;              /* per OpenMP thread id */
 	std::mutex golden_mtx;                 /* serialises set_golden */
-	Atomic<u32> found{0};                   /* 1 once golden[] holds this node's pair */
-	u64 golden[2] = {};                    /* x and y of the first golden pair found on this node */
-	u64 stop = 0;                          /* no next phase; thread 0 writes it, everyone reads it after the barrier */
+	Atomic<u32> found{0};                  /* 1 once golden[] holds a pair: this node's, then the verdict once thread 0 has run the epilogue */
+	u64 golden[2] = {};                    /* x and y of the first golden pair found on this node; the epilogue overwrites it with the answer, the same on every node */
 	u64 phases = 0;                        /* phases run to their end, thread 0's count */
-	bool solved = false;                   /* the search found a pair, on this node or another */
-	u64 solution[2] = {};                  /* x and y, the same on every node */
 	std::vector<ShardPages> pages;         /* per dict thread, for thread 0 to report */
 	Atomic<u32> pages_ready{0};            /* dict threads that have published theirs */
 

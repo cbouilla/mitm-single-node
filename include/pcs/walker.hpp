@@ -337,7 +337,6 @@ void walker_round(Router_thread &rt, const ProblemWrapper &wrapper, const Params
 	const u64 root_seed = shared.header.root_seed;
 	Lanes<ProblemWrapper> lanes(rt, wrapper, ctr, hll, params, shared);   /* every lane free; the round's own */
 	CollisionCandidate pending[PENDING];                    /* the run this walker took from the queue */
-	int first = 0;                                          /* the next candidate to start, pending[first] */
 	int n_pending = 0;                                      /* how many are left in the run */
 	u64 j = (u64) Router_rank(rt, ROUTER_GLOBAL);           /* the chain-index cursor: this walker's rank among all walkers */
 	const u64 jinc = (u64) Router_size(rt, ROUTER_SENDER, ROUTER_GLOBAL);   /* its stride */
@@ -355,14 +354,11 @@ void walker_round(Router_thread &rt, const ProblemWrapper &wrapper, const Params
 			for (int l = 0; l < vlen; l++) {
 				if (lanes.phase[l] != Lanes<ProblemWrapper>::FREE)
 					continue;
-				if (n_pending == 0 && not coll_q.is_empty()) {   /* relaxed read: an idle queue costs no lock traffic */
-					first = 0;
+				if (n_pending == 0 && not coll_q.is_empty())     /* relaxed read: an idle queue costs no lock traffic */
 					n_pending = (int) coll_q.pop_bulk(pending, PENDING);
-				}
 				if (n_pending > 0) {
-					lanes.begin_collision(l, pending[first]);
-					first += 1;
 					n_pending -= 1;
+					lanes.begin_collision(l, pending[n_pending]);
 				} else if (not closed) {
 					u64 start;                                   /* the next chain of this walker's that is not itself a distinguished point */
 					for (;;) {

@@ -201,15 +201,12 @@ struct Shared {
 	std::vector<int> group;                /* the workers' Router groups: dict threads then walkers, by local rank */
 	std::vector<u8 *> hll;                 /* each walker's own registers; NULL for the other roles */
 	std::vector<CollChannel> chan;         /* per dict thread */
-	Atomic<u32> round_over{0};              /* the controller closed the round: the walkers stop walking */
+	Atomic<u32> round_over{0};             /* the controller closed the round: the walkers stop walking */
 	Header header;                         /* the round's function; thread 0 draws it, the barrier publishes it */
 	std::mutex golden_mtx;                 /* serialises set_golden */
-	Atomic<u32> found{0};                   /* 1 once golden[] holds this node's pair */
-	u64 golden[3] = {};                    /* the version and the two colliding points */
-	u64 stop = 0;                          /* no next round; thread 0 writes it, everyone reads it after the barrier */
+	Atomic<u32> found{0};                  /* 1 once golden[] holds a pair: this node's, then the verdict once thread 0 has run the epilogue */
+	u64 golden[3] = {};                    /* the version and the two colliding points found on this node; the epilogue overwrites them with the answer, the same on every node */
 	u64 nround = 0;                        /* rounds run to their end, thread 0's count */
-	bool solved = false;                   /* the search found a pair, on this node or another */
-	u64 solution[3] = {};                  /* the version and the pair, the same on every node */
 
 	/* the team's n_threads: the service, the R dict threads, then the walkers */
 	Shared(int n_threads, int R)

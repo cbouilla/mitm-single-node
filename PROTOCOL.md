@@ -74,7 +74,8 @@ One phase, on each thread:
 4. thread 0 alone: the epilogue (§1.4);
 5. `#pragma omp barrier`, the engine's own: it publishes the epilogue's verdict and lets the next
    phase zero the tallies thread 0 has just read;
-6. every thread reads `stop` and leaves the loop or starts the next phase.
+6. every thread leaves the loop if `found` is set or the domain is exhausted -- a test it makes for
+   itself -- or starts the next phase.
 
 ### 1.3 Points
 
@@ -139,7 +140,10 @@ exchanges it with every other node in a single `MPI_Allgather` of `REC_WORDS` `u
 | `REC_FOUND`, `REC_X`, `REC_Y` | 1 and the pair, if this node found a golden pair |
 
 Every node then reads the same verdict out of the same records: **the lowest rank with `REC_FOUND`
-provides the answer**, and `stop = solved || (phase == PROBE && round + 1 == R)`.  Rank 0 also sums
+provides the answer**, which thread 0 writes over the node's own golden pair: `found` and `golden` are
+this node's until the epilogue and the verdict after it, the same on every node.  There is no stop
+flag -- every thread leaves the loop when `found` is set or the domain is exhausted,
+`phase == PROBE && round + 1 >= R`, a test it makes from its own loop.  Rank 0 also sums
 the records and prints the round report, which is therefore exact.  Only thread 0 calls MPI, and it
 does so while every other thread of the node waits at the engine's barrier; the Router sends nothing
 on the communicator outside a round and `Router_Reset`'s barrier, so the `MPI_Allgather` cannot meet
@@ -154,12 +158,14 @@ at most one phase.
 | lives | where |
 |---|---|
 | a thread's handle, a dict thread's shard, a producer's buffers, thread 0's stats and record arrays | a local of that thread's scope, built by that thread |
-| the tallies, the golden pair, the verdict | `Shared`, one per rank, built before the team |
+| the tallies, the golden pair -- the node's own, then the verdict | `Shared`, one per rank, built before the team |
 
 `Shared::tally[tid].ctr[]` is one `u64[N_COUNTERS]` per thread on a cache line of its own, **plain,
 never atomic**: its owner writes it, thread 0 reads it after `Router_Reset`'s first team barrier,
 which is what makes the writes visible.  The golden pair is the one exception, `set_golden` taking a
 mutex and an `std::atomic` flag, because any dict thread of the node may find one at any moment.
+Thread 0 then writes the verdict over it in the epilogue with no lock at all, every other thread of
+the node being at the engine's barrier.
 
 **Counters.**  `N_EVAL` (producers: evaluations, one point pushed each); `N_INSERT`, `N_PROBE`,
 `N_COLLISIONS` (dict threads).  Everything about the communication -- points pushed and delivered,
@@ -299,7 +305,8 @@ One round, on each thread:
 4. thread 0 alone: the epilogue (§2.5);
 5. `#pragma omp barrier`, the engine's own and only one: it publishes the verdict and the next
    round's header, and lets the next round zero the tallies thread 0 has just read;
-6. every thread reads `stop` and leaves the loop or starts the next round.
+6. every thread leaves the loop if `found` is set or `--nrounds` versions have run -- a test it
+   makes for itself -- or starts the next round.
 
 **The drain, and why it needs a handshake.**  A candidate resolved in the next round would be
 walked under the wrong version of the function, so **every candidate must be retired before
@@ -420,8 +427,12 @@ function builds both:
 | `REC_FOUND`, `REC_I`, `REC_X0`, `REC_X1` | 1, the version and the pair, if this node found one |
 
 Every node then reads the same verdict out of the same records: **the lowest rank with
-`REC_FOUND` set provides the answer**, and `stop = solved || nround >= max_versions`
-(`--nrounds`).  Rank 0 also sums the records and prints the round report, which is therefore
+`REC_FOUND` set provides the answer**, which thread 0 writes over the node's own golden pair:
+`found` and `golden` are this node's until the epilogue and the verdict after it, the same on
+every node.  The flip never becomes a `TAG_SOLUTION`, because no control turn follows an
+epilogue that sets `found`.  There is no stop flag -- every thread leaves the loop when `found`
+is set or `nround >= max_versions` (`--nrounds`), a test it makes for itself.  Rank 0 also sums
+the records and prints the round report, which is therefore
 exact -- the live line, read from the reports, is not.  Then the walkers' HyperLogLog
 registers, merged and zeroed by thread 0 and `MPI_Reduce(MPI_MAX)`'d to rank 0: 64 KB a round
 buys the round's count of **distinct** collisions, which is the number that says whether the
@@ -441,15 +452,16 @@ There is **no early exit inside a round**: a pair found while the round runs end
 | lives | where |
 |---|---|
 | a thread's handle, a dict thread's shard and queue, a walker's registers and lanes, thread 0's stats, records and controller | a local of that thread's scope, built by that thread |
-| the tallies, the queues' pointers, the published groups, the header, the golden pair, the verdict | the one `Shared`, built before the team |
+| the tallies, the queues' pointers, the published groups, the header, the golden pair -- the node's own, then the verdict | the one `Shared`, built before the team |
 
 `Shared::tally[tid].ctr[]` is one `u64[N_COUNTERS]` per thread on a cache line of its own,
 **plain, never atomic**: its owner writes it, thread 0 reads it after `Router_Reset`'s first
 team barrier, which is what makes the writes visible -- and reads it *without*
 synchronisation during the round, for the report and the live line, which is why both are
 approximate.  The exceptions are the golden pair (a mutex and an atomic flag, because any
-walker may find one at any moment) and the two flags on the hot path, `round_over` and each
-dict thread's `done`.
+walker may find one at any moment; thread 0 then writes the verdict over it in the epilogue
+with no lock at all, every other thread being at the engine's barrier) and the two flags on
+the hot path, `round_over` and each dict thread's `done`.
 
 **Counters.**  Walkers: `N_EVAL`, `N_DP`, `N_POINTS_TRAILS`, `N_COLLISIONS`,
 `COLLIDING_LEN_MIN`, `COLLIDING_LEN_MAX`, `N_MEASURE`, `BAD_DP`, `BAD_COLLISION`,
