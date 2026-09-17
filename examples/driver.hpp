@@ -60,7 +60,6 @@ static void usage(const char *argv0)
 	printf("  --alpha A        PCS: the auto-chosen difficulty is A * sqrt(w / 2^n).  Default: 2.5\n");
 	printf("  --beta B         PCS: each version of the function is used for B * w points.  Default: 8\n");
 	printf("  --dp-len-bits N  PCS: bits of trail length shipped with a point.  0 == all that fit\n");
-	printf("  --chunk N        PCS: evaluations a walker makes between two queue checks.  Default: 64\n");
 	printf("  --quiet          no progress information\n");
 	exit(EXIT_SUCCESS);
 }
@@ -69,7 +68,7 @@ static void usage(const char *argv0)
 static void process_command_line_options(int argc, char **argv, Options &opts, Driver &drv)
 {
 	enum {OPT_ENGINE = 998, OPT_FILL = 999, OPT_BLOCK = 1000, OPT_SWC, OPT_NRECV, OPT_INBOX,
-	      OPT_CREDIT, OPT_GROUP, OPT_CHUNK, OPT_CACHE_LEVEL, OPT_NO_BIND, OPT_DP_LEN_BITS, OPT_BENCHMARK,
+	      OPT_CREDIT, OPT_GROUP, OPT_CACHE_LEVEL, OPT_NO_BIND, OPT_DP_LEN_BITS, OPT_BENCHMARK,
 	      OPT_QUIET, OPT_PREFETCH, OPT_HELP};
 
 	struct option longopts[] = {
@@ -92,7 +91,6 @@ static void process_command_line_options(int argc, char **argv, Options &opts, D
 		{"inbox",              required_argument, NULL, OPT_INBOX},
 		{"credit",             required_argument, NULL, OPT_CREDIT},
 		{"group",              required_argument, NULL, OPT_GROUP},
-		{"chunk",              required_argument, NULL, OPT_CHUNK},
 		{"cache-level",        required_argument, NULL, OPT_CACHE_LEVEL},
 		{"no-bind",            no_argument,       NULL, OPT_NO_BIND},
 		{"benchmark",          no_argument,       NULL, OPT_BENCHMARK},
@@ -123,7 +121,6 @@ static void process_command_line_options(int argc, char **argv, Options &opts, D
 		case OPT_INBOX:          opts.router.inbox_blocks = std::stoi(optarg); break;
 		case OPT_CREDIT:         opts.router.credit = std::stoi(optarg);      break;
 		case OPT_GROUP:          opts.router.group_size = std::stoi(optarg);  break;
-		case OPT_CHUNK:          opts.chunk_size = std::stoull(optarg);       break;
 		case OPT_CACHE_LEVEL:    opts.router.cache_level = std::stoi(optarg); break;
 		case OPT_DP_LEN_BITS:    opts.dp_lenbits = std::stoi(optarg);         break;
 		case OPT_NO_BIND:        opts.router.pin = false;                     break;

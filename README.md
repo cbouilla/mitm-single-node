@@ -66,7 +66,7 @@ mpirun -np 4 --bind-to none build/examples/double_speck64_demo \
 - `--engine direct` (default) or `--engine pcs`
 - `--ram` dictionary bytes **per node**; `--fill` is the direct engine's fill ratio, so
   `fill * w` entries per round; `--difficulty` / `--alpha` / `--beta` / `--dp-len-bits`
-  / `--chunk` are PCS's; `--nrounds` gives up after that many rounds (for PCS, which
+  are PCS's; `--nrounds` gives up after that many rounds (for PCS, which
   never exhausts anything, it is the only way to make it give up)
 - `--producers-per-node` / `--dicts-per-node` size the team.  Producers default to
   filling whatever affinity mask the launcher handed the rank, which is why

@@ -229,7 +229,8 @@ epilogue's record array (§2.5) and the controller's end-of-round to every node 
 
 **Every per-thread object is built by its owner right after `Router_Init`**, i.e. once pinned,
 so the zero-fill is the first touch of every page: a dict thread's shard and its collision
-queue, a walker's HyperLogLog registers, its resolver and its recorded-trail buffer.  That
+queue, a walker's HyperLogLog registers.  A walker's lanes are
+the round's own, built afresh at its start.  That
 costs **one team barrier** §1 does not need, after those allocations and before the first
 round, because the groups and the queues have to be published to the team.
 
@@ -283,10 +284,10 @@ One round, on each thread:
 
 1. zero its own tallies;
 2. its role's work:
-   - a **walker** walks its `vlen` trails in chunks of `chunk_size` evaluations, pushing every
-     distinguished point, and between chunks retires what its dict thread has queued.  It
-     tests `round_over` once per chunk; when it is up it calls `Router_Close` **once** and
-     drops into a resolve-only loop;
+   - a **walker** runs its `vlen` lanes: a free lane takes a candidate its dict thread queued
+     if there is one, a fresh trail otherwise, and every distinguished point is pushed as it is
+     found.  It tests `round_over` every cycle; when it is up it calls `Router_Close` **once**,
+     abandons the trails in flight and resolves what is left;
    - a **dict thread** takes points one at a time with `Router_Pop`, probes each into its
      shard and fills a run of candidates, handing the run over as soon as there is nothing
      left to probe.  It loops until `Router_Pop` finds nothing and `Router_Test_drained` is
@@ -375,40 +376,35 @@ afford; the round report prints the count whenever it is not zero.
 
 **How a walker retires them.**  A round spends about `2/beta` of its evaluations locating
 collisions, and resolving one point at a time makes each of those cost `vlen` times what a
-walked one does -- most of a walker's time, once the dictionary fills.  So a walker with
-`vlen > 1` keeps `vlen/2` candidates in flight in a `VecResolver` and steps them all with a
-single `vmixf`.  A candidate walks its two chains through three phases, one lane per chain
-that is moving:
+walked one does -- most of a walker's time, once the dictionary fills.  So a walker is **one
+machine of `vlen` lanes** that walks trails and resolves collisions on the same lanes: one
+`vmixf` per cycle advances every lane, a lane runs one instruction to its end -- a fresh trail
+to its distinguished point, or the resolution of one candidate -- and a lane that ends one is
+redispatched at once, **a pending collision before a fresh trail**.  Nothing is preempted, and
+there is no batch: trails and collisions end at different times, so the lanes desynchronise by
+themselves.  A collision holds **one lane for its whole life** and walks its two chains through
+three phases on it:
 
 | phase | what it does |
 |---|---|
-| `MEASURE` | entered when either length is unknown: re-walk that chain -- or both at once -- to its distinguished point to learn its length.  A chain gives up after `dp_max_it` steps (`BAD_DP`), and abandons the candidate if it lands on a point other than `end` (`BAD_WALK_NONCOLLIDING`).  A chain that arrives first simply stops being committed while the other finishes |
-| `ALIGN` | rewind both chains and step the longer one until both are the same distance from their shared endpoint; the other waits at its start |
-| `MARCH` | step both and compare, until they meet (the collision) or the shorter trail runs out (`BAD_WALK_NONCOLLIDING`).  Equal points on entry mean one trail is a suffix of the other (`BAD_WALK_ROBINHOOD`) |
+| `MEASURE0`, `MEASURE1` | a length is unknown: re-walk that chain to its distinguished point to learn it -- chain 0, then chain 1 if both are.  A chain gives up after `dp_max_it` steps (`BAD_DP`), and abandons the candidate if it lands on a point other than `end` (`BAD_WALK_NONCOLLIDING`) |
+| `ALIGN` | rewind both chains and step the longer one until both are the same distance from their shared endpoint; the shorter waits at its start, in the lane's registers |
+| `MARCH` | step both and compare, until they meet (the collision) or the shorter trail runs out (`BAD_WALK_NONCOLLIDING`), **alternating the two chains on the lane**: chain 0 on the even cycles, its image saved, chain 1 on the odd ones, then the comparison.  Equal positions on entry mean one trail is a suffix of the other (`BAD_WALK_ROBINHOOD`) |
 
-**A busy slot owns two lanes from `fill()` to `release()`**, whatever phase it is in, so
-`n_free == 2 * (nslots - n_busy)` at all times and an empty slot always finds its pair: with
-`nslots == vlen/2` the pool cannot run dry.  A chain that is not moving is still stepped by
-`vmixf`, its lane simply not committed -- which costs nothing, since a step is a full-width
-`vmixf` however many lanes are live.  Every length is exact by the time `ALIGN` begins, so the
-march's step budget `min(len0, len1)` is never zero.  `N_EVAL` counts the evaluations a
-one-at-a-time resolver would have made, not the lanes spent, so it stays comparable across the
-two paths; about a third of the lanes are idle, and that is the price of the batch.
+Alternating costs exactly what two lanes would -- two lane-cycles per step -- and only doubles
+the latency of that phase; in exchange no instruction ever needs a second lane, so there is
+nothing to allocate, nothing to wait for and no way to deadlock.  Every phase advances one chain
+by one evaluation per cycle, so a live lane never wastes one and `N_EVAL` is the count of live
+lanes; a lane idles only in the drain, once nothing is left to start.  A problem with
+`vlen == 1` is the same machine with one lane.
 
-A step costs a whole `vmixf` however few candidates are in flight, so in the steady state a
-walker stops as soon as it has nothing more in hand -- its private run empty *and* its queue
-empty -- while its batch is not full, and leaves the partial batch parked for the next chunk.
-**Only the drain runs the batch down to the last candidate**, where every one of them must be
-retired whatever it costs.  A parked candidate holds nothing but its own two chain indices, so
-parking it is free.
-
-A problem with `vlen == 1` has no vector implementation to batch: its walkers resolve one
-candidate at a time, drawing from the same private run.  That path makes the opposite trade on
-an unknown length: `walk_recorded()` **records** the trail it re-walks, in one buffer of
-`dp_max_it + 1` points owned by the walker thread, so its march reads the recorded chain and
-costs one evaluation per step instead of two.  It records the chain whose length is unknown
-and steps the other; when both are unknown, `measure_trail()` re-walks the stepped one first,
-without recording it, because `walk_recorded()` has to know how far to step it.
+**Dispatch is collisions first, absolutely**: while candidates are pending -- the walker's
+private run of up to 64, refilled from its queue when it runs out -- every freed lane takes
+one, so a walker stops producing while its queue is deep, and starts a trail on every lane its
+collisions do not need.  A saturated length is re-walked, not recorded: a record would cost
+`dp_max_it + 1` words per lane, which bitsliced DES's 512 lanes cannot afford, to save one
+re-walk per saturated length -- about none per collision up to `1/theta ~ 26`, 0.85 at
+`1/theta ~ 212`.
 
 ### 2.5 The epilogue: one `MPI_Allgather` per round
 
@@ -444,7 +440,7 @@ There is **no early exit inside a round**: a pair found while the round runs end
 
 | lives | where |
 |---|---|
-| a thread's handle, a dict thread's shard and queue, a walker's registers, resolver and trail buffer, thread 0's stats, records and controller | a local of that thread's scope, built by that thread |
+| a thread's handle, a dict thread's shard and queue, a walker's registers and lanes, thread 0's stats, records and controller | a local of that thread's scope, built by that thread |
 | the tallies, the queues' pointers, the published groups, the header, the golden pair, the verdict | the one `Shared`, built before the team |
 
 `Shared::tally[tid].ctr[]` is one `u64[N_COUNTERS]` per thread on a cache line of its own,

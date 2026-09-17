@@ -40,9 +40,6 @@ struct Options {
 	u64 multiplier = 0x2545f4914f6cdd1dull;   /* to generate starting points */
 	u64 max_versions = 0xffffffffffffffffull; /* how many rounds (PCS: function versions) before giving up */
 	size_t coll_queue_capacity = 8192;        /* candidates buffered by each dict thread for its group */
-	size_t coll_per_chunk = 0;                /* candidates a producer retires per chunk; 0 == until its
-	                                             batch is not full and the queue is empty */
-	size_t chunk_size = 64;                   /* vmixf iterations between queue / phase checks */
 
 	/* pacing */
 	double ping_delay = 0.1;                  /* seconds between two refreshes of the live line */

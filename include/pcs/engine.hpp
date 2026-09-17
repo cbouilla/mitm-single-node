@@ -17,7 +17,6 @@
 #include "pcs/params.hpp"
 #include "pcs/shared.hpp"
 #include "pcs/wrappers.hpp"
-#include "pcs/trail.hpp"
 #include "pcs/dict.hpp"
 #include "pcs/walker.hpp"
 #include "pcs/control.hpp"
@@ -326,8 +325,6 @@ optional<tuple<u64,u64,u64>> run(const Wrapper &wrapper, u64 nbytes_memory, cons
 		/* every per-thread object is built here, once the Router has pinned its thread: first touch */
 		PcsDict dict(params.jbits, (role == ROUTER_RECEIVER) ? params.w_shard : 0);
 		std::vector<u8> hll;                        /* a walker's distinct-collision registers */
-		std::vector<u64> trail;                     /* a scalar walker's recorded trail */
-		std::unique_ptr<VecResolver<Wrapper>> resolver;   /* a walker's candidates in flight */
 		std::vector<int> recv_of;                   /* which dict thread each walker resolves for */
 		std::vector<int> n_walkers;                 /* ... and how many walkers each of them has */
 		std::vector<u64> records;                   /* thread 0: the nodes' records, from the Allgather */
@@ -342,9 +339,6 @@ optional<tuple<u64,u64,u64>> run(const Wrapper &wrapper, u64 nbytes_memory, cons
 			shared.group[Router_size(rt, ROUTER_RECEIVER, ROUTER_NODE) + me] = Router_group(rt);
 			hll.assign(HLL_REGISTERS, 0);
 			shared.hll[tid] = hll.data();
-			resolver = std::make_unique<VecResolver<Wrapper>>();
-			if constexpr (Wrapper::vlen == 1)
-				trail.resize(params.dp_max_it + 1);
 		}
 		if (role == ROUTER_SERVICE) {
 			records.assign((size_t) Router_size(rt, ROUTER_SERVICE, ROUTER_GLOBAL) * REC_WORDS, 0);
@@ -396,7 +390,7 @@ optional<tuple<u64,u64,u64>> run(const Wrapper &wrapper, u64 nbytes_memory, cons
 			else if (role == ROUTER_RECEIVER)
 				dict_round(rt, params, shared, dict, ctr, chan);
 			else
-				walker_round(rt, wrapper, params, shared, ctr, hll.data(), *resolver, trail.data(), chan);
+				walker_round(rt, wrapper, params, shared, ctr, hll.data(), chan);
 
 			Router_Reset(rt);      /* its own team barriers and MPI_Barrier: every tally is written by now */
 
