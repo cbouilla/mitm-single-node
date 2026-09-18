@@ -290,10 +290,10 @@ One round, on each thread:
 
 1. zero its own tallies;
 2. its role's work:
-   - a **walker** runs its `vlen` lanes: a free lane takes a candidate its dict thread queued
-     if there is one, a fresh trail otherwise, and every distinguished point is pushed as it is
-     found.  It tests `round_over` every cycle; when it is up it calls `Router_Close` **once**,
-     abandons the trails in flight and resolves what is left;
+   - a **walker** runs its `vlen` lanes: where an instruction ends the lane takes the next one,
+     a candidate its dict thread queued if there is one and a fresh trail otherwise, and every
+     distinguished point is pushed as it is found.  It tests `round_over` every cycle; when it
+     is up it calls `Router_Close` **once** and then runs the machine dry;
    - a **dict thread** takes points one at a time with `Router_Pop`, probes each into its
      shard and fills a run of candidates, handing the run over as soon as there is nothing
      left to probe.  It loops until `Router_Pop` finds nothing and `Router_Test_drained` is
@@ -308,17 +308,31 @@ One round, on each thread:
 6. every thread leaves the loop if `found` is set or `--nrounds` versions have run -- a test it
    makes for itself -- or starts the next round.
 
-**The drain, and why it needs a handshake.**  A candidate resolved in the next round would be
+**The drain, and why it needs a handshake.**  A candidate walked in the next round would be
 walked under the wrong version of the function, so **every candidate must be retired before
-`Router_Reset`**.  A dict thread keeps producing them until `Router_Test_drained`, which is
-node-wide and needs every sender of every node closed; so each dict thread carries one
-`done` flag, set on release when its pop loop ends, and a walker's resolve-only loop ends when
-**its dict thread is done and the queue it shares with its fellow walkers is empty** -- in
-that order, or a run pushed between the two tests would be left behind.  That flag and
-`round_over` are the whole of it: the previous core's
-`RUNNING / HOLD / HELD / DRAIN / QUIESCENT` state machine is gone, a walker that has closed
-and is still resolving being exactly what `HELD` used to mean.  `done` is set *before* the
+`Router_Reset`**.  A dict thread keeps producing candidates until `Router_Test_drained`, which
+is node-wide and needs every sender of every node closed; so each dict thread carries one
+`done` flag, set on release when its pop loop ends, and a walker's drain ends when **its dict
+thread is done, the queue it shares with its fellow walkers is empty and its own hand is
+empty** -- `done` read before the queue, or a run pushed between the two tests would be left
+behind.  That flag and `round_over` are the whole of it: the previous core's
+`RUNNING / HOLD / HELD / DRAIN / QUIESCENT` state machine is gone.  `done` is set *before* the
 shard is emptied, so a walker's drain overlaps that flush.
+
+**`Router_Close` comes first, not last**, and that ordering is forced: the round cannot end
+until every sender has closed, so `Router_Test_drained` -- and with it `done` -- is a flag the
+walker's own silence has to earn.  A walker that waited for its queue before closing would wait
+for ever, and would keep feeding the dictionary the very candidates it was waiting to stop
+seeing.  Closed, it still runs every lane: the trails keep the machine full and their points go
+nowhere, being neither tallied nor pushed.
+
+**Then the flush.**  Once the queue is final and empty, nothing new can reach a lane, and the
+walker steps `4 * dp_max_it` more cycles -- inside which every collision still on a lane must
+have run its course, since each unknown length is re-walked in at most `dp_max_it` and the
+align and the march together cost `len0 + len1`, the march two cycles a step.  It then asserts
+that every lane is back on a trail.  A bounded count and an assertion, rather than a live count
+of busy lanes: the machine's one invariant is that a lane always has an instruction, and asking
+it how many are collisions would put back the scan §2.4 exists to avoid.
 
 **The round header travels on no wire.**  Every rank holds the same `PRNG` -- the driver draws
 one seed and broadcasts it -- so thread 0 draws `Header{i, root_seed}` for the first round
@@ -379,7 +393,8 @@ truncates the run and the dict thread tallies the rest as `DROP_COLL`.  It canno
 instead: `Router_Push` spins waiting for a free block, so a walker inside a push is draining
 nothing, and a dict thread blocked on a queue whose only consumer was that walker would
 deadlock the pair.  A dropped candidate costs one collision, which a Monte-Carlo search can
-afford; the round report prints the count whenever it is not zero.
+afford; the round report prints the count whenever it is not zero.  Nothing else is lost: the
+round's end retires every candidate that reached a queue (§2.2).
 
 **How a walker retires them.**  A round spends about `2/beta` of its evaluations locating
 collisions, and resolving one point at a time makes each of those cost `vlen` times what a
@@ -401,14 +416,16 @@ three phases on it:
 Alternating costs exactly what two lanes would -- two lane-cycles per step -- and only doubles
 the latency of that phase; in exchange no instruction ever needs a second lane, so there is
 nothing to allocate, nothing to wait for and no way to deadlock.  Every phase advances one chain
-by one evaluation per cycle, so a live lane never wastes one and `N_EVAL` is the count of live
-lanes; a lane idles only in the drain, once nothing is left to start.  A problem with
-`vlen == 1` is the same machine with one lane.
+by one evaluation per cycle, and a lane that ends an instruction takes the next one on the spot,
+so **no lane is ever idle**: a cycle is always `vlen` evaluations, `N_EVAL` counts them as such,
+and the machine keeps neither a free list nor a live count -- which is what the round's end is
+shaped around (§2.2).  A problem with `vlen == 1` is the same machine with one lane.
 
 **Dispatch is collisions first, absolutely**: while candidates are pending -- the walker's
-private run of up to 64, refilled from its queue when it runs out -- every freed lane takes
-one, so a walker stops producing while its queue is deep, and starts a trail on every lane its
-collisions do not need.  A saturated length is re-walked, not recorded: a record would cost
+private run, `max(64, vlen)` deep and topped up from the queue once a cycle whenever fewer than
+`vlen` are in hand, so that a cycle ending every lane's instruction still finds one for each --
+every freed lane takes one, so a walker stops producing while its queue is deep, and starts a
+trail on every lane its collisions do not need.  A saturated length is re-walked, not recorded: a record would cost
 `dp_max_it + 1` words per lane, which bitsliced DES's 512 lanes cannot afford, to save one
 re-walk per saturated length -- about none per collision up to `1/theta ~ 26`, 0.85 at
 `1/theta ~ 212`.

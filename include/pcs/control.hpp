@@ -60,10 +60,8 @@ public:
 		MPI_Irecv(NULL, 0, MPI_UINT64_T, 0, TAG_END_ROUND, params.mpi_comm, &req_end_round);
 		if (Router_rank(rt, ROUTER_GLOBAL) != 0)
 			return;                /* nobody ever reports to us */
-		MPI_Irecv(report_buf, REC_FOUND, MPI_UINT64_T, MPI_ANY_SOURCE, TAG_REPORT, params.mpi_comm,
-		          &req_report);
-		MPI_Irecv(solution_buf, 3, MPI_UINT64_T, MPI_ANY_SOURCE, TAG_SOLUTION, params.mpi_comm,
-		          &req_solution);
+		MPI_Irecv(report_buf, REC_FOUND, MPI_UINT64_T, MPI_ANY_SOURCE, TAG_REPORT, params.mpi_comm, &req_report);
+		MPI_Irecv(solution_buf, 3, MPI_UINT64_T, MPI_ANY_SOURCE, TAG_SOLUTION, params.mpi_comm, &req_solution);
 	}
 
 	void begin_round()
